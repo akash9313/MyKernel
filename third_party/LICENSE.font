@@ -1,0 +1,24 @@
+Standard 8x16 VGA Console Font Provenance & License Notice
+
+Upstream Source: Linux Kernel source tree (lib/fonts/font_8x16.c)
+Upstream Author / Origin: IBM VGA ROM standard font representation, converted via cpi2fnt.
+SPDX-License-Identifier: GPL-2.0-only
+
+Tracked Artifacts:
+- kernel/drivers/font.c (contains the 4,096 byte font glyph table extracted from font_8x16.c)
+- kernel/drivers/font.h
+- third_party/font_8x16.c (reference source file)
+
+License Notice:
+------------------------------------------------------------------------------
+This software is provided subject to the terms of the GNU General Public
+License version 2 (GPL-2.0) as published by the Free Software Foundation.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+------------------------------------------------------------------------------
+Note on AstraOS overall licensing:
+The overall project license for AstraOS remains undecided and uncommitted.
+Copied/derived font assets are tracked under their respective GPL-2.0 license.

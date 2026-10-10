@@ -1,0 +1,32 @@
+Limine Bootloader Upstream Provenance & License Notice
+
+Upstream Repository: https://github.com/limine-bootloader/limine
+Branch / Revision: v8.x-binary (pinned release assets)
+License: BSD Zero Clause License (0BSD)
+
+Tracked Artifacts & Cryptographic Hashes (SHA-256):
+- third_party/limine/BOOTX64.EFI
+  SHA-256: 51ca2b20ed14bbc678a396cdfb0c1d941acbc155cabebc9bfafabe4cdae1be73
+  Size: 249,856 bytes
+
+- third_party/limine/limine.h
+  SHA-256: f8b35287579dbe50e9d84cca7b558e39b2b64e499f9b37ef5ebe969c05104c33
+  Size: 18,604 bytes
+
+Full License Text:
+------------------------------------------------------------------------------
+BSD Zero Clause License
+
+Copyright (C) 2022-2025 mintsuki and Limine contributors.
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
+OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+------------------------------------------------------------------------------
