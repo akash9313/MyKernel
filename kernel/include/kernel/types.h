@@ -21,5 +21,6 @@ typedef int64_t   s64;
 
 typedef uintptr_t virt_addr_t;
 typedef uint64_t  phys_addr_t;
+typedef ptrdiff_t ssize_t;
 
 #endif /* ASTRA_KERNEL_TYPES_H */

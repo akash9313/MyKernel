@@ -26,10 +26,18 @@ def prepare_esp():
     kernel_dst = os.path.join(ESP_DIR, 'kernel.elf')
     shutil.copy2(kernel_src, kernel_dst)
 
+    initramfs_src = os.path.join(BASE_DIR, 'build', 'initramfs.bin')
+    if not os.path.exists(initramfs_src):
+        import build_initramfs
+        build_initramfs.build_initramfs()
+    initramfs_dst = os.path.join(ESP_DIR, 'initramfs.bin')
+    shutil.copy2(initramfs_src, initramfs_dst)
+
     print(f"[ESP] Prepared ESP directory at {ESP_DIR}")
     print(f"  - {bootx64_dst} ({os.path.getsize(bootx64_dst)} bytes)")
     print(f"  - {conf_dst} ({os.path.getsize(conf_dst)} bytes)")
     print(f"  - {kernel_dst} ({os.path.getsize(kernel_dst)} bytes)")
+    print(f"  - {initramfs_dst} ({os.path.getsize(initramfs_dst)} bytes)")
 
 if __name__ == '__main__':
     prepare_esp()

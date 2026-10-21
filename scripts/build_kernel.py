@@ -2,10 +2,35 @@ import os
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import build_user
+import build_initramfs
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CLANG = os.path.join(BASE_DIR, 'tools', 'llvm-toolchain', 'bin', 'clang.exe')
-LD = os.path.join(BASE_DIR, 'tools', 'llvm-toolchain', 'bin', 'ld.lld.exe')
-READELF = os.path.join(BASE_DIR, 'tools', 'llvm-toolchain', 'bin', 'llvm-readelf.exe')
+def find_tool(candidates):
+    for c in candidates:
+        if os.path.exists(c):
+            try:
+                res = subprocess.run([c, '--version'], capture_output=True, text=True)
+                if res.returncode == 0:
+                    return c
+            except Exception:
+                pass
+    return candidates[0]
+
+CLANG = find_tool([
+    os.path.join(BASE_DIR, 'tools', 'llvm-toolchain', 'bin', 'clang.exe'),
+    r'C:\Program Files\LLVM\bin\clang.exe'
+])
+LD = find_tool([
+    os.path.join(BASE_DIR, 'tools', 'llvm-toolchain', 'bin', 'ld.lld.exe'),
+    r'C:\Program Files\LLVM\bin\ld.lld.exe'
+])
+READELF = find_tool([
+    os.path.join(BASE_DIR, 'tools', 'llvm-toolchain', 'bin', 'llvm-readelf.exe'),
+    r'C:\mingw64\bin\readelf.exe',
+    r'C:\Program Files\LLVM\bin\llvm-readobj.exe'
+])
 BUILD_DIR = os.path.join(BASE_DIR, 'build')
 
 SOURCES = [
@@ -19,9 +44,58 @@ SOURCES = [
     'kernel/arch/x86_64/gdt.c',
     'kernel/arch/x86_64/idt.c',
     'kernel/arch/x86_64/idt_asm.S',
+    'kernel/arch/x86_64/vmm_switch.S',
     'kernel/mm/memmap.c',
     'kernel/mm/pmm.c',
-    'kernel/monitor/monitor.c'
+    'kernel/mm/vmm.c',
+    'kernel/mm/heap.c',
+    'kernel/drivers/apic.c',
+    'kernel/sched/sched.c',
+    'kernel/sched/switch.S',
+    'kernel/sched/sync.c',
+    'kernel/process/process.c',
+    'kernel/process/syscall.c',
+    'kernel/process/user_test.S',
+    'kernel/process/elf.c',
+    'kernel/fs/vfs.c',
+    'kernel/fs/initramfs.c',
+    'kernel/fs/vfs_test.c',
+    'kernel/monitor/monitor.c',
+    'kernel/drivers/gfx.c',
+    'kernel/drivers/input.c',
+    'kernel/drivers/ps2.c',
+    'kernel/gui/wm.c',
+    'kernel/gui/desktop.c',
+    'kernel/gui/app_editor.c',
+    'kernel/gui/app_filemgr.c',
+    'kernel/drivers/pci.c',
+    'kernel/drivers/e1000.c',
+    'kernel/net/net.c',
+    'kernel/net/ethernet.c',
+    'kernel/net/arp.c',
+    'kernel/net/ipv4.c',
+    'kernel/net/icmp.c',
+    'kernel/net/udp.c',
+    'kernel/net/dhcp.c',
+    'kernel/net/dns.c',
+    'kernel/net/tcp.c',
+    'kernel/net/http.c',
+    'kernel/net/net_test.c',
+    'kernel/drivers/rtc.c',
+    'kernel/crypto/crypto_rand.c',
+    'kernel/crypto/sha256.c',
+    'kernel/crypto/hkdf.c',
+    'kernel/crypto/chacha20_poly1305.c',
+    'kernel/crypto/x25519.c',
+    'kernel/crypto/rsa.c',
+    'kernel/crypto/x509.c',
+    'kernel/crypto/crypto_test.c',
+    'kernel/net/tls.c',
+    'kernel/browser/browser_url.c',
+    'kernel/browser/css_engine.c',
+    'kernel/browser/html_parser.c',
+    'kernel/browser/browser_render.c',
+    'kernel/browser/app_browser.c'
 ]
 
 CFLAGS = [
@@ -56,6 +130,8 @@ LDFLAGS = [
 
 def main():
     os.makedirs(BUILD_DIR, exist_ok=True)
+    build_user.build_user()
+    build_initramfs.build_initramfs()
     obj_files = []
 
     print("[BUILD] Compiling AstraOS kernel sources...")

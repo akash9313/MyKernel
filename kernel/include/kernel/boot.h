@@ -7,6 +7,8 @@
 struct limine_framebuffer_response *boot_get_framebuffer_response(void);
 struct limine_memmap_response *boot_get_memmap_response(void);
 struct limine_hhdm_response *boot_get_hhdm_response(void);
+struct limine_kernel_address_response *boot_get_kernel_address_response(void);
+struct limine_module_response *boot_get_module_response(void);
 const char *boot_get_cmdline(void);
 bool boot_is_base_revision_supported(void);
 

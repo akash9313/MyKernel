@@ -3,11 +3,14 @@
 
 PYTHON ?= python
 
-.PHONY: all doctor run run-headless debug test test-host test-qemu screenshot clean
+.PHONY: all doctor iso run run-headless debug test test-host test-qemu test-vbox screenshot clean
 
 all:
 	$(PYTHON) scripts/build_kernel.py
 	$(PYTHON) scripts/prepare_esp.py
+
+iso: all
+	$(PYTHON) scripts/build_iso.py
 
 doctor:
 	$(PYTHON) scripts/doctor.py
@@ -18,7 +21,10 @@ test-host:
 test-qemu: all
 	$(PYTHON) tests/test_runner.py --all
 
-test: test-host test-qemu
+test-vbox: iso
+	$(PYTHON) scripts/test_vbox.py
+
+test: test-host test-qemu test-vbox
 
 run: all
 	tools/qemu/qemu-system-x86_64.exe \
@@ -51,5 +57,5 @@ screenshot: all
 
 clean:
 	@echo "Cleaning build artifacts..."
-	$(PYTHON) -c "import shutil, os, glob; [os.remove(f) for f in glob.glob('build/*.o') + glob.glob('build/*.elf') + glob.glob('build/*.exe') + glob.glob('build/*.ppm') + glob.glob('build/*.bmp') + glob.glob('build/*.png') if os.path.exists(f)]; shutil.rmtree('build/esp', ignore_errors=True)"
+	$(PYTHON) -c "import shutil, os, glob; [os.remove(f) for f in glob.glob('build/*.o') + glob.glob('build/*.elf') + glob.glob('build/*.exe') + glob.glob('build/*.ppm') + glob.glob('build/*.bmp') + glob.glob('build/*.png') + glob.glob('build/*.iso') if os.path.exists(f)]; shutil.rmtree('build/esp', ignore_errors=True)"
 	@echo "Clean completed."

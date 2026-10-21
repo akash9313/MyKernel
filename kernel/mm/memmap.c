@@ -122,10 +122,10 @@ void memmap_print(void) {
     u64 ram_total = memmap_get_total_memory();
 
     kprintf("-------------------------------------------------------------------\n");
-    kprintf("Installed System RAM: %llu MiB (%llu KiB)\n",
+    kprintf("Reported System Memory (Boot Descriptors): %llu MiB (%llu KiB)\n",
             (unsigned long long)(ram_total / (1024 * 1024)),
             (unsigned long long)(ram_total / 1024));
-    kprintf("  - Usable RAM:       %llu MiB (%llu KiB)\n",
+    kprintf("  - Usable Physical RAM: %llu MiB (%llu KiB)\n",
             (unsigned long long)(g_usable_bytes / (1024 * 1024)),
             (unsigned long long)(g_usable_bytes / 1024));
     kprintf("  - Bootloader/Kernel:%llu KiB\n",
@@ -138,4 +138,49 @@ void memmap_print(void) {
             (unsigned long long)(g_reserved_bytes / (1024 * 1024)),
             (unsigned long long)(g_reserved_bytes / 1024));
     kprintf("===================================================================\n\n");
+}
+
+void *memcpy(void *dest, const void *src, size_t n) {
+    u8 *d = (u8 *)dest;
+    const u8 *s = (const u8 *)src;
+    while (n--) {
+        *d++ = *s++;
+    }
+    return dest;
+}
+
+void *memset(void *s, int c, size_t n) {
+    u8 *p = (u8 *)s;
+    while (n--) {
+        *p++ = (u8)c;
+    }
+    return s;
+}
+
+void *memmove(void *dest, const void *src, size_t n) {
+    u8 *d = (u8 *)dest;
+    const u8 *s = (const u8 *)src;
+    if (d < s) {
+        while (n--) {
+            *d++ = *s++;
+        }
+    } else if (d > s) {
+        d += n;
+        s += n;
+        while (n--) {
+            *--d = *--s;
+        }
+    }
+    return dest;
+}
+
+int memcmp(const void *s1, const void *s2, size_t n) {
+    const u8 *p1 = (const u8 *)s1;
+    const u8 *p2 = (const u8 *)s2;
+    while (n--) {
+        if (*p1 != *p2) return (int)*p1 - (int)*p2;
+        p1++;
+        p2++;
+    }
+    return 0;
 }

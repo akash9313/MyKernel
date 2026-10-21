@@ -16,18 +16,22 @@ SECTIONS
 {
     . = 0xffffffff80200000;
 
+    __kernel_start = .;
+    __text_start = .;
     .text : {
         *(.text .text.*)
     } :text
-
     . = ALIGN(CONSTANT(COMMONPAGESIZE));
+    __text_end = .;
 
+    __rodata_start = .;
     .rodata : {
         *(.rodata .rodata.*)
     } :rodata
-
     . = ALIGN(CONSTANT(COMMONPAGESIZE));
+    __rodata_end = .;
 
+    __data_start = .;
     .data : {
         *(.data .data.*)
         *(.limine_requests_start)
@@ -35,10 +39,14 @@ SECTIONS
         *(.limine_requests_end)
     } :data
 
+    __bss_start = .;
     .bss : {
         *(COMMON)
         *(.bss .bss.*)
     } :data
+    . = ALIGN(CONSTANT(COMMONPAGESIZE));
+    __bss_end = .;
+    __kernel_end = .;
 
     /DISCARD/ : {
         *(.eh_frame*)
