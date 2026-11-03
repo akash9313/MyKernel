@@ -12,6 +12,7 @@
 #define GFX_COLOR_ACCENT_BLUE      0x38BDF8 /* Vibrant electric cyan-blue */
 #define GFX_COLOR_ACCENT_PURPLE    0x818CF8 /* Futuristic indigo-purple */
 #define GFX_COLOR_ACCENT_CYAN      0x2DD4BF /* Neon teal accent */
+#define GFX_COLOR_ACCENT_GREEN     0x22C55E /* Vibrant emerald green */
 #define GFX_COLOR_WINDOW_BG        0x0B1120 /* Dark slate window background */
 #define GFX_COLOR_WINDOW_BORDER    0x334155 /* Window border frame */
 #define GFX_COLOR_TITLEBAR_ACTIVE  0x1E293B /* Focused window titlebar */

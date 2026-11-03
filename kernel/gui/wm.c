@@ -12,10 +12,24 @@ static struct {
     int focused_id;
 } g_wm = {0};
 
+static bool g_wm_initialized = false;
+
+bool wm_is_initialized(void) {
+    return g_wm_initialized;
+}
+
+int wm_get_window_count(void) {
+    return g_wm.window_count;
+}
+
 void wm_init(void) {
+    if (g_wm_initialized) {
+        return; /* Initialize window manager exactly once */
+    }
     kmemset(&g_wm, 0, sizeof(g_wm));
     g_wm.next_id = 1;
     g_wm.focused_id = 0;
+    g_wm_initialized = true;
 }
 
 wm_window_t *wm_find_by_id(int id) {
@@ -89,7 +103,7 @@ wm_window_t *wm_window_at(int x, int y) {
     return NULL;
 }
 
-wm_window_t *wm_create_window_owner(const char *title, int x, int y, int w, int h, u32 owner_pid) {
+wm_window_t *wm_create_window_owner(const char *title, int x, int y, int w, int h, pid_t owner_pid) {
     if (g_wm.window_count >= WM_MAX_WINDOWS) {
         kprintf("[WM WARN] Maximum window limit (%d) reached.\n", WM_MAX_WINDOWS);
         return NULL;
@@ -180,7 +194,7 @@ bool wm_window_pop_event(wm_window_t *win, input_event_t *out_ev) {
     return true;
 }
 
-void wm_destroy_all_for_pid(u32 pid) {
+void wm_destroy_all_for_pid(pid_t pid) {
     if (pid == 0) return;
     bool found = true;
     while (found) {
@@ -410,20 +424,22 @@ bool wm_self_test(void) {
     /* 1. Test Window Creation */
     kprintf("[WM TEST] 1. Creating windows and verifying properties...\n");
     wm_window_t *w1 = wm_create_window("Window 1", 100, 100, 300, 200);
-    if (!w1 || w1->id != 1 || w1->width != 300 || w1->height != 200) {
+    if (!w1 || w1->width != 300 || w1->height != 200) {
         kprintf("[WM TEST FAIL] Failed to create Window 1 correctly!\n");
         return false;
     }
+    int id1 = w1->id;
     if (!w1->focused) {
         kprintf("[WM TEST FAIL] Newly created window is not focused!\n");
         return false;
     }
 
     wm_window_t *w2 = wm_create_window("Window 2", 150, 150, 400, 250);
-    if (!w2 || w2->id != 2) {
+    if (!w2) {
         kprintf("[WM TEST FAIL] Failed to create Window 2!\n");
         return false;
     }
+    int id2 = w2->id;
     if (!w2->focused || w1->focused) {
         kprintf("[WM TEST FAIL] Z-order focus mismatch after creating Window 2!\n");
         return false;
@@ -432,11 +448,11 @@ bool wm_self_test(void) {
 
     /* 2. Test Z-Order and Focus Elevation */
     kprintf("[WM TEST] 2. Testing Z-order elevation (bring to front)...\n");
-    w1 = wm_find_by_id(1);
+    w1 = wm_find_by_id(id1);
     wm_bring_to_front(w1);
-    w1 = wm_find_by_id(1);
-    w2 = wm_find_by_id(2);
-    if (!w1 || !w2 || !w1->focused || w2->focused || g_wm.windows[g_wm.window_count - 1].id != 1) {
+    w1 = wm_find_by_id(id1);
+    w2 = wm_find_by_id(id2);
+    if (!w1 || !w2 || !w1->focused || w2->focused || g_wm.windows[g_wm.window_count - 1].id != id1) {
         kprintf("[WM TEST FAIL] Failed to bring Window 1 to front of Z-order!\n");
         return false;
     }
@@ -445,7 +461,7 @@ bool wm_self_test(void) {
     /* 3. Test Hit Testing */
     kprintf("[WM TEST] 3. Testing window coordinate hit testing...\n");
     wm_window_t *hit = wm_window_at(120, 120);
-    if (!hit || hit->id != 1) {
+    if (!hit || hit->id != id1) {
         kprintf("[WM TEST FAIL] Hit testing returned incorrect window!\n");
         return false;
     }
@@ -458,7 +474,7 @@ bool wm_self_test(void) {
         .mouse = { .x = 120, .y = 110, .buttons = MOUSE_BTN_LEFT }
     };
     wm_handle_input_event(&md);
-    w1 = wm_find_by_id(1);
+    w1 = wm_find_by_id(id1);
     if (!w1 || !w1->is_dragging) {
         kprintf("[WM TEST FAIL] Titlebar click did not initiate drag!\n");
         return false;
@@ -469,7 +485,7 @@ bool wm_self_test(void) {
         .mouse = { .x = 180, .y = 170, .buttons = MOUSE_BTN_LEFT }
     };
     wm_handle_input_event(&mm);
-    w1 = wm_find_by_id(1);
+    w1 = wm_find_by_id(id1);
     if (!w1 || w1->x != 160 || w1->y != 160) {
         kprintf("[WM TEST FAIL] Window dragging did not update coordinates accurately!\n");
         return false;
@@ -480,7 +496,7 @@ bool wm_self_test(void) {
         .mouse = { .x = 180, .y = 170, .buttons = 0 }
     };
     wm_handle_input_event(&mu);
-    w1 = wm_find_by_id(1);
+    w1 = wm_find_by_id(id1);
     if (!w1 || w1->is_dragging) {
         kprintf("[WM TEST FAIL] Mouse up did not terminate drag!\n");
         return false;
@@ -489,13 +505,13 @@ bool wm_self_test(void) {
 
     /* 5. Test Window Destruction & Resource Cleanup */
     kprintf("[WM TEST] 5. Testing window destruction and resource cleanup...\n");
-    w1 = wm_find_by_id(1);
+    w1 = wm_find_by_id(id1);
     wm_destroy_window(w1);
-    if (g_wm.window_count != 1 || wm_find_by_id(1) != NULL) {
+    if (g_wm.window_count != 1 || wm_find_by_id(id1) != NULL) {
         kprintf("[WM TEST FAIL] Window 1 destruction did not clean up window list!\n");
         return false;
     }
-    w2 = wm_find_by_id(2);
+    w2 = wm_find_by_id(id2);
     if (!w2 || !w2->focused) {
         kprintf("[WM TEST FAIL] Focus was not automatically passed to next window!\n");
         return false;

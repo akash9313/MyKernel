@@ -6,6 +6,7 @@
 #include <kernel/kprintf.h>
 #include <kernel/mem.h>
 #include <kernel/browser.h>
+#include <kernel/terminal.h>
 
 static struct {
     bool initialized;
@@ -14,7 +15,37 @@ static struct {
     int screen_h;
 } g_desktop = {0};
 
+static desktop_lifecycle_state_t g_desktop_lifecycle = DESKTOP_STATE_BOOTING;
+
+desktop_lifecycle_state_t desktop_get_lifecycle_state(void) {
+    return g_desktop_lifecycle;
+}
+
+void desktop_set_lifecycle_state(desktop_lifecycle_state_t state) {
+    g_desktop_lifecycle = state;
+}
+
+bool desktop_is_ready(void) {
+    return g_desktop_lifecycle == DESKTOP_STATE_READY;
+}
+
+bool desktop_is_initialized(void) {
+    return g_desktop.initialized;
+}
+
 void desktop_init(void) {
+    if (g_desktop.initialized) {
+        return; /* Initialize desktop shell exactly once */
+    }
+
+    if (!gfx_is_available() || !wm_is_initialized()) {
+        kprintf("[DESKTOP ERROR] Prerequisites not met (GFX or WM not ready)\n");
+        desktop_set_lifecycle_state(DESKTOP_STATE_FAILED);
+        return;
+    }
+
+    desktop_set_lifecycle_state(DESKTOP_STATE_GUI_INITIALIZING);
+
     gfx_surface_t *bb = gfx_get_backbuffer();
     g_desktop.screen_w = bb ? bb->width : 1024;
     g_desktop.screen_h = bb ? bb->height : 768;
@@ -56,6 +87,12 @@ static void render_desktop_background(gfx_surface_t *bb) {
     gfx_draw_rect(bb, 24, 230, 48, 48, GFX_COLOR_ACCENT_CYAN);
     gfx_draw_string(bb, 38, 246, "WB", GFX_COLOR_TEXT_PRIMARY, 0, true);
     gfx_draw_string(bb, 10, 282, "AstraBrowser", GFX_COLOR_TEXT_PRIMARY, 0, true);
+
+    /* Icon 4: AstraOS Terminal */
+    gfx_fill_rect(bb, 24, 310, 48, 48, GFX_COLOR_TITLEBAR_ACTIVE);
+    gfx_draw_rect(bb, 24, 310, 48, 48, GFX_COLOR_ACCENT_GREEN);
+    gfx_draw_string(bb, 38, 326, "TM", GFX_COLOR_TEXT_PRIMARY, 0, true);
+    gfx_draw_string(bb, 18, 362, "Terminal", GFX_COLOR_TEXT_PRIMARY, 0, true);
 }
 
 static void render_taskbar(gfx_surface_t *bb) {
@@ -76,6 +113,7 @@ static void render_taskbar(gfx_surface_t *bb) {
     gfx_draw_string(bb, 102, tb_y + 10, "[Editor]", GFX_COLOR_TEXT_MUTED, 0, true);
     gfx_draw_string(bb, 172, tb_y + 10, "[Files]", GFX_COLOR_TEXT_MUTED, 0, true);
     gfx_draw_string(bb, 236, tb_y + 10, "[Browser]", GFX_COLOR_TEXT_MUTED, 0, true);
+    gfx_draw_string(bb, 314, tb_y + 10, "[Term]", GFX_COLOR_TEXT_MUTED, 0, true);
 
     /* System Status Area (Right side): APIC Timer Ticks & RAM Stats */
     struct pmm_stats st;
@@ -116,7 +154,7 @@ static void render_start_menu(gfx_surface_t *bb) {
     if (!g_desktop.start_menu_open) return;
 
     int menu_w = 180;
-    int menu_h = 156;
+    int menu_h = 182;
     int menu_x = 4;
     int menu_y = bb->height - WM_TASKBAR_HEIGHT - menu_h - 4;
 
@@ -131,7 +169,8 @@ static void render_start_menu(gfx_surface_t *bb) {
     gfx_draw_string(bb, menu_x + 16, menu_y + 38, "> Text Editor", GFX_COLOR_TEXT_PRIMARY, 0, true);
     gfx_draw_string(bb, menu_x + 16, menu_y + 64, "> File Manager", GFX_COLOR_TEXT_PRIMARY, 0, true);
     gfx_draw_string(bb, menu_x + 16, menu_y + 90, "> AstraBrowser", GFX_COLOR_ACCENT_CYAN, 0, true);
-    gfx_draw_string(bb, menu_x + 16, menu_y + 116, "> System About", GFX_COLOR_TEXT_PRIMARY, 0, true);
+    gfx_draw_string(bb, menu_x + 16, menu_y + 116, "> AstraOS Terminal", GFX_COLOR_ACCENT_GREEN, 0, true);
+    gfx_draw_string(bb, menu_x + 16, menu_y + 142, "> System About", GFX_COLOR_TEXT_PRIMARY, 0, true);
 }
 
 void desktop_render(void) {
@@ -193,10 +232,17 @@ void desktop_handle_event(const input_event_t *ev) {
             return;
         }
 
+        /* Click on Quick Launch: [Term] */
+        if (ev->mouse.x >= 314 && ev->mouse.x <= 374 &&
+            ev->mouse.y >= tb_y + 4 && ev->mouse.y <= tb_y + 32) {
+            app_terminal_launch();
+            return;
+        }
+
         /* Check Start Menu Clicks */
         if (g_desktop.start_menu_open) {
             int menu_w = 180;
-            int menu_h = 156;
+            int menu_h = 182;
             int menu_x = 4;
             int menu_y = g_desktop.screen_h - WM_TASKBAR_HEIGHT - menu_h - 4;
 
@@ -215,6 +261,10 @@ void desktop_handle_event(const input_event_t *ev) {
                     g_desktop.start_menu_open = false;
                     return;
                 } else if (ev->mouse.y >= menu_y + 112 && ev->mouse.y <= menu_y + 136) {
+                    app_terminal_launch();
+                    g_desktop.start_menu_open = false;
+                    return;
+                } else if (ev->mouse.y >= menu_y + 138 && ev->mouse.y <= menu_y + 162) {
                     /* System About */
                     g_desktop.start_menu_open = false;
                     return;
@@ -234,6 +284,9 @@ void desktop_handle_event(const input_event_t *ev) {
                 return;
             } else if (ev->mouse.y >= 230 && ev->mouse.y <= 295) {
                 app_browser_launch("file:///www/index.html");
+                return;
+            } else if (ev->mouse.y >= 310 && ev->mouse.y <= 375) {
+                app_terminal_launch();
                 return;
             }
         }
@@ -278,5 +331,54 @@ bool desktop_self_test(void) {
 
     kprintf("[DESKTOP TEST] All Desktop Shell tests passed successfully!\n");
     kprintf("ASTRA_DESKTOP_OK\n\n");
+    return true;
+}
+
+bool desktop_test_user_launch(void) {
+    kprintf("\n[DESKTOP TEST] Verifying User-Initiated Application Launch and Clean Teardown...\n");
+
+    /* 1. Assert initial state: 0 autostart windows */
+    if (wm_get_window_count() != 0) {
+        kprintf("[DESKTOP TEST FAIL] Unexpected autostart windows present! Count=%d\n", wm_get_window_count());
+        return false;
+    }
+
+    /* 2. Simulate user click on desktop shortcut: Text Editor (x=38, y=86) */
+    input_event_t click_shortcut = {
+        .type = INPUT_EVENT_MOUSE_DOWN,
+        .mouse = { .x = 38, .y = 86, .buttons = MOUSE_BTN_LEFT }
+    };
+    desktop_handle_event(&click_shortcut);
+
+    if (wm_get_window_count() != 1) {
+        kprintf("[DESKTOP TEST FAIL] User shortcut click did not open application! Count=%d\n", wm_get_window_count());
+        return false;
+    }
+
+    wm_window_t *w = wm_get_focused();
+    if (!w) {
+        kprintf("[DESKTOP TEST FAIL] Opened application window is not focused!\n");
+        return false;
+    }
+    kprintf("  PASS: Text Editor launched on user shortcut click (Window ID %d).\n", w->id);
+
+    /* 3. Simulate user click on window Close [X] button (w->x + w->width - 12, w->y + 12) */
+    input_event_t click_close = {
+        .type = INPUT_EVENT_MOUSE_DOWN,
+        .mouse = { .x = w->x + w->width - 12, .y = w->y + 12, .buttons = MOUSE_BTN_LEFT }
+    };
+    wm_handle_input_event(&click_close);
+
+    if (wm_get_window_count() != 0) {
+        kprintf("[DESKTOP TEST FAIL] Close button failed to destroy application window! Count=%d\n", wm_get_window_count());
+        return false;
+    }
+    kprintf("  PASS: Application cleanly closed upon user request; window count returned to 0.\n");
+
+    /* 4. Composite pass to restore clean desktop */
+    desktop_render();
+
+    kprintf("[DESKTOP TEST] User application launch policy verified successfully!\n");
+    kprintf("ASTRA_USER_LAUNCH_ONLY_OK\n\n");
     return true;
 }

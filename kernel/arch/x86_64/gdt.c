@@ -1,20 +1,9 @@
 #include "gdt.h"
 #include <kernel/kprintf.h>
 #include <kernel/panic.h>
+#include <kernel/smp.h>
 
-struct __attribute__((packed)) gdt_entry {
-    u16 limit_low;
-    u16 base_low;
-    u8  base_middle;
-    u8  access;
-    u8  granularity;
-    u8  base_high;
-};
 
-struct __attribute__((packed)) gdt_pointer {
-    u16 limit;
-    u64 base;
-};
 
 static struct gdt_entry g_gdt[7];
 static struct gdt_pointer g_gdtr;
@@ -123,5 +112,9 @@ void tss_init(u64 ist1_stack_top) {
 }
 
 void tss_set_rsp0(u64 rsp0) {
-    g_tss.rsp0 = rsp0;
+    if (g_smp_initialized) {
+        smp_set_rsp0(rsp0);
+    } else {
+        g_tss.rsp0 = rsp0;
+    }
 }

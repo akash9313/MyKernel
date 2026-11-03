@@ -1,0 +1,146 @@
+<USER_REQUEST>
+# AstraOS — Boot Performance Optimization, Desktop Stabilization & Session Management
+
+## Workspace
+`C:\Users\Akash\Documents\MyKernel`
+
+## Primary Objective
+
+Improve AstraOS startup performance and desktop reliability.
+
+Current problems:
+1. VirtualBox startup takes approximately 5–6 minutes.
+2. Desktop sometimes appears during the middle of boot execution.
+3. The final desktop is sometimes incomplete or partially initialized.
+4. Applications such as Text Editor and other windows open automatically even though the user did not request them.
+5. Desktop/session startup is inconsistent.
+
+### Performance Target
+
+Target: **10–15 seconds from VirtualBox VM start to a fully usable desktop**, under a documented and repeatable VirtualBox configuration.
+
+Do not fake this result by:
+- Skipping essential hardware initialization.
+- Disabling memory protection.
+- Removing necessary subsystem checks.
+- Hiding boot errors.
+- Starting the desktop before its dependencies are ready.
+- Replacing real initialization with static screenshots or mock interfaces.
+- Reporting desktop-ready before the desktop is actually interactive.
+
+If the target cannot be achieved safely, report the measured time and the remaining bottleneck.
+
+---
+
+# PHASE 1 — Baseline Measurement and Root-Cause Investigation
+
+Do not modify code before collecting baseline evidence.
+
+Inspect:
+
+- `kernel/kernel.c`
+- `kernel/main.c`, if present.
+- `kernel/arch/x86_64/`
+- `kernel/drivers/`
+- `kernel/mem/`
+- `kernel/fs/`
+- `kernel/net/`
+- `kernel/gui/` or the actual GUI directory.
+- Window manager implementation.
+- Desktop initialization.
+- User application startup.
+- Scheduler and process creation.
+- Bootloader configuration.
+- VirtualBox test scripts.
+- `docs/architecture.md`
+- `docs/status.md`
+
+Identify the actual boot sequence.
+
+Instrument timestamps at these milestones:
+
+1. VM start.
+2. Bootloader entry.
+3. Kernel entry.
+4. Physical memory initialization.
+5. Virtual memory initializat
+<truncated 7631 bytes>
+g 173 qualification markers.
+- New boot and desktop tests.
+
+Ensure the optimizations do not break:
+- SMP.
+- Memory management.
+- TLB shootdowns.
+- Filesystem persistence.
+- Networking.
+- User process isolation.
+- GUI window ownership.
+- Existing security protections.
+
+Capture actual exit codes and final logs.
+
+---
+
+# PHASE 9 — Documentation
+
+Create:
+
+- `boot_performance_baseline.md`
+- `boot_performance_report.md`
+- `desktop_stability_report.md`
+
+Update:
+- `docs/architecture.md`
+- `docs/status.md`
+
+Document:
+- Original startup time.
+- Root cause of delays.
+- Every optimization.
+- Before/after timing.
+- Desktop lifecycle.
+- Application startup policy.
+- Known limitations.
+- Regression results.
+
+---
+
+# STRICT RULES
+
+- Audit first.
+- Preserve existing functionality.
+- Do not perform unrelated refactoring.
+- Do not disable security checks.
+- Do not use arbitrary delays to hide initialization problems.
+- Do not fake desktop readiness.
+- Do not automatically open applications.
+- Do not weaken existing tests.
+- Do not mark incomplete tests as PASS.
+- Keep rollback copies or use Git commits before risky changes.
+- If a change breaks an existing subsystem, fix it before proceeding.
+
+Use:
+PASS / FAIL / BLOCKED / NOT TESTED / NOT APPLICABLE.
+
+## Final Deliverable
+
+Provide:
+1. Root cause of the 5–6 minute startup.
+2. Before/after timing for each boot stage.
+3. Five-run VirtualBox timing results.
+4. Desktop flicker/duplicate initialization root cause and fix.
+5. Final desktop stability evidence.
+6. Application autostart audit and results.
+7. Full regression matrix.
+8. Remaining limitations.
+
+Do not claim the 10–15 second target is achieved unless the measured results demonstrate it.
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-11-03T13:10:33+05:30.
+
+The user's current state is as follows:
+Active Document: c:\Users\Akash\Documents\MyKernel\kernel\debug\kprintf.c (LANGUAGE_UNSPECIFIED)
+Cursor is on line: 17
+</ADDITIONAL_METADATA>

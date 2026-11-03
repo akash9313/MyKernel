@@ -894,9 +894,2236 @@ When a user click is detected within a clickable element's bounding box:
 - `ASTRA_DOM_EVENTS_OK`: Verified via in-engine unit test suite (`js_run_phase_t_self_tests`), asserting programmatic string assignment, function reference assignment, missing element `TypeError` handling, stale generation handle rejection, and state toggling.
 - `ASTRA_BROWSER_INTERACTIVE_OK`: Verified via end-to-end browser self-tests (`run_phase_t_self_tests`), asserting toolbar height coordinate discrimination, scrolled document hit-testing, button click dispatch, DOM text mutation, state counter increment, error recovery, link click handling, and reentrancy blocking.
 
+---
+
+## 32. Phase U: Browser Security Regression & Adversarial Testing
+
+### Objective & Security Posture
+Phase U audited AstraBrowser and AstraJS after introducing interactive DOM events and user callbacks. The audit prioritized adversarial resilience, hardware isolation guarantees, and regression prevention without expanding JavaScript language complexity or adding unsafe APIs.
+
+### Security Defenses Verified
+1. **Adversarial Syntax Containment**:
+   - Syntax edge cases (`+ + +;`, unclosed strings, unbalanced braces, trailing garbage) are safely contained by the parser.
+   - Identifier character sets strictly follow standard rules (`$` and `_` allowed as identifiers; operators cannot form valid identifiers).
+   - All parser exceptions record structured diagnostic messages in `b->status_text` (`[JS Error] ...`) without terminating the browser process or panicking the kernel.
+2. **Instruction Budget & Resource Bounds**:
+   - Infinite loops (`while (1) {}`) are cleanly halted upon consuming the 10,000 instruction budget.
+   - Call stack recursion is bounded to 16 frames.
+   - Batch mutation throttling prevents runaway DOM updates from flooding the layout and window manager pipeline.
+3. **Handle Stale Invalidation**:
+   - `doc_generation` guards prevent callbacks or variables from previous pages from modifying elements on newly loaded documents.
+4. **Preemption & Mutex Safety**:
+   - Fixed preemption race in `kernel/sched/sync.c:583` by guarding direct mutex ownership handoff assertions with `preempt_disable()` / `preempt_enable()`.
+
+### Verification Markers
+- `ASTRA_JS_ADVERSARIAL_OK`: Adversarial syntax, scoping, unclosed functions, and integer arithmetic validated.
+- `ASTRA_BROWSER_SECURITY_OK`: Empty callbacks, mutation throttling, boundary clicks, and stale handle invalidation verified.
+
+---
+
+## 33. Phase V: End-to-End Browser Networking & HTTPS Validation
+
+### Architectural Design & Process Isolation
+Phase V validates reliable, reproducible, end-to-end browser networking for both local HTTP and HTTPS web resources using AstraOS's existing architecture:
+- **Ring 3 Unprivileged Execution**: AstraBrowser runs entirely at CPL 3. It possesses no raw network hardware access and executes no privileged instructions.
+- **Syscall Gateway (`sys_net_fetch`)**: Network transactions are requested across the process boundary via syscall #31 (`sys_net_fetch(url, buf, max_len, &out_status)`). All user pointers, buffer lengths, and URLs are validated via `user_ptr_valid()` before being read or written by the kernel.
+- **Length-Bounded Memory Buffers**:
+  - `BROWSER_HTML_BUFFER_MAX` (32,768 bytes) in kernel memory.
+  - User-space buffers bounded to 16,383 bytes per resource fetch.
+  - URL length bounded to 256 bytes; hostnames bounded to 64 bytes; paths bounded to 160 bytes.
+- **Resource Lifecycle & Cleanup**:
+  - TCP sockets and TLS sessions are explicitly closed upon request completion (`Connection: close`) or error exit.
+  - Sockets are not leaked across repeated requests.
+
+### Networking & Cryptographic Stack
+1. **HTTP/1.1 Engine**:
+   - Supports GET requests with `Host`, `User-Agent: AstraBrowser/1.0`, `Connection: close`, and `Accept` headers.
+   - Preserves custom port numbers (e.g. `http://10.0.2.2:8000/`) when parsing and rebuilding fetch URLs.
+   - Parses HTTP status line (`HTTP/1.1 <code> <phrase>`) and extracts response headers and body separated by `\r\n\r\n`.
+   - Returns status codes (200, 404, 500, etc.) and renders server error response bodies in the browser window with descriptive status text.
+2. **TLS 1.3 Protocol Engine**:
+   - Operates strictly under RFC 8446 with `TLS_CHACHA20_POLY1305_SHA256` cipher suite.
+   - Ephemeral X25519 elliptic-curve Diffie-Hellman key exchange.
+   - Hardware entropy from CPU RDRAND/RDSEED.
+   - HKDF-SHA256 key schedule generating separate handshake and application secrets.
+3. **X.509 Certificate & Hostname Validation**:
+   - Parses OpenSSL X.509 DER certificates, extracting Subject Alternative Names (SANs) and Common Name (CN).
+   - Validates validity periods (`notBefore` and `notAfter`) against real-time system clock (`rtc_get_unix_time`).
+   - Validates hostname/IP against SANs and CN (`str_equals_ci`). Hostname mismatches are rejected with status 495 (`TLS_ERR_CERT_HOSTNAME_MISMATCH`).
+   - Verifies issuer CA signature using RSA-PKCS1-v1.5 and RSA-PSS with SHA-256 against embedded Root CA. Untrusted or forged certificates are rejected with status 495 (`TLS_ERR_CERT_INVALID` / `TLS_ERR_CERT_UNTRUSTED`).
+   - Certificate verification failures strictly abort the secure session and render a dedicated security error page, preventing unverified content from displaying as secure.
+
+### Automated Verification Markers
+- `ASTRA_BROWSER_NET_ISOLATION_OK`: Ring 3 user-space self-test verifying syscall pointer boundaries, buffer limits, unsupported scheme rejection (`ftp://`), malformed URL formatting, and local VFS page fetch.
+- `ASTRA_BROWSER_HTTP_FETCH_OK`: Live end-to-end HTTP navigation to host test server (`http://10.0.2.2:8000/`) yielding 200 OK and valid layout.
+- `ASTRA_BROWSER_HTTPS_OK`: Live end-to-end HTTPS navigation to host test server (`https://10.0.2.2:8443/`) establishing TLS 1.3, verifying test Root CA, and rendering secure content.
+
+## 34. Phase Y: Browser UX, Navigation, URL Validation & Shortcuts Architecture
+
+### Overview
+Phase Y enhances user experience, input usability, navigation history consistency, URL validation, and resource safety across both user-space (`user/browser_main.c`) and kernel desktop (`kernel/browser/app_browser.c`) browser implementations:
+1. **Address Bar Input & URL Sanitization**:
+   - Consistent address bar focus management: sets `input_cursor = strlen(input_url)` upon click and clears focus on navigation.
+   - Whitespace trimming and bounds enforcement (< 250 characters).
+   - Scheme auto-prefixing: leading `/` paths canonicalized to `file:///`; bare domain/IP inputs auto-prefixed with `http://`.
+   - Rejection of unsupported or dangerous pseudo-schemes (`javascript:`, `data:`, `ftp://`) before network dispatch.
+   - Render bounded HTML error pages for invalid URLs with a "Return to Home" link.
+2. **Navigation History Stack**:
+   - Strict 16-entry bounded history stack with non-duplicating semantics on Reload and repeated identical navigations.
+   - Branching navigation from history middle truncates forward entries and appends new branch.
+   - Separate `navigate_ex(url, record_history)` control so Back, Forward, and Reload operations restore states without corrupting or duplicating history.
+3. **URL Resolution & Relative Redirects**:
+   - Implementation of `browser_url_resolve` in both kernel and user-space engines.
+   - Resolves relative links, parent directory traversals (`../`), root paths (`/`), and fragment anchors (`#...`).
+   - Relative and root-relative HTTP/HTTPS 302 redirect locations resolved against base request URLs without breaking connections.
+4. **Keyboard Shortcuts & Usability**:
+   - `Enter`: Navigate to current address bar input and release focus.
+   - `Escape`: Cancel in-progress URL typing, restoring current page URL and clearing focus.
+   - `'r'` / `'R'` / `Ctrl+R`: Reload current page without duplicating history.
+   - `'h'` / `KEY_LEFT` / `Alt+Left`: Back in navigation history.
+   - `'l'` / `KEY_RIGHT` / `Alt+Right`: Forward in navigation history.
+   - `'k'` / `KEY_UP`: Scroll viewport up.
+   - `'j'` / `KEY_DOWN`: Scroll viewport down.
+5. **Resource Reclamation Across Navigations**:
+   - Static scratch buffers (`s_css_ext_buf`, `s_script_buf`, `s_img_file_buf`) replace repeated dynamic arena allocations during page layout, preventing memory arena exhaustion across prolonged browsing sessions.
+   - Deterministic reset of document DOM, stylesheets, and JavaScript VM generation (`doc_generation++`) on every page load to prevent stale callback or handle leaks.
+
+### Automated Verification Markers
+- `ASTRA_BROWSER_UX_OK`: Verified URL sanitization, scheme auto-prefixing, bounded history push/back/forward/reload deduplication, relative path and fragment URL resolution, 15+ successive page loads without arena exhaustion, HTTP error page generation, and keyboard navigation.
+
+---
+
+## 35. Phase Z: Browser Reliability, Resource Safety & Recovery Architecture
+
+### Overview
+Phase Z hardens AstraBrowser and AstraOS against resource leaks, parser boundary overruns, and unexpected network/protocol failures. Rather than introducing complex new rendering features, this phase establishes deterministic bounds, resource lifetime guarantees, and complete error recovery across both Ring 3 user space and kernel desktop environments.
+
+### Architectural Hardening & Resource Lifecycle
+1. **Zero-Leak Per-Page Bitmap Scratch Pool**:
+   - Replaced dynamic heap/arena allocations (`umalloc`) in `decode_bmp` with a dedicated 256 KiB static pixel scratch pool (`s_bmp_pixels[65536]`).
+   - The bump-pointer `s_bmp_pixels_used` resets to 0 on every page transition in `navigate_to()`.
+   - Image pixels are tied strictly to the document lifecycle. Navigating across hundreds of image-rich pages consumes **0 bytes of additional arena memory**.
+2. **Navigation Stress & History Stack Bounding**:
+   - Verified over 100 sequential navigations exercising Back, Forward, Reload, and branch forking.
+   - History stack strictly bounded to 16 entries with automatic oldest-entry shifting and forward-history truncation on branches.
+   - Arena allocation tracking confirms `g_arena_chunk_count` remains constant throughout 100 sequential navigations.
+3. **Parser Boundary Defenses**:
+   - **URL Length Bounds**: Enforces strict length checking (< 250 characters). URLs $\ge$ 250 characters are rejected safely with `"Error: URL exceeds limit"` without memory corruption.
+   - **Deep Markup Robustness**: Tested with 20+ levels of nested `<div>` and container tags. Parsed iteratively without recursion, preventing stack exhaustion.
+   - **Text Run Chunking**: Plain-text runs exceeding 128 bytes are chunked into contiguous `TAG_TEXT` nodes without buffer overflows.
+   - **Malformed BMP Rejection**: Non-standard magic bytes, width/height exceeding 512, negative dimension overflow, and header truncations are rejected safely with `NULL`, gracefully falling back to alt-text placeholders.
+   - **CSS Bounded Rules**: Selector lengths bounded to 31 chars; rule count capped at `MAX_RULES` (64).
+   - **JavaScript Instruction Budget**: Infinite loops (`while (1) {}`) cleanly terminate with `JS_ERR_TIMEOUT` without blocking the GUI event loop or kernel scheduler.
+4. **Document Generation Guards**:
+   - Document generation integer (`doc_generation`) increments monotonically on each page navigation.
+   - DOM handles retrieved in previous document generations are invalidated. Calling `browser_js_dom_set_text_content` or `browser_js_dom_get_text_content` with a stale generation is rejected.
+5. **Systematic Error Recovery**:
+   - Failed operations (invalid scheme `ftp://`, 404 Not Found, 502 Bad Gateway, 508 Redirect Loop, 525 TLS Handshake Failure) render structured error pages with navigation links to `file:///www/index.html`.
+   - After any failed operation, the browser immediately restores valid state upon navigating to a valid page:
+     - Document height and scroll position reset.
+     - New layout boxes and DOM nodes are populated.
+     - Back/Forward history navigation functions correctly.
+     - Interactive DOM events and event handlers execute without state pollution.
+
+### Automated Verification Markers
+- `ASTRA_BROWSER_RELIABILITY_OK`: User-space self-test verifying 100 sequential navigations, zero arena leakage, boundary URL rejection, deep HTML parsing, long text chunking, BMP rejection, JS timeout containment, stale handle invalidation, and systematic error recovery.
+- Host test suite: 16/16 adversarial networking and stress tests verified (`tests/test_browser_networking.py`).
+- VirtualBox 7 EFI: 84/84 hardware hypervisor markers verified without regressions.
+
+---
+
+## 36. Phase AA: Browser Tabs, Bookmarks & Persistent Storage Abstraction
+
+### Overview
+Phase AA extends AstraOS and AstraBrowser with multi-tab browsing, bounded bookmark management, and a versioned binary storage abstraction. Continuing from Phase Z's reliability baseline, this phase implements isolated tab sessions, cross-tab DOM handle invalidation, persistent serialization formats, and keyboard navigation shortcuts while strictly respecting kernel resource boundaries (`PROCESS_MAX_MAPPED_PAGES = 1024`).
+
+### Architectural Implementation
+
+1. **Bounded Tab Management (`MAX_TABS = 4`)**:
+   - The browser maintains a maximum of 4 concurrent tabs. Attempts to create additional tabs return `-1` and log a user status warning without crashing.
+   - Each tab structure (`browser_tab_t`) encapsulates independent navigation state:
+     - Independent URL and address bar buffer (`current_url[256]`, `input_url[256]`, `input_cursor`, `input_focused`).
+     - Independent 16-entry navigation history stack (`history[16][256]`, `history_index`, `history_count`).
+     - Independent DOM node pool (`nodes`), layout boxes (`boxes`), stylesheet (`stylesheet`), and HTML source buffer (`html_buf`).
+     - Independent JavaScript VM instance (`js_vm_t *doc_vm`), preventing script variable or prototype pollution across tabs.
+     - Independent scrolling offsets (`scroll_y`, `doc_height`) and form control state (`controls[16]`, `control_count`, `focused_control_id`).
+
+2. **Cross-Tab DOM Handle Invalidation**:
+   - Each tab is initialized with a distinct, non-overlapping document generation base (`doc_generation = (tab_idx + 1) * 1000`).
+   - Every document navigation advances the tab's `doc_generation` by 1.
+   - When switching tabs, active tab state is saved and loaded with zero heap reallocations. DOM handles obtained in Tab $A$ are immediately rejected in Tab $B$ because `doc_gen != b->doc_generation`, preventing cross-tab script execution or DOM tampering.
+
+3. **Tab Lifecycle & Selection Rules**:
+   - **Creation (`tab_create`)**: Allocates next tab slot up to `MAX_TABS`, initializes independent VM and document pools, switches focus to the new tab, and loads the target URL (defaulting to `file:///www/index.html`).
+   - **Closure (`tab_close`)**: Closes the specified tab, shifts subsequent tabs down to keep slots contiguous, frees/reclaims active resources, and adjusts the active tab index:
+     - Closing the active tab selects the right-adjacent tab or previous tab.
+     - Closing the final remaining tab (count = 1) resets that tab to `file:///www/index.html` with cleared history and scroll position.
+   - **Selection (`tab_select`)**: Synchronizes the currently active tab state to `b->tabs[b->active_tab_idx]` via `tab_save_active()` and loads the newly selected tab state via `tab_load_active()`.
+
+4. **Bounded Bookmark Management (`MAX_BOOKMARKS = 32`)**:
+   - In-memory bookmark store bounded to 32 entries.
+   - Supports addition (`bookmark_add`), deletion (`bookmark_remove`), lookup (`bookmark_find`), and navigation (`bookmark_open`).
+   - **Deduplication**: Adding an existing URL updates the title and timestamp rather than duplicating entries.
+   - **URL Validation**: Rejects unsafe schemes (`javascript:`, `data:`) and malformed URL structures.
+
+5. **Versioned Binary Serialization Format**:
+   - Persisted bookmark data is formatted into a compact, endian-safe binary structure:
+     - **Header (16 bytes)**:
+       - `magic` (4 bytes): `0x41535442` (`"ASTB"`)
+       - `version` (2 bytes): `1`
+       - `entry_size` (2 bytes): `sizeof(bookmark_disk_entry_t)` (320 bytes)
+       - `count` (4 bytes): Number of active bookmarks (0..32)
+       - `checksum` (4 bytes): Fletcher-32 checksum computed across the entry payload
+     - **Payload (N * 320 bytes)**:
+       - `url` (256 bytes, null-terminated)
+       - `title` (64 bytes, null-terminated)
+   - **Checksum Verification**: Deserialization recomputes the Fletcher-32 checksum over the payload; corrupted bytes, truncated files, or mismatched magic words are safely rejected without memory faults.
+
+6. **Storage Persistence Abstraction & Limitations**:
+   - File persistence is abstracted via `bookmarks_save()` and `bookmarks_load()` targeting `/etc/bookmarks.bin`.
+   - **Status**: In-memory storage, serialization, and deserialization are fully verified (`PASS`). Long-term cold-reboot persistence to disk is reported as `BLOCKED/NOT TESTED` due to the read-only initramfs VFS root filesystem constraint.
+
+7. **User Interface & Keyboard Navigation**:
+   - **Tab Bar (24px)**: Rendered at the top of the browser window (`y = 0..23`). Active tab is highlighted; tabs include title labels and `[x]` close hitboxes. A `[+]` button creates new tabs.
+   - **Toolbar (30px)**: Rendered at `y = 24..53` with navigation buttons `[<]`, `[>]`, `[R]`, address bar input, and bookmark toggle `[*]`.
+   - **Viewport (362px)**: Rendered from `y = 54..415`.
+   - **Status Bar (24px)**: Rendered from `y = 416..439`.
+   - **Keyboard Shortcuts**:
+     - `'t'` / `Ctrl+T`: Open new tab.
+     - `'w'` / `Ctrl+W`: Close current tab.
+     - `'1'` .. `'4'`: Direct tab selection (Tabs 1 through 4).
+     - `'b'` / `Ctrl+B`: Toggle bookmark for current page URL.
+
+### Automated Verification Markers
+- `ASTRA_BROWSER_TABS_BOOKMARKS_OK`: User-space self-test verifying:
+  1. Tab creation and bounded limit enforcement (`MAX_TABS = 4`).
+  2. Tab isolation and independent state retention across all tabs.
+  3. Cross-tab DOM handle invalidation and generation separation.
+  4. Tab switching and active selection.
+  5. Tab closure and selection index adjustment.
+  6. Closing the last remaining tab resets to home (`file:///www/index.html`).
+  7. Bookmark addition and bounded capacity (`MAX_BOOKMARKS = 32`).
+  8. Bookmark deduplication and URL validation (rejection of `javascript:`, `data:`).
+  9. Bookmark removal, lookup, and navigation.
+  10. Versioned binary serialization, Fletcher-32 checksum validation, and corruption rejection.
+- Host test suite: 17/17 adversarial networking and multi-session tab stress tests verified (`tests/test_browser_networking.py`).
+
+---
+
+## 37. Phase AB — AstraOS Writable VFS & Durable Browser Storage
+
+### Architectural Overview
+Phase AB establishes a hardened, memory-safe write path across the AstraOS Virtual File System (VFS) and Syscall layer, fixes the browser bookmark persistence pipeline, and honestly audits reboot durability constraints:
+
+1. **VFS Write Path Infrastructure**:
+   - `vfs_ops_t` is extended with a bounded `write` function pointer:
+     ```c
+     ssize_t (*write)(vfs_node_t *node, const void *buf, size_t count, size_t offset);
+     ```
+   - Public VFS interfaces `vfs_write(vfs_fd_t fd, const void *buf, size_t count)` and `vfs_pwrite(vfs_fd_t fd, const void *buf, size_t count, size_t offset)` dispatch writes safely with bounds checking and offset updates.
+   - Node-level write permission checks in `vfs_open()`: nodes lacking write support (e.g. `initramfs` read-only nodes) explicitly reject `VFS_O_WRONLY` and `VFS_O_RDWR` with `VFS_ERR_READ_ONLY` (-6).
+
+2. **File Descriptor Namespace Separation**:
+   - Descriptors `0`, `1`, `2` are reserved for standard process I/O streams (`stdin`, `stdout`, `stderr`).
+   - `vfs_open()` allocates VFS descriptors strictly starting at index `3` up to `VFS_MAX_FDS - 1`, preventing descriptor collisions between console outputs and file descriptors.
+
+3. **Syscall ABI Write Path & Security Boundary**:
+   - `sys_write(int fd, const char *buf, size_t count)` enforces strict verification:
+     - Zero-byte writes return `0`.
+     - `count > SYSCALL_MAX_WRITE_LEN` returns `-EINVAL`.
+     - `user_ptr_valid(buf, count, false)` validates that the buffer resides completely within user-space readable memory with mapped PML4 pages. Kernel pointers fail closed with `-EFAULT`.
+     - `fd == 1 || fd == 2`: writes directly to COM1 serial and framebuffer console.
+     - `fd >= 3 && fd < VFS_MAX_FDS`: delegates to `vfs_write((vfs_fd_t)fd, buf, count)`.
+     - Invalid descriptors return `-EBADF`.
+   - `sys_read(int fd, char *buf, size_t count)` enforces `fd >= 3 && fd < VFS_MAX_FDS`, returning `-EBADF` on non-file descriptors.
+
+4. **Hardened Bookmark Binary Storage (`ASTB` v1)**:
+   - Preserves versioned binary structure with magic `0x41535442` (`"ASTB"`), `version = 1`, max 32 bookmarks.
+   - Deserialization enforces strict URL scheme sanitization: only `file:///`, `http://`, and `https://` are permitted. Dangerous schemes (`javascript:`, `data:`, `vbscript:`) are rejected.
+   - Fletcher-32 checksum verification protects against bit-flips and data tampering.
+   - **Removal of Silent Fallback**: In `user/browser_main.c:bookmarks_save()`, if `sys_open()` or `sys_write()` fails, the function propagates the real negative error code rather than fabricating success.
+
+5. **Storage Durability Analysis & Blocker Documentation**:
+   - In-memory VFS and bookmark serialization/deserialization pass 10/10 tests in `tests/test_bookmark_storage.py`.
+   - **Reboot Durability Status: BLOCKED**. Neither QEMU (`-drive file=fat:rw:{ESP}`) nor VirtualBox (`astraos.iso` SATA DVD-ROM) provides an attached writable block device supported by an AstraOS block driver. Durable persistence across cold machine reboots is honestly documented as blocked pending a block device driver layer (ATA/AHCI) and persistent filesystem driver (FAT32/ext2).
+
+### Verification Summary
+- `tests/test_bookmark_storage.py`: **PASS** (10/10 host tests: serialization, checksum, 32-entry capacity, scheme rejection, header corruption, payload tampering, truncation, deduplication, removal compaction, cold-restart simulation).
+- `tests/test_vfs_host.py`: **PASS** (5/5 VFS host unit tests).
+- `tests/test_browser_networking.py`: **PASS** (17/17 adversarial networking tests).
+- `tests/test_js_fuzz.py`: **PASS** (500 iterations, 0 crashes).
+- `tests/test_crypto_host.py`: **PASS** (Known-answer vectors & X.509 cert validation).
+- QEMU normal mode: **PASS**.
+- QEMU nofb mode: **PASS**.
+- Full 16-configuration test matrix: **PASS** (16/16 configurations).
+- Oracle VirtualBox 7 EFI: **PASS** (85/85 boot markers verified).
+
+---
+
+## 38. Phase AC — AstraOS Persistent Storage Backend
+
+### Architectural Storage Audit & Ground Truth
+A rigorous audit of the AstraOS codebase and virtualization environments established the following physical and architectural realities:
+
+1. **Kernel Driver Layer Audit**:
+   - AstraOS currently possesses **zero block device drivers**. There is no ATA, AHCI, NVMe, SCSI, or VirtIO-block driver in `kernel/drivers/` or anywhere else in the tree.
+   - The only PCI driver implemented in AstraOS is the Intel 82540EM Ethernet controller (`kernel/drivers/e1000.c`).
+   - AstraOS has no partition table parser (MBR or GPT) and no disk-oriented filesystem driver (FAT12/16/32, ext2/3/4, or exFAT).
+
+2. **QEMU Storage Configuration Audit**:
+   - QEMU is invoked with `-drive file=fat:rw:{ESP},format=raw`.
+   - This points QEMU's virtual VVFAT driver directly at the EFI System Partition containing `BOOTX64.EFI`, `limine.conf`, `kernel.elf`, and `initramfs.bin`.
+   - Writing raw sectors directly to this device without a cluster-aware FAT driver risks corrupting the live bootloader and kernel binaries or crashing QEMU's internal VVFAT helper. Furthermore, because AstraOS has no block driver, the raw device is not even accessible via any kernel interface.
+
+3. **VirtualBox Storage Configuration Audit**:
+   - The VirtualBox test harness (`scripts/test_vbox.py`) attaches `astraos.iso` to a SATA DVD-ROM drive (`--type dvddrive`).
+   - ISO-9660 DVD media is inherently read-only hardware. There is no writable virtual hard drive attached to the test VM.
+
+4. **Strategic Architectural Decision: Option A Selected**:
+   - **Option A (Bounded In-Memory Mutable VFS Store / RAMFS)** was selected and implemented.
+   - Genuine cold-reboot persistence is **formally documented as BLOCKED** pending block driver and block filesystem prerequisites.
+   - Zero fabricated persistence: AstraOS honestly distinguishes between volatile runtime storage and durable disk storage.
+
+---
+
+### Mutable VFS Node Store Implementation
+
+1. **VFS Open & Write Flags and Error Codes**:
+   - Added standard POSIX-aligned creation, truncation, and append flags:
+     - `VFS_O_CREAT` (`0x0040`)
+     - `VFS_O_TRUNC` (`0x0200`)
+     - `VFS_O_APPEND` (`0x0400`)
+   - Added specific VFS error codes:
+     - `VFS_ERR_EXISTS` (`-13`) mapped to syscall error `-EEXIST` (`17`)
+     - `VFS_ERR_NOSPC` (`-14`) mapped to syscall error `-ENOSPC` (`28`)
+
+2. **RAMFS Storage Architecture**:
+   - Implemented `vfs_mutable_file_t g_mutable_files[VFS_MAX_MUTABLE_FILES]` within `kernel/fs/vfs.c`:
+     - `VFS_MAX_MUTABLE_FILES = 8`
+     - `VFS_MAX_FILE_SIZE = 16384` (16 KiB per file)
+     - `VFS_TOTAL_MUTABLE_CAPACITY = 65536` (64 KiB system quota)
+   - Bounded mutable file operations (`ramfs_ops`):
+     - `open`: Validates file existence and flags. Supports creating new mutable files when `VFS_O_CREAT` is passed.
+     - `write`: Bounds offset and count strictly against `VFS_MAX_FILE_SIZE` and system-wide quota.
+     - `read`: Reads from in-memory payload buffer up to current file size.
+     - `stat`: Populates size, type, and permissions.
+   - Truncation & Append:
+     - `VFS_O_TRUNC` resets file size and reclaims quota.
+     - `VFS_O_APPEND` automatically positions file offset to current file size upon open.
+   - Hierarchy & Lookup Priority:
+     - `vfs_lookup()` checks mutable files first. If a mutable file matches, it takes precedence. Otherwise, lookup falls back to the read-only `initramfs`.
+     - Read-only `initramfs` nodes reject `VFS_O_CREAT | VFS_O_EXCL`, `VFS_O_WRONLY`, and `VFS_O_TRUNC` with `VFS_ERR_READ_ONLY` (`-6`).
+
+3. **Kernel Memory Footprint Protection**:
+   - AstraOS places its kernel stack guard page at `0xffffffff80400000ULL` (`KERNEL_GUARD_PAGE_VA`).
+   - The kernel binary load base is `0xffffffff80200000ULL`. The total kernel image size (`.text + .rodata + .data + .bss`) must strictly not collide with the guard page (under 2.0 MiB).
+   - Right-sizing the RAMFS buffer table to 8 files of 16 KiB keeps the kernel BSS footprint safe at ~130 KiB total, yielding a kernel ELF size of ~1.16 MiB and leaving >800 KiB of safety headroom below the guard page.
+
+---
+
+### Browser Bookmark Storage Integration
+
+1. **User-Space Bookmark Persistence**:
+   - `user/browser_main.c` connects `bookmarks_save()` to the writable VFS:
+     - Invokes `sys_open("/etc/bookmarks.bin", VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC)`.
+     - Serializes the active bookmark list into versioned `ASTB` v1 format (magic `0x41535442`, checksum, 32-entry capacity).
+     - Writes the buffer via `sys_write()` and closes the descriptor.
+     - Zero silent fallbacks: returns explicit failure codes on write errors.
+   - `bookmarks_load()`:
+     - Invokes `sys_open("/etc/bookmarks.bin", VFS_O_RDONLY)`.
+     - Reads the serialized payload via `sys_read()`.
+     - Validates header magic, version, entry count, Fletcher-32 checksum, and sanitizes URL schemes.
+   - UI Integration:
+     - Bound to the bookmark toggle button `[*]` in the navigation toolbar.
+     - Bound to the `'b'` / `Ctrl+B` keyboard shortcuts.
+   - Stack Overflow Prevention:
+     - Large browser structures (`browser_app_t` ~120 KiB) are allocated dynamically via `umalloc()` from the memory arena rather than on the restricted 16 KiB Ring 3 stack.
+
+---
+
+### Cold-Reboot Durability Prerequisites (Blocker Specification)
+
+Cold-reboot persistence across virtual machine power cycles is **BLOCKED**. For genuine disk durability in AstraOS, the following architectural components must be implemented in future phases:
+
+1. **Storage Hardware Driver**:
+   - An AHCI (Advanced Host Controller Interface) SATA driver or VirtIO-block device driver implemented in `kernel/drivers/`.
+   - Command FIS submission, PRDT (Physical Region Descriptor Table) DMA transfer handling, and interrupt completion routing.
+
+2. **Dedicated Test Harness Storage Medium**:
+   - Modification of `tests/test_runner.py` and `scripts/test_vbox.py` to create and attach an independent virtual hard disk image (e.g. `astraos_data.raw` via `-drive file=data.raw,format=raw,if=none -device ide-hd,drive=...`).
+   - Complete physical separation of bootloader/kernel read-only media from persistent application storage media.
+
+3. **Partition & Block Layer**:
+   - MBR or GPT partition table parser to locate storage volumes.
+   - Block abstraction layer (`block_device_t`) providing 512-byte / 4096-byte sector read and write primitives.
+
+4. **Persistent Filesystem Driver**:
+   - A real persistent filesystem driver (e.g. FAT32 or ext2) supporting directory inode allocation, cluster/block allocation bitmaps, FAT chaining, and synchronized metadata flushing (`sync`).
+
+---
+
+### Phase AC Verification Summary
+- `tests/test_vfs_host.py`: **PASS** (6/6 comprehensive VFS host unit tests, including mutable file creation, writes, reads, stat, append, truncation, quota enforcement, and read-only node protection).
+- `tests/test_bookmark_storage.py`: **PASS** (10/10 host tests: serialization, checksum, 32-entry capacity, scheme rejection, header corruption, payload tampering, truncation, deduplication, removal compaction, cold-restart simulation).
+- `tests/test_browser_networking.py`: **PASS** (17/17 adversarial networking tests).
+- `tests/test_js_fuzz.py`: **PASS** (500 iterations, 0 crashes).
+- `tests/test_crypto_host.py`: **PASS** (Known-answer vectors & X.509 cert validation).
+- QEMU nofb mode (`python tests/test_runner.py --ram 512M --mode nofb`): **PASS** (All boot markers, Ring 3 user browser execution, HTTP/HTTPS fetch, self-tests verified).
+- QEMU normal mode (`python tests/test_runner.py --ram 512M --mode normal`): **PASS** (1280x800 desktop compositor, window manager, user browser execution verified).
+- Full 16-configuration test matrix (`python tests/test_runner.py --all`): **PASS** (16/16 configurations passed: 128M/512M/1024M RAM, nofb/normal, fault injections, exception vectors, mutex traps, ELF validation, browser isolation).
+- Oracle VirtualBox 7 EFI (`python scripts/test_vbox.py`): **PASS** (85/85 boot markers verified in VirtualBox headless mode with screenshot capture).
+
+---
+
+## 39. Phase AD — AstraOS Block Device Driver & Persistent Disk Foundation
+
+### Architectural Evaluation & Storage Driver Selection
+To establish a genuine disk-backed persistence foundation without introducing high failure risks, three candidate architectures were evaluated:
+
+1. **VirtIO-blk (PCI transport)**:
+   - Modern hypervisor device standard.
+   - Requires Virtqueue DMA rings, page-aligned buffers, physical descriptor tables, and MMIO/PCI capability parsing.
+   - Standard Oracle VirtualBox storage controllers do not expose `virtio-blk-pci` without custom extension packs.
+   - Violates the directive to prefer polling-based I/O and avoid premature DMA complexity.
+
+2. **AHCI SATA Controller**:
+   - PCI Class 01.06 native SATA interface.
+   - Native in VirtualBox (`IntelAHCI`), but requires `-device ich9-ahci` in QEMU's default `i440fx` machine.
+   - Requires complex Command Lists (1 KiB aligned), Received FIS (256B aligned), Command Tables, and PRDT DMA descriptor allocations.
+   - High implementation complexity and memory safety surface for a first-stage block layer.
+
+3. **Emulated ATA / IDE PIO (Selected)**:
+   - **Zero DMA Complexity**: Operates exclusively via CPU I/O instructions (`inw`, `outw`, `insw`, `outsw`). Eliminates all risk of DMA buffer corruption or cache incoherence.
+   - **Interrupt Independence**: Writing `0x02` (`nIEN`) to the Device Control Register (`0x3F6` / `0x376`) completely disables ATA hardware interrupts on the channel, enabling pure bounded polling.
+   - **Cross-Hypervisor Parity**: Supported natively by QEMU's Intel PIIX3 IDE controller (`00:01.1`) and VirtualBox's PIIX3/PIIX4 IDE controllers.
+   - **Boot Isolation**: Allows attaching a secondary dedicated raw data disk (`build/data_disk.img`, 32 MiB) as Primary Slave (`hd1`), while marking the boot partition (`hd0`) strictly read-only and boot-protected.
+
+---
+
+### Block Device Subsystem Architecture (`kernel/include/kernel/block.h`, `kernel/drivers/block.c`)
+
+1. **Device Abstraction Interface**:
+   - `block_device_t`: Encapsulates device name (`hd0`, `hd1`), ID, logical sector size (512 bytes), total sectors, capacity in bytes, status (`BLOCK_STATUS_READY`), and flags (`read_only`, `is_boot_device`).
+   - `block_ops_t`: Function pointers for `read_sectors`, `write_sectors`, and `flush`.
+   - Device Registry: Bounded table of up to `BLOCK_MAX_DEVICES = 4` registered block devices.
+
+2. **Safety & Boundary Validations**:
+   - Pre-dispatch parameter checks:
+     - Null device or buffer returns `BLOCK_ERR_INVALID_PARAM` (`-1`).
+     - Zero sector count returns `0` immediately without issuing hardware commands.
+     - Integer overflow detection: `lba + count < lba` returns `BLOCK_ERR_OVERFLOW` (`-7`).
+     - Disk boundary enforcement: `lba + count > dev->total_sectors` returns `BLOCK_ERR_OUT_OF_BOUNDS` (`-2`).
+     - Boot media & Read-only guards: Attempting to write to `dev->read_only` or `dev->is_boot_device` immediately returns `BLOCK_ERR_READ_ONLY` (`-6`).
+
+---
+
+### ATA PIO Driver Implementation (`kernel/include/kernel/ata.h`, `kernel/drivers/ata.c`)
+
+1. **Hardware Probing & Device Identification**:
+   - Probes Primary (`0x1F0` / `0x3F6`) and Secondary (`0x170` / `0x376`) IDE channels.
+   - Disables interrupts via `outb(ctrl_base, ATA_CTRL_NIEN)`.
+   - Floating bus detection: `inb(status) == 0xFF` identifies unattached channels.
+   - Drive select (`0xA0` / `0xB0`) followed by 400ns delay (4 alternate status reads).
+   - ATA `IDENTIFY` command (`0xEC`):
+     - Distinguishes ATA hard disks from ATAPI CD-ROM/DVD devices via cylinder register signatures (`0x14`/`0xEB`).
+     - Parses 512-byte IDENTIFY block: extracts model string (byte-swapped ASCII), serial number, and LBA28/LBA48 sector count.
+   - Device Classification:
+     - Channel 0 Drive 0 (`hd0`): Identified as QEMU EFI boot partition; marked `is_boot_device = true`, `read_only = true`.
+     - Channel 0 Drive 1 (`hd1`): Identified as dedicated data disk; marked `is_boot_device = false`, `read_only = false`.
+
+2. **Bounded Polling Sector Transfers**:
+   - Chunked transfer: Requests are processed in bounded chunks of up to 256 sectors.
+   - Bounded timeout loops: `ata_wait_bsy()` and `ata_wait_drq()` loop up to 200,000 cycles with `io_wait()`, returning `BLOCK_ERR_TIMEOUT` on unresponsive hardware.
+   - Reads: Uses `insw` to transfer 256 words (512 bytes) per sector directly into memory.
+   - Writes: Uses `outsw` to transfer 256 words per sector, followed by ATA `0xE7` (`FLUSH CACHE`) to commit writes.
+
+---
+
+### Virtual Disk Test Layout & Diagnostic Commands
+
+1. **Dedicated QEMU Disk Layout**:
+   - `build/data_disk.img`: 32 MiB raw image (65,536 sectors of 512 bytes).
+   - QEMU invocation: `-drive file={DATA_DISK},format=raw,index=1,media=disk`.
+   - Completely independent from EFI boot partition `{ESP}`.
+
+2. **In-Kernel Integration Self-Test (`block_self_test()`)**:
+   - Verified during kernel boot:
+     - Boundary validations on NULL devices and buffers.
+     - Boot device write protection: Attempting to write to `hd0` returns `BLOCK_ERR_READ_ONLY`.
+     - Out-of-bounds and integer overflow rejections.
+     - Single-sector write, cache flush, and read-back at designated test sector LBA 2048 (offset 1 MiB): Verified byte-for-byte with magic `0x4153545241424C4B` (`"ASTRABLK"`).
+     - Multi-sector write, flush, and read-back (2 sectors at LBA 2050): Verified byte-for-byte.
+     - Emits `ASTRA_BLOCK_DEVICE_OK`.
+
+3. **Kernel Monitor Commands**:
+   - `diskinfo`: Lists all registered block devices, sector count, logical sector size, total capacity in MiB, and access flags (`RO`/`RW`, `BOOT`).
+   - `disktest`: Re-executes the block device diagnostic self-test suite on demand.
+
+---
+
+### Phase AD Verification Summary
+- `tests/test_block_host.py`: **PASS** (11/11 host unit tests: registration, first/last sector, exact boundaries, out-of-range, zero count, integer overflow, invalid buffers, read-only/boot guards, error injection, timeout propagation, capacity limit).
+- `tests/test_vfs_host.py`: **PASS** (6/6 VFS unit tests).
+- `tests/test_bookmark_storage.py`: **PASS** (10/10 bookmark persistence tests).
+- `tests/test_browser_networking.py`: **PASS** (17/17 adversarial networking tests).
+- QEMU nofb mode (`python tests/test_runner.py --ram 512M --mode nofb`): **PASS** (All boot markers, user-space browser execution, `diskinfo`, `disktest`, clean halt).
+- QEMU normal mode (`python tests/test_runner.py --ram 512M --mode normal`): **PASS** (1280x800 desktop compositor, window manager, user browser, ATA disk detection).
+- Full 16-configuration test matrix (`python tests/test_runner.py --all`): **PASS** (16/16 configurations passed with `ASTRA_BLOCK_DEVICE_OK`).
+- Oracle VirtualBox 7 EFI (`python scripts/test_vbox.py`): **PASS** (86/86 boot markers verified in VirtualBox headless session).
+
+---
+
+## 40. Phase AE — AstraOS Minimal Persistent Filesystem (AstraFS v1)
+
+### Architectural Overview & On-Disk Layout
+Phase AE establishes the first genuine, durable filesystem in AstraOS, named **AstraFS v1**. Built on the Phase AD `block_device_t` abstraction and ATA PIO driver, AstraFS v1 provides a crash-resilient, copy-on-write persistent filesystem with verifiable cold-reboot durability for user-space files and browser bookmarks.
+
+1. **Volume Geography (32 MiB Volume = 65,536 Sectors @ 512 Bytes/Sector)**:
+   - **LBA 0**: MBR / Volume Header / Reserved.
+   - **LBA 1**: Superblock A (512 bytes, packed, Fletcher-32 checksummed).
+   - **LBA 2**: Superblock B (512 bytes, packed, Fletcher-32 checksummed).
+   - **LBAs 3..15**: Reserved metadata padding.
+   - **LBAs 16..31**: Inode Table A (16 sectors = 8,192 bytes = 64 inodes @ 128 bytes each).
+   - **LBAs 32..47**: Inode Table B (16 sectors = 8,192 bytes = 64 inodes @ 128 bytes each).
+   - **LBAs 48..63**: Allocation Bitmap A (16 sectors = 8,192 bytes = 65,536 bits, 1 bit per sector).
+   - **LBAs 64..79**: Allocation Bitmap B (16 sectors = 8,192 bytes = 65,536 bits, 1 bit per sector).
+   - **LBAs 80..127**: Reserved metadata padding.
+   - **LBAs 128..65535**: Contiguous Data Region (65,408 sectors = 33,488,896 bytes ≈ 31.9 MiB).
+
+2. **Dual-Set Copy-On-Write Atomic Metadata**:
+   - AstraFS maintains two independent metadata sets: **Set A** (LBAs 1, 16..31, 48..63) and **Set B** (LBAs 2, 32..47, 64..79).
+   - Superblocks contain a monotonic `u64 generation` counter and a Fletcher-32 checksum covering the first 508 bytes (`checksum` field at bytes 508..511).
+   - **Atomic Commit Protocol**:
+     1. Write newly allocated data payload sectors to the data region.
+     2. Write updated inode table to the alternate set's sectors.
+     3. Write updated allocation bitmap to the alternate set's sectors.
+     4. Increment generation, update used sector and file counts, and compute Fletcher-32 checksum for the alternate superblock.
+     5. Write the alternate superblock to disk (LBA 1 or LBA 2).
+     6. Issue hardware cache flush (`block_flush()`).
+     7. Switch active in-memory set pointer.
+   - If power is lost or an unexpected reset occurs at any point prior to step 6, the prior generation remains completely intact and valid.
+   - **Mount Selection**: Both superblocks are read and validated. If both have valid magic (`0x41534653`) and valid checksums, the superblock with the higher generation is selected. If one is corrupted, the other is automatically used as fallback.
+
+3. **VFS Namespace Integration & Mountpoint Routing**:
+   - AstraFS mounts at the `/data` directory prefix.
+   - `vfs_lookup()`:
+     - `"/data"` and `"/data/"` resolve directly to AstraFS's root directory node (`VFS_NODE_DIR`).
+     - Paths beginning with `"/data/"` route to `astrafs_lookup()`, which scans the active 64-inode table for exact filename matches.
+   - `vfs_open()`:
+     - Opening an existing file under `/data/` with `VFS_O_TRUNC` triggers `astrafs_truncate()`, freeing data sectors in the allocation bitmap and resetting inode length.
+     - Opening a nonexistent path under `/data/` with `VFS_O_CREAT` calls `astrafs_create()`, allocating a free inode slot, committing metadata, and returning a valid node.
+   - Operations on `/data/` files (`vfs_read`, `vfs_write`, `vfs_pread`, `vfs_pwrite`, `vfs_stat`, `vfs_fstat`, `vfs_close`, `vfs_readdir`) route transparently through AstraFS's `vfs_ops_t` table.
+   - Boot isolation: The EFI boot partition `{ESP}` and ISO filesystem remain strictly read-only and unmounted from write paths.
+
+4. **Durable Browser Bookmark Storage**:
+   - In `user/browser_main.c`, `bookmarks_save()` and `bookmarks_load()` prioritize persistent storage:
+     ```c
+     /* Save: Prefer persistent /data/bookmarks.bin, fallback to /etc/bookmarks.bin */
+     s64 fd = sys_open("/data/bookmarks.bin", VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC);
+     if (fd < 0) fd = sys_open("/etc/bookmarks.bin", VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC);
+
+     /* Load: Prefer persistent /data/bookmarks.bin, fallback to /etc/bookmarks.bin */
+     s64 fd = sys_open("/data/bookmarks.bin", VFS_O_RDONLY);
+     if (fd < 0) fd = sys_open("/etc/bookmarks.bin", VFS_O_RDONLY);
+     ```
+   - When AstraFS is mounted on `/data`, user bookmarks are saved directly to raw disk sectors through the syscall layer and survive guest restarts.
+
+5. **Diagnostic Shell Command (`fsinfo`)**:
+   - Added `fsinfo` to the COM1 serial kernel monitor.
+   - Displays device name, active metadata set (`A` or `B`), commit generation, total capacity, allocated sectors, file count, and a full directory listing of `/data` with byte sizes and sector ranges.
+
+6. **Cold-Reboot Durability Verification**:
+   - Guest persistence is verified across cold guest poweroff and restart cycles in QEMU:
+     - **Boot 1**: Dedicated virtual disk (`build/data_disk.img`) is formatted and mounted; test payload `"ASTRAPERSIST_LBA_VERIFIED"` is written to `/data/cold_test.txt`; browser saves bookmarks to `/data/bookmarks.bin`; guest halts.
+     - **Boot 2**: QEMU boots with the exact same `build/data_disk.img`; AstraFS detects existing volume with generation > 0, mounts without formatting, opens `/data/cold_test.txt`, verifies payload byte-for-byte, and emits `ASTRA_FS_PERSISTENCE_OK`. Browser loads bookmarks directly from persistent disk.
+
+### Phase AE Verification Summary
+- `tests/test_fs_host.py`: **PASS** (11/11 host unit tests: formatting, mounting, path bounds, write/read, multi-sector 4KB extents, append/truncate, dual-set generation switching, corrupted superblock fallback, readdir, 64-file limit, cold-restart state wipe simulation).
+- `tests/test_block_host.py`: **PASS** (11/11 host unit tests).
+- `tests/test_vfs_host.py`: **PASS** (6/6 host unit tests).
+- `tests/test_bookmark_storage.py`: **PASS** (10/10 host unit tests).
+- `tests/test_browser_networking.py`: **PASS** (17/17 host unit tests).
+- QEMU nofb mode (`python tests/test_runner.py --ram 512M --mode nofb`): **PASS** (Emitted `ASTRA_FS_OK`, `ASTRA_FS_PERSISTENCE_OK`, `fsinfo` verified).
+- QEMU normal mode (`python tests/test_runner.py --ram 512M --mode normal`): **PASS** (Desktop compositor, window manager, browser, `ASTRA_FS_OK`, `ASTRA_FS_PERSISTENCE_OK`).
+- Full 16-configuration test matrix (`python tests/test_runner.py --all`): **PASS** (16/16 configurations passed with `ASTRA_FS_OK` and `ASTRA_FS_PERSISTENCE_OK`).
+- Oracle VirtualBox 7 EFI (`python scripts/test_vbox.py`): **PASS** (86/86 boot markers verified in VirtualBox headless session).
+
+---
+
+## 41. Phase AF — AstraFS Durability Audit, Crash Recovery & Browser Persistence Verification
+
+### Root Cause Audit of 0-Byte File Creation
+Phase AF opened with an exhaustive audit of AstraFS v1 and browser bookmark serialization:
+1. **Syscall Write Buffer Limitation**:
+   - `SYSCALL_MAX_WRITE_LEN` in `kernel/include/kernel/syscall.h` was historically capped at 4096 bytes (1 page).
+   - In user space, 30 serialized bookmarks in `run_phase_aa_self_tests()` yielded a 9,616-byte buffer (`sizeof(bookmark_disk_entry_t) == 320` bytes: 256-byte URL + 64-byte title; 30 entries = 9600 bytes + 16-byte ASTB header).
+   - When `bookmarks_save()` called `sys_open("/data/bookmarks.bin", VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC)`, AstraFS created the inode with length 0.
+   - The subsequent `sys_write(fd, buf, 9616)` call failed at the syscall boundary with `-EINVAL` because `len > SYSCALL_MAX_WRITE_LEN`.
+   - The browser silently closed the file without checking `sys_write`'s return value, leaving a durable, 0-byte file on disk.
+2. **Resolution & Hardening**:
+   - Increased `SYSCALL_MAX_WRITE_LEN` to 65536 bytes (64 KiB), enabling multi-page atomic user buffer writes while verifying contiguous user memory page permissions across all mapped spans.
+   - Refactored `run_phase_aa_self_tests()` in `user/browser_main.c` to test serialization against `/data/bm_test.bin`, verifying that `sys_write` and `sys_read` return exact positive byte counts.
+   - Dedicated `/data/bookmarks.bin` exclusively to persistent browser state.
+
+### Non-Destructive Failure & Media Validation
+1. **Explicit Blank Media Detection (`astrafs_is_blank`)**:
+   - AstraFS never automatically formats corrupted, foreign, or unrecognized storage media.
+   - Prior to formatting, `astrafs_is_blank(dev)` reads LBAs 0, 1, 2, and 16, asserting that every byte is either `0x00` or `0xFF`.
+   - If non-zero, non-blank bytes exist and valid AstraFS superblocks cannot be parsed, mount fails with `ASTRAFS_ERR_CORRUPT`, preserving existing media intact for forensic recovery.
+2. **Deep Extent, Bounds & Desync Integrity Checks (`validate_metadata_integrity`)**:
+   - During mount and commit, every inode's `start_lba` and `sector_count` are validated against volume bounds (`start_lba >= DATA_START_LBA && start_lba + sector_count <= TOTAL_SECTORS`).
+   - Sector extents across all allocated inodes are checked for overlaps.
+   - Extents are cross-verified against the active allocation bitmap to guarantee zero bitmap desynchronization.
+   - If any anomaly is detected, AstraFS rejects the damaged metadata set and falls back to the alternate copy-on-write set.
+
+### Two-Stage Cold-Reboot Persistence Probe
+1. **Probe Specification (`/data/phase_af_persistence_probe.bin`)**:
+   - 256-byte deterministic payload generated using a linear congruential PRNG sequence seeded with `0xA571AF01`.
+   - Header contains magic `0x50524F42` (`"PROB"`), payload length (256), Fletcher-32 checksum, and generation counter.
+2. **Cold-Reboot Protocol**:
+   - **Boot 1 (Initial Boot)**: Kernel checks if `/data/phase_af_persistence_probe.bin` exists. If absent, it allocates sectors, writes the 256-byte payload, flushes ATA cache, and verifies in-memory generation.
+   - **Shutdown**: QEMU process terminates; `build/data_disk.img` remains untouched on host disk.
+   - **Boot 2 (Cold Restart)**: Kernel boots in an independent process invocation. Reads `/data/phase_af_persistence_probe.bin`, recomputes Fletcher-32 checksum, verifies all 256 bytes match expected PRNG sequence, and emits:
+     `ASTRA_FS_COLD_REBOOT_CONTENTS_VERIFIED` followed by `ASTRA_FS_PERSISTENCE_OK`.
+
+### End-to-End Browser Bookmark Durability
+1. **Bookmark Seeding on Boot 1**:
+   - Real Ring 3 AstraBrowser (`user/browser_main.c`) seeds 2 initial default bookmarks:
+     - Bookmark 0: `"AstraOS Portal"` -> `"file:///www/index.html"`
+     - Bookmark 1: `"About AstraOS"` -> `"file:///www/about.html"`
+   - Serialized ASTB v1 binary payload (656 bytes: 16-byte header + 2 * 320-byte entries) is saved to `/data/bookmarks.bin` across 2 allocated data sectors (LBAs 128..129).
+2. **Cold-Reboot Retrieval on Boot 2**:
+   - On cold restart, AstraBrowser opens `/data/bookmarks.bin`, verifies ASTB header magic, version, Fletcher-32 checksum, and deserializes both bookmarks.
+   - Browser asserts entry count `== 2`, validates titles and URLs, and emits:
+     `ASTRA_BROWSER_BOOKMARKS_COLD_REBOOT_OK`.
+
+### Crash Recovery & Interrupted Commit Matrix
+Host unit test suite (`tests/test_fs_host.py`) was expanded with 6 comprehensive durability and crash-injection tests:
+- **Test 12: Blank Media Detection**: Verifies `astrafs_is_blank` on all-zero and all-FF disks vs non-blank rejection.
+- **Test 13: Corrupt Non-AstraFS Rejection**: Rejects random foreign payload on disk without destructive overwrite.
+- **Test 14: Five-Stage Interrupted Commit Verification**:
+  - *Stage 1 (Post-data write crash)*: Metadata unaltered; prior state mounted cleanly.
+  - *Stage 2 (Post-inode write crash)*: Inode table B written; superblock B not committed; mounts Set A intact.
+  - *Stage 3 (Post-bitmap write crash)*: Bitmap B written; superblock B not committed; mounts Set A intact.
+  - *Stage 4 (Post-superblock write crash)*: Superblock B written but cache not flushed; valid generation mounts Set B.
+  - *Stage 5 (Corrupted alternate superblock)*: Bit-flipped superblock B rejected; automatic fallback to Set A.
+- **Test 15: Deep Extent & Bounds Validation**: Inodes with out-of-range LBAs rejected.
+- **Test 16: Bitmap Desynchronization Detection**: Inodes claiming unallocated sectors rejected.
+- **Test 17: Read/Write Offset Overflow Trapping**: Integer overflow in `offset + count` cleanly trapped.
+
+### Phase AF Verification Summary
+- `tests/test_fs_host.py`: **PASS** (17/17 host unit tests).
+- `tests/test_block_host.py`: **PASS** (11/11 host unit tests).
+- `tests/test_vfs_host.py`: **PASS** (6/6 host unit tests).
+- `tests/test_bookmark_storage.py`: **PASS** (10/10 host unit tests).
+- `tests/test_browser_networking.py`: **PASS** (17/17 host unit tests).
+- QEMU nofb mode (`python tests/test_runner.py --ram 512M --mode nofb`): **PASS** (All 5 files in `/data` verified with non-zero sizes; probe and bookmarks intact).
+- QEMU normal mode (`python tests/test_runner.py --ram 512M --mode normal`): **PASS** (Cold-reboot persistence probe and browser bookmarks verified byte-for-byte).
+- Full 16-configuration test matrix (`python tests/test_runner.py --all`): **PASS** (16/16 configurations passed with `ASTRA_FS_COLD_REBOOT_CONTENTS_VERIFIED` and `ASTRA_BROWSER_BOOKMARKS_COLD_REBOOT_OK`).
+- Oracle VirtualBox 7 EFI (`python scripts/test_vbox.py`): **PASS** (86/86 boot markers verified in VirtualBox headless session).
+
+---
+
+## 42. Phase AG — AstraOS Storage Reliability & Data Integrity Hardening
+
+### Explicit Durability Semantics & Syscall ABI Extensions
+Phase AG defined and implemented contractually explicit storage durability guarantees across the VFS, block layer, syscall boundary, and filesystem:
+1. **Explicit Operation Semantics**:
+   - `write(fd, buf, count)`: Writes up to `count` bytes into the file using Copy-On-Write extent allocation. In-place data overwriting is eliminated. Returns positive byte count written, or negative error code (`-EIO`, `-ENOSPC`, `-EBADF`, `-EFAULT`, `-EINVAL`).
+   - `fsync(fd)` (`SYS_FSYNC = 33`): Explicitly flushes the underlying block device hardware write cache (`block_flush()`) ensuring all committed sectors have reached physical/virtual non-volatile storage. Returns `0` on success, `-EBADF` on invalid descriptor, `-EIO` / `-EBUSY` on flush failure.
+   - `sync(void)` (`SYS_SYNC = 34`): Synchronizes all mounted filesystems and flushes hardware caches across all active, non-read-only block devices. Returns `0` on success or negative error if any flush fails.
+   - `close(fd)`: Releases the file handle and updates open descriptor reference tables.
+   - `rename(oldpath, newpath)` (`SYS_RENAME = 35`): Atomically replaces `newpath` with `oldpath` within the same filesystem. In AstraFS (`/data/...`), if destination exists, its extent is freed and its inode is atomically overwritten within the dual-set metadata commit, guaranteeing atomic file replacement.
+2. **Strict Syscall Parameter Validation**:
+   - `sys_fsync`: Descriptor bounds checked strictly in `[3, VFS_MAX_FDS - 1]`; open state verified.
+   - `sys_rename`: Source and destination paths validated in user space via `copy_user_string()` with null-termination and memory bounds checks up to `VFS_MAX_PATH_LEN`. Cross-filesystem renames are safely rejected with `-ENOSYS`.
+   - **Syscall Interrupt Enablement**: The x86-64 interrupt gate 128 (`0x80`) automatically clears the Interrupt Flag (`IF=0`). In `syscall_dispatcher`, `sti()` is enabled upon entry to allow process-context blocking synchronization (mutexes, timers, wait queues, and ATA polling) to execute with interrupts enabled, followed by `cli()` prior to `iretq` register restoration.
+
+### Write Ordering & Copy-On-Write (CoW) Data Extents
+Previous implementations performed in-place sector writes when overwriting existing file extents. Any mid-write crash, timeout, or sector error irreparably corrupted previously valid data on disk before metadata could commit.
+Phase AG eliminates in-place overwriting by implementing Copy-On-Write (CoW) data extents in `astrafs_write`:
+1. **Fresh Extent Allocation**:
+   - Allocates a new contiguous sector range `new_lba` from the allocation bitmap for the required capacity.
+   - If disk space is exhausted, returns `VFS_ERR_NOSPC` immediately; existing file extent and data remain 100% intact.
+2. **Payload Staging & Unmodified Prefix Copying**:
+   - If writing at a non-zero offset (`offset > 0`), existing unmodified sectors `[0 .. offset)` are copied from `old_lba` into `new_lba`.
+   - New payload bytes are written into `new_lba`.
+   - Any trailing unmodified sectors in existing extent are copied over, and newly expanded sectors beyond previous file length are zero-filled.
+3. **Pre-Commit Hardware Flush**:
+   - Hardware write cache is flushed via `block_flush(dev)`.
+   - If any sector write or cache flush fails, the new extent `new_lba` is immediately freed in the bitmap and the operation aborts. The prior committed extent is completely untouched.
+4. **Old Extent Reclamation & Dual-Set Commit**:
+   - Only after payload sectors and write cache are successfully flushed, the prior extent `old_lba` is freed in the allocation bitmap.
+   - Inode metadata (`file_size`, `start_lba`, `sector_count`, `modified_time`, `data_checksum`) is updated.
+   - Alternate inode table and allocation bitmap are written, followed by pre-superblock `block_flush()`.
+   - Alternate superblock is written with incremented monotonic generation and Fletcher-32 checksum, followed by commit `block_flush()`.
+   - At no point during an overwrite can interrupted execution destroy previously committed data.
+
+### Concurrent Access & Kernel Mutex Protection
+To protect AstraFS metadata and block allocation from races under preemptive multitasking and multi-process execution:
+- Integrated kernel mutex `g_astrafs_lock` (`mutex_t`) across all AstraFS entry points (`astrafs_mount`, `astrafs_unmount`, `astrafs_lookup`, `astrafs_create`, `astrafs_read`, `astrafs_write`, `astrafs_truncate`, `astrafs_stat`, `astrafs_readdir`, `astrafs_fsync`, `astrafs_sync`, `astrafs_rename`).
+- Mutex exclusion guarantees that concurrent file creates, writes, or renames cannot corrupt the shared in-memory allocation bitmap or inode table.
+
+### Browser Bookmark Data Integrity Hardening
+The user-space AstraBrowser bookmark persistence path was hardened against truncation, bit-rot, corruption, and partial overwrites:
+1. **Atomic Rename Replacement**:
+   - In `user/browser_main.c`, `bookmarks_save_path()` saves bookmarks by:
+     1. Serializing up to 32 bookmarks into ASTB v1 binary format with Fletcher-32 checksum.
+     2. Opening a temporary file `/data/bookmarks.bin.tmp` (`VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC`).
+     3. Writing the entire payload via `sys_write()`.
+     4. Issuing `sys_fsync()` to flush hardware caches.
+     5. Closing the temporary file descriptor.
+     6. Replacing the active bookmark file atomically via `sys_rename("/data/bookmarks.bin.tmp", "/data/bookmarks.bin")`.
+   - If power fails or an error occurs during save, the existing `/data/bookmarks.bin` file remains completely uncorrupted.
+2. **Defensive Deserialization & Unterminated String Defense**:
+   - In `bookmarks_deserialize()`, every bookmark entry's 256-byte URL and 64-byte title are scanned for explicit null-termination before modifying in-memory state.
+   - URL schemes are restricted to `file:///`, `http://`, and `https://`.
+   - **Non-Destructive Load Guarantee**: If the file on disk is truncated, has a bad magic (`!= ASTB`), unsupported version, bad checksum, or contains unterminated strings, deserialization returns `false` without modifying in-memory bookmarks (`bookmark_count` and existing entries remain 100% intact).
+
+### Failure Injection & Durability Test Matrix
+The host test suite was expanded with tests verifying correctness under failure:
+- `tests/test_fs_host.py`:
+  - **Test 18: CoW Extent Allocation & Zero-Leak Overwrite**: Verifies fresh extent allocation on overwrite, freeing old extents, zero leaks across 25 overwrite cycles, and exact byte preservation.
+  - **Test 19: Mid-Write I/O Failure Recovery**: Simulates ATA write error midway through payload write. Verifies operation aborts, new extent is freed, and previous committed data is preserved byte-for-byte.
+  - **Test 20: Flush Failure Abort**: Simulates cache flush failure during commit. Verifies metadata rollback to intact prior generation.
+  - **Test 21: Atomic Rename & Destination Replacement**: Verifies atomic rename, destination extent reclamation, sector accounting, and open descriptor tracking.
+  - **Test 22: Explicit Fsync and Sync Semantics**: Verifies cache flush dispatch and error propagation.
+  - **Test 23: Disk Full During Overwrite**: Simulates out-of-space condition during overwrite. Verifies `VFS_ERR_NOSPC` is returned and prior data is preserved.
+- `tests/test_bookmark_storage.py`:
+  - **Test 11: Unterminated String Defense**: Tests rejection of malicious/corrupted payloads without null terminators.
+  - **Test 12: Non-Destructive Load Guarantee**: Verifies in-memory bookmarks are preserved when disk payload fails checksum or parsing.
+
+### Phase AG Verification Summary
+- `tests/test_fs_host.py`: **PASS** (23/23 host unit tests).
+- `tests/test_block_host.py`: **PASS** (11/11 host unit tests).
+- `tests/test_vfs_host.py`: **PASS** (6/6 host unit tests).
+- `tests/test_bookmark_storage.py`: **PASS** (12/12 host unit tests).
+- `tests/test_browser_networking.py`: **PASS** (17/17 host unit tests).
+- `tests/test_js_fuzz.py`: **PASS** (500 iterations, 0 crashes).
+- `tests/test_crypto_host.py`: **PASS** (All cryptographic unit tests passed).
+- QEMU nofb mode (`python tests/test_runner.py --ram 512M --mode nofb`): **PASS** (`ASTRA_FS_OK`, `ASTRA_FS_PERSISTENCE_OK`, `ASTRA_FS_COLD_REBOOT_CONTENTS_VERIFIED`, `ASTRA_BROWSER_BOOKMARKS_COLD_REBOOT_OK`).
+- QEMU normal mode (`python tests/test_runner.py --ram 512M --mode normal`): **PASS** (Desktop compositor, window manager, AstraBrowser, `ASTRA_FS_OK`, `ASTRA_FS_COLD_REBOOT_CONTENTS_VERIFIED`, `ASTRA_BROWSER_BOOKMARKS_COLD_REBOOT_OK`).
+- Full 16-configuration test matrix (`python tests/test_runner.py --all`): **PASS** (16/16 configurations passed with zero errors or warnings).
+- Oracle VirtualBox 7 EFI (`python scripts/test_vbox.py`): **PASS** (86/86 boot markers verified in VirtualBox headless session).
+
+---
+
+## 44. Phase AH — AstraOS Independent Storage Audit, Crash Recovery & Concurrency Verification
+
+### Overview & Audit Scope
+Phase AH conducted an exhaustive, independent audit of the storage stack across AstraFS, the VFS layer, block/ATA device drivers, the syscall dispatcher, and user-space browser bookmark persistence. The audit traced every execution path from Ring 3 syscall invocations down to hardware ATA controller commands to prove crash recovery invariants, resolve edge-case vulnerabilities, and verify concurrency safety.
+
+### In-Memory Transactional Rollback Architecture
+The audit discovered a critical vulnerability in Phase AG's CoW metadata commit path:
+- **Prior Flaw**: If `astrafs_commit_metadata()` failed (due to an I/O error or flush failure writing alternate tables), in-memory metadata had already marked `old_lba` as free and `new_lba` as used. Inode `ino` pointed to `new_lba` in memory, while the on-disk superblock and inode table still pointed to `old_lba`. This caused catastrophic in-memory vs. on-disk desynchronization, potential double extent allocation upon subsequent writes, and masked errors when `astrafs_write` returned `bytes_written` instead of the commit error.
+- **Remediation**:
+  - Implemented transactional state snapshots in `astrafs_write()`, `astrafs_truncate()`, and `astrafs_rename()`.
+  - In `astrafs_write()`: If `astrafs_commit_metadata()` returns an error, `new_lba` is freed in the allocation bitmap, `old_lba`'s sectors are restored as allocated, and inode fields (`start_lba`, `sector_count`, `file_size`, `modified_time`, `data_checksum`) are restored. The commit error code is returned directly to the caller.
+  - In `astrafs_truncate()`: Restores old sector allocation in the bitmap and restores inode fields if metadata commit fails.
+  - In `astrafs_rename()`: If replacing an existing destination file and commit fails, both source and destination inodes and VFS nodes are restored, and destination extent bits in the allocation bitmap are re-marked as used.
+
+### Cross-Filesystem Path Validation Hardening
+- **Prior Flaw**: `vfs_rename()` checked whether `old_path` began with `/data/`. If `old_path` was a root/RAMFS file (e.g. `/etc/bookmarks.bin`) and `new_path` was `/data/bookmarks.bin`, the operation fell through to RAMFS rename, corrupting the `/data/` namespace with a volatile RAMFS file.
+- **Remediation**: Enforced strict bidirectional cross-filesystem rejection when AstraFS is mounted:
+  ```c
+  if (astrafs_is_mounted()) {
+      bool old_is_data = (str_ncmp(old_path, "/data/", 6) == 0);
+      bool new_is_data = (str_ncmp(new_path, "/data/", 6) == 0);
+      if (old_is_data != new_is_data) {
+          return VFS_ERR_UNSUPPORTED; /* Cannot rename cross-filesystem */
+      }
+      if (old_is_data && new_is_data) {
+          return astrafs_rename(old_path + 6, new_path + 6);
+      }
+  }
+  ```
+
+### Syscall Interrupt & Concurrency Architecture
+- **Interrupt Gate & IF Enablement**: Vector 128 (`0x80`) is registered as a 64-bit Interrupt Gate (`0xEE`). Hardware entry into Ring 0 automatically clears `IF` (`IF=0`).
+- **Syscall Dispatcher Contract**: In `syscall_dispatcher`, `sti()` is enabled upon entry to allow process-context blocking synchronization (mutexes, timers, wait queues, and ATA polling) to execute with interrupts enabled. Prior to returning via `iretq`, `cli()` is executed to preserve atomic frame restoration.
+- **Spinlock Safety Audit**: Confirmed that all user syscalls enter in process thread context with `preempt_count == 0` and hold zero kernel spinlocks.
+- **Mutex Discipline**: `g_astrafs_lock` is non-recursive and held across all public AstraFS entry points, guaranteeing exclusion during file creation, extent allocation, writes, and metadata commits.
+
+### Deterministic 10-Point Crash-Fault Matrix
+To formally prove crash recovery behavior under all failure modes, `tests/test_fs_host.c` implemented the 10-point crash-fault matrix:
+- **C1**: Extent allocated in RAM; crash before any disk write -> Mount selects prior active generation; pre-crash data intact.
+- **C2**: Partial payload sector write -> Mount selects prior active generation; uncommitted extent ignored.
+- **C3**: Full payload written before pre-commit flush -> Mount selects prior active generation.
+- **C4**: Pre-commit payload flush completed -> Mount selects prior active generation.
+- **C5**: Alternate inode table partially written or corrupt -> Alternate set rejected; mounts intact active set.
+- **C6**: Alternate inode written, alternate bitmap corrupt -> Alternate bitmap integrity check fails; mounts active set.
+- **C7**: Alternate inode & bitmap written, before alternate superblock write -> Alternate superblock has old generation; mounts active set.
+- **C8**: Alternate superblock partially written (corrupt checksum) -> Checksum verification fails; falls back to active set.
+- **C9**: Alternate superblock fully written, before final cache flush -> Valid alternate generation; rolls forward to new committed data.
+- **C10**: Final cache flush succeeds -> Valid alternate generation; committed data durable.
+In all 10 stages, zero bitmap leakage and zero double allocations were formally verified.
+
+### Browser Bookmark Failure Immunity
+- Added Test 13 & 14 in `tests/test_bookmark_storage.c`:
+  - **Stale `.tmp` File Defense**: Stale or corrupted `/data/bookmarks.bin.tmp` files left from interrupted writes are safely ignored; `bookmarks_load_path()` loads the valid committed `/data/bookmarks.bin`.
+  - **Atomic Replacement Failure Immunity**: Interrupted `.tmp` writes or aborted renames leave the baseline `/data/bookmarks.bin` completely untouched.
+
+### Phase AH Verification Summary
+- `tests/test_fs_host.py`: **PASS** (25/25 host unit tests, including in-memory rollback and the 10-point crash-fault matrix).
+- `tests/test_bookmark_storage.py`: **PASS** (14/14 host unit tests, including stale `.tmp` defense and atomic replacement failure immunity).
+- `tests/test_vfs_host.py`: **PASS** (Host VFS unit tests).
+- `tests/test_block_host.py`: **PASS** (11/11 host unit tests).
+- `tests/test_browser_networking.py`: **PASS** (17/17 host unit tests).
+- `tests/test_crypto_host.py`: **PASS** (Cryptographic verification suite).
+- QEMU nofb mode (`python tests/test_runner.py --ram 512M --mode nofb`): **PASS** (`ASTRA_FS_OK`, `ASTRA_FS_PERSISTENCE_OK`, `ASTRA_FS_COLD_REBOOT_CONTENTS_VERIFIED`, `ASTRA_BROWSER_BOOKMARKS_COLD_REBOOT_OK`).
+- QEMU normal mode (`python tests/test_runner.py --ram 512M --mode normal`): **PASS** (Full GUI desktop, window manager, AstraBrowser, `ASTRA_FS_OK`, `ASTRA_BROWSER_BOOKMARKS_COLD_REBOOT_OK`).
+- Full 16-configuration test matrix (`python tests/test_runner.py --all`): **PASS** (16/16 configurations passed with zero errors).
+- Oracle VirtualBox 7 EFI (`python scripts/test_vbox.py`): **PASS** (86/86 boot markers verified in VirtualBox headless session).
+
+## 45. Phase AI - AstraOS Storage Crash Consistency, Hardware Durability & Kernel Synchronization
+
+### Overview & Objectives
+Phase AI executed a deep, independent verification and hardening of AstraOS storage crash consistency, hardware ATA flush semantics, and kernel synchronization mechanisms. Building on Phase AH, this phase focused on statement-by-statement verification of superblock commits, ATA PIO hardware flush command selection and bus timing, torn-sector recovery, and strict kernel synchronization contracts across Ring 3 syscall dispatch, process exits, and non-recursive mutexes.
+
+### Superblock Commit Protocol & Crash Invariants
+- **Dual-Set Copy-on-Write Lifecycle**:
+  1. Write Inode Table to alternate metadata region (`alt_inode_lba`).
+  2. Write Allocation Bitmap to alternate metadata region (`alt_bitmap_lba`).
+  3. Pre-Commit Flush Barrier: `block_flush(dev)` forces metadata tables to non-volatile storage.
+  4. Write Alternate Superblock: 1 sector with incremented generation and 508-byte Fletcher-32 checksum.
+  5. Post-Commit Flush Barrier: `block_flush(dev)` guarantees superblock reaches non-volatile storage.
+  6. Memory State Switch: `active_set` flipped to alternate set.
+- **Signed Generation Comparison**:
+  Generation comparison in `astrafs_mount()` was hardened to use signed 64-bit modular difference arithmetic:
+  ```c
+  chosen_set = ((s64)(sbB.generation - sbA.generation) > 0) ? 1 : 0;
+  ```
+  This eliminates wrap-around vulnerabilities if generations ever roll over.
+- **Extent Bounds Overflow Hardening**:
+  Hardened `validate_metadata_integrity()` against 32-bit unsigned addition overflow when checking extent bounds:
+  ```c
+  if (inodes[i].start_lba >= sb->total_sectors ||
+      inodes[i].sector_count > sb->total_sectors - inodes[i].start_lba) {
+      return false;
+  }
+  ```
+
+### ATA Hardware Flush Semantics & Bus Timing
+- **Command Selection (0xE7 vs 0xEA)**:
+  - Standard LBA28 devices and volumes $\le 128\text{ GiB}$ issue `ATA_CMD_FLUSH_CACHE` (`0xE7`).
+  - 48-bit LBA devices exceeding $128\text{ GiB}$ ($> 0x0FFFFFFF$ sectors) issue `ATA_CMD_FLUSH_CACHE_EXT` (`0xEA`).
+  - If `0xEA` is aborted with `ATA_ERR_ABRT`, the driver automatically retries with standard `0xE7`.
+- **400 ns Bus Assertion Delay**:
+  In ATA PIO, the controller requires up to 400 ns to assert `BSY` after writing the command register. Reading the status register immediately without delay could sample a stale `BSY=0`. An explicit `ata_delay_400ns(ctrl_base)` was injected immediately after writing the flush command.
+- **Hardware Fault Inspection**:
+  When `BSY` clears, both `ATA_STATUS_ERR` (bit 0) and `ATA_STATUS_DF` (bit 5) are verified. On error, `inb(io_base + ATA_REG_ERROR)` is read to acknowledge and clear the hardware fault register.
+- **Persistence Boundaries**:
+  - *Software Command Completion*: Guest driver wrote command, waited for `BSY=0`, and verified zero error flags.
+  - *Emulator Persistence*: In QEMU/VirtualBox with writeback caching, the hypervisor flushes its host buffer cache to host drive cache.
+  - *Hardware Power-Loss Durability*: Physical drive commits internal volatile write cache to non-volatile medium.
+
+### Half-Sector Torn Write Verification (Host Test 26)
+- Implemented Test 26 in `tests/test_fs_host.c` evaluating half-sector (256-byte) torn writes:
+  - **Torn Superblock**: Writing only the first 256 bytes of an alternate superblock corrupts the 508-byte Fletcher-32 checksum. On remount, validation detects the checksum failure, rejects the torn set, and falls back to the intact active set with zero data loss.
+  - **Torn Payload Sector**: Writing 256 bytes of a new data extent before metadata commit leaves the existing extent untouched. On remount, the file recovers its prior committed payload.
+  - Subsequent writes and clean unmounts operate with zero bitmap leaks and zero double allocations.
+
+### Kernel Mutex, Scheduler & Syscall Synchronization
+- **Lock Hierarchy**: $\text{VFS} \rightarrow \text{AstraFS} \rightarrow \text{Block} \rightarrow \text{ATA}$.
+  - ATA is a leaf driver taking zero locks.
+  - AstraFS protects internal volume state via non-recursive `g_astrafs_lock`.
+- **Process Exit Safety Invariant**:
+  - `thread_exit()` in `kernel/sched/sched.c` asserts `curr->mutex_count == 0`, immediately panicking if any thread attempts to terminate while holding a mutex.
+  - No AstraFS execution path calls exit functions while holding `g_astrafs_lock`.
+- **User Pointer Security**: All user-space buffers and strings are validated via `user_ptr_valid()` or copied to kernel buffers *before* taking `g_astrafs_lock`, eliminating page fault traps within critical sections.
+- **Syscall Dispatcher `sti()`/`cli()` Balance**:
+  - Syscall entry Vector 128 (0xEE interrupt gate) enters with `IF=0`.
+  - `syscall_dispatcher` enables interrupts (`sti()`) to allow process-context synchronization, and unconditionally executes `cli()` before returning.
+  - `syscall_stub_128` pops registers while `IF=0` and executes `iretq` to atomically restore user `IF=1` and `RSP`.
+
+### Browser Bookmark Durability Verification (Host Test 15)
+- Implemented Test 15 in `tests/test_bookmark_storage.c`:
+  - Verified binary ASTB structure invariants: magic `0x41535442`, version 1, exact count, and payload Fletcher-32 checksum.
+  - Single-bit payload corruption or header checksum tamper safely rejected by `bookmarks_deserialize()`.
+  - Multi-stage crash simulation proved complete fault immunity: partial `.tmp` writes, uncommitted buffers, and post-rename replacements recover predictably with 100% data integrity.
+
+### Phase AI Verification Summary
+- `tests/test_fs_host.py`: **PASS** (26/26 host unit tests, including 10-point crash-fault matrix and half-sector torn-write defenses).
+- `tests/test_bookmark_storage.py`: **PASS** (15/15 host unit tests, including ASTB Fletcher-32 verification and crash recovery).
+- `tests/test_vfs_host.py`: **PASS** (VFS & mutable RAMFS unit tests).
+- `tests/test_block_host.py`: **PASS** (11/11 block device host unit tests).
+- `tests/test_browser_networking.py`: **PASS** (17/17 adversarial networking and stress tests).
+- `tests/test_js_fuzz.py`: **PASS** (500 fuzz iterations).
+- `tests/test_crypto_host.py`: **PASS** (Cryptographic suite).
+- QEMU nofb mode (`python tests/test_runner.py --ram 512M --mode nofb`): **PASS** (`ASTRA_FS_OK`, `ASTRA_FS_PERSISTENCE_OK`, `ASTRA_FS_COLD_REBOOT_CONTENTS_VERIFIED`, `ASTRA_BROWSER_BOOKMARKS_COLD_REBOOT_OK`).
+- QEMU normal mode (`python tests/test_runner.py --ram 512M --mode normal`): **PASS** (Full GUI desktop, window manager, AstraBrowser, `ASTRA_FS_OK`, `ASTRA_BROWSER_BOOKMARKS_COLD_REBOOT_OK`).
+- Full 16-configuration test matrix (`python tests/test_runner.py --all`): **PASS** (16/16 configurations passed with zero errors).
+- Oracle VirtualBox 7 EFI (`python scripts/test_vbox.py`): **PASS** (86/86 boot markers verified in VirtualBox headless session).
+
+---
+
+## 46. Phase AJ: Realistic I/O Fault Injection, Concurrency Stress & ATA Qualification
+
+### Overview
+Phase AJ qualifies AstraOS persistent storage, synchronization, and device drivers under realistic hardware failure modes, volatile write caching, torn writes, concurrent kernel worker threads, and physical ATA bus constraints:
+1. **ATA Flush Command Correctness & Bus Semantics**:
+   - Explicit auditing of IDENTIFY DEVICE capability bits: word 82 bit 12 (`FLUSH CACHE`), word 83 bit 10 (`LBA48`), word 83 bit 13 (`FLUSH CACHE EXT`).
+   - Device presence, ready state, and parameter checking: missing or offline devices return `BLOCK_ERR_NO_DEVICE` or `BLOCK_ERR_INVALID_PARAM`.
+   - Command dispatch: devices supporting flush issue `0xEA` (for LBA48 volumes $> 128\text{ GiB}$) or `0xE7` (standard LBA28).
+   - If a device rejects `0xEA` with `ATA_ERR_ABRT`, the driver automatically retries with standard `0xE7`.
+   - If neither flush command is supported, the driver cleanly returns `BLOCK_ERR_UNSUPPORTED` (`-8`) without emitting invalid commands.
+   - Non-data command assertion validation: flush commands must not assert `ATA_STATUS_DRQ`. If `DRQ` is illegally asserted by hardware, the driver reads the error register and returns `BLOCK_ERR_IO`.
+   - Hardware status checks: `ATA_STATUS_ERR` and `ATA_STATUS_DF` are verified; bounded polling loops prevent unbounded lockups and return `BLOCK_ERR_TIMEOUT`.
+   - Full propagation through AstraFS and VFS: flush failures trigger metadata transaction rollbacks and propagate error codes to callers.
+2. **Realistic Disk Fault-Injection Model**:
+   - In `tests/test_fs_host.c`, the synthetic disk mock was upgraded from a direct in-memory array to a dual-tier storage hierarchy:
+     - `s_persistent_storage`: Represents non-volatile physical storage media.
+     - `s_volatile_cache`: Represents drive-internal DRAM volatile write cache.
+     - `s_dirty_bitmap`: Tracks dirty uncommitted sectors in volatile cache.
+   - When a sector is written under `CACHE_MODE_VOLATILE`, bytes are written to `s_volatile_cache` and marked dirty, but NOT committed to `s_persistent_storage`.
+   - When `block_flush()` is called, all dirty sectors are committed to `s_persistent_storage` and the dirty bitmap is cleared.
+   - `mock_power_loss()`: Simulates sudden power loss by wiping `s_volatile_cache` back to the contents of `s_persistent_storage`, discarding all unflushed writes, and clearing memory state.
+   - `mock_inject_torn_write()`: Simulates partial-sector torn writes by writing a partial byte count (e.g. 256 bytes) directly to storage.
+3. **Superblock & Metadata Recovery Qualification (10 Scenarios)**:
+   - Scenario 1 (Alt Inode Table Write Lost in Cache): Recovered stable set $A$ (Gen $N$), 100% data intact.
+   - Scenario 2 (Alt Allocation Bitmap Write Lost in Cache): Recovered stable set $A$ (Gen $N$), 100% data intact.
+   - Scenario 3 (Pre-commit Flush Failure): Commit aborted, rollback to Gen $N$, 100% data intact.
+   - Scenario 4 (Torn Superblock Write, 256B): Checksum mismatch caught, fallback to stable set $A$ (Gen $N$), 100% data intact.
+   - Scenario 5 (Unflushed Superblock Lost on Power Cut): Discarded uncommitted superblock, recovered stable set $A$ (Gen $N$), 100% data intact.
+   - Scenario 6 (Final Flush Failure): Commit transaction aborted, rollback to prior generation, 100% data intact.
+   - Scenario 7 (Successful Final Flush): Rolled forward to Gen $N+1$, 100% new data intact.
+   - Scenario 8 (Both Generations Valid): Correctly selected higher generation (Gen 4), 100% data intact.
+   - Scenario 9 (Corrupted Extent Pointers in New Superblock): Defensive extent bounds validation failed, fallback to stable set $A$, 100% data intact.
+   - Scenario 10 (Generation Counter 64-bit Rollover): Modular difference `(s64)(genB - genA)` correctly chose generation 0 over $0xFFFFFFFFFFFFFFFF$, advancing generation to 1.
+4. **Kernel-Level Filesystem Multi-Worker Concurrency**:
+   - Two concurrent kernel worker threads (`fs_worker_a` and `fs_worker_b`) were added to `astrafs_self_test()` in `kernel/fs/astrafs.c`.
+   - Both workers concurrently create, write, read, and verify distinct files (`conc_a.txt` and `conc_b.txt`) across multiple iterations with cooperative yielding and preemption.
+   - Mutex synchronization via `g_astrafs_lock` guarantees atomicity of inode table updates, allocation bitmap modifications, and dual-set superblock commits.
+   - Verification emitted marker `ASTRA_FS_CONCURRENCY_OK`: zero race conditions, zero extent overlaps, zero double allocations, and zero data corruption.
+5. **Lock Ordering & Interrupt State Safety**:
+   - Global Lock Ordering Hierarchy: $\text{VFS} \rightarrow \text{AstraFS} \rightarrow \text{Block} \rightarrow \text{ATA}$.
+   - ATA PIO driver is purely hardware leaf code taking zero mutex locks.
+   - Block device layer contains stateless dispatch tables.
+   - AstraFS synchronizes operations through non-recursive `g_astrafs_lock`.
+   - Thread exit invariant: `thread_exit()` enforces `curr->mutex_count == 0`.
+   - Interrupt entry/exit: Syscall interrupt gate (Vector 128, DPL 3) clears `IF` on entry. `syscall_dispatcher` enables interrupts (`sti()`) for process-context synchronization, and restores `cli()` before `iretq`.
+6. **End-to-End Browser Bookmark 8-Boundary Failure Injection**:
+   - Added Test 16 in `tests/test_bookmark_storage.c` testing failure injection at all 8 atomic update boundaries:
+     1. Temporary `.tmp` file creation failure.
+     2. Write error during serialization payload streaming.
+     3. Pre-fsync crash / power loss.
+     4. `fsync()` failure on `.tmp` file.
+     5. Post-fsync crash / power loss before rename.
+     6. Interrupted rename metadata commit.
+     7. Pre-flush crash after directory entry update.
+     8. Post-flush completion of atomic replacement.
+   - Across all 8 boundaries, baseline bookmarks remained 100% intact with zero file corruption and zero state leakage.
+7. **Performance & Resource Qualification**:
+   - Extent copy-on-write reallocation verified zero bitmap leaks across 25 successive overwrite cycles.
+   - 32-entry bookmark serialization and deserialization completed with deterministic Fletcher-32 checksum verification.
+   - Allocation bitmap consistency verified before and after all mount, unmount, and crash recovery cycles.
+
+### Phase AJ Verification Summary
+- `tests/test_block_host.py`: **PASS** (20/20 block device & ATA flush host tests).
+- `tests/test_fs_host.py`: **PASS** (27/27 AstraFS persistent filesystem host tests, including 10-scenario qualification matrix).
+- `tests/test_bookmark_storage.py`: **PASS** (16/16 browser bookmark persistence & 8-boundary fault injection tests).
+- `tests/test_vfs_host.py`: **PASS** (VFS & mutable RAMFS unit tests).
+- `tests/test_browser_networking.py`: **PASS** (17/17 adversarial networking and stress tests).
+- `tests/test_js_fuzz.py`: **PASS** (500 fuzz iterations).
+- `tests/test_crypto_host.py`: **PASS** (Cryptographic suite).
+- QEMU nofb mode (`python tests/test_runner.py --ram 512M --mode nofb`): **PASS** (`ASTRA_BLOCK_DEVICE_OK`, `ASTRA_FS_CONCURRENCY_OK`, `ASTRA_FS_OK`, `ASTRA_FS_PERSISTENCE_OK`).
+- QEMU normal mode (`python tests/test_runner.py --ram 512M --mode normal`): **PASS** (Full GUI desktop, window manager, AstraBrowser, `ASTRA_FS_CONCURRENCY_OK`, `ASTRA_FS_OK`, `ASTRA_BROWSER_BOOKMARKS_COLD_REBOOT_OK`).
+- Full 16-configuration test matrix (`python tests/test_runner.py --all`): **PASS** (16/16 configurations passed with zero errors).
+- Oracle VirtualBox 7 EFI (`python scripts/test_vbox.py`): **PASS** (86/86 boot markers verified in VirtualBox headless session).
+
+---
+
+## 47. Phase AK: Process Management, ELF Loader & User-Space Isolation Hardening
+
+### Overview & Complete Execution Lifecycle
+Phase AK audits and hardens process lifecycle management, ELF64 executable loading, Ring 3 isolation, process termination, resource reclamation, and scheduler context switching:
+```
+ELF file / Memory buffer
+       ↓
+elf_validate() [Magic, Class, Endianness, Machine, Type, Bounds, Align, W^X, Overlaps, Cumulative Limits]
+       ↓
+vmm_create_process_space() [Isolated PML4 Root, Zero User Lower Canonical, Cloned Kernel Higher Canonical]
+       ↓
+elf_load_segments() [Direct Page Allocations, Tracking in mapped_pas, User/Supervisor Bit Enforcement]
+       ↓
+user_stack_alloc() [4-page Stack with VMM_PAGE_NX, Unmapped Guard Page at USER_STACK_GUARD_VA]
+       ↓
+thread_create() & user_jump_to_ring3() [CPL 3, User RSP, sysenter/int 0x80 Syscall Boundary]
+       ↓
+Ring 3 CPL 3 Application Execution [Cooperative sys_yield(), Timer Preemption, Syscall Dispatch]
+       ↓
+Process Exit / Hardware Trap [#PF Trapping, Vector 14, Clean Fault Containment, sys_exit()]
+       ↓
+Resource Reclamation [vfs_close_all_for_pid(), wm_destroy_all_for_pid(), vmm_destroy_process_space()]
+       ↓
+Deferred Thread Reaping [sched_reap() frees TCB and kernel thread stack frames]
+       ↓
+Parent Status Propagation [sys_waitpid() / process_waitpid() returns exit code, reaps zombie slot]
+```
+
+### Detailed Subsystem Architecture
+
+1. **ELF64 Loader Security Audit & Hardening (`kernel/process/elf.c`)**:
+   - Comprehensive validation before allocating memory or page tables:
+     - **ELF Header Magic**: Validates `\x7fELF` magic signatures.
+     - **Class & Data Encoding**: `ELFCLASS64` (2) and `ELFDATA2LSB` (1, little-endian) strictly enforced.
+     - **Target Architecture**: `EM_X86_64` (62) required; non-x86_64 architectures cleanly rejected (`ELF_ERR_UNSUPPORTED_MACHINE`).
+     - **Executable Type**: `ET_EXEC` (2) exclusively; dynamic libraries (`ET_DYN`) and relocatable objects (`ET_REL`) rejected (`ELF_ERR_UNSUPPORTED_TYPE`).
+     - **Header Size Constraints**: `e_ehsize == sizeof(Elf64_Ehdr)` and `e_phentsize == sizeof(Elf64_Phdr)`.
+     - **Program Header Count & Bounds**: $1 \le \text{e\_phnum} \le 16$; file offset table bounds strictly verified against total file size.
+     - **Segment Bounds**: `p_filesz <= p_memsz`, `p_offset + p_filesz <= file_size`, and strict rejection of degenerate `p_memsz == 0` segments (`ELF_ERR_INVALID_SEGMENT`).
+     - **Cumulative Memory Limit**: Total memory allocation across all `PT_LOAD` segments enforced $\le 64\text{ MiB}$ to prevent kernel denial-of-service (`ELF_ERR_INVALID_SEGMENT`).
+     - **Canonical User Address Space**: Segments must reside strictly within $[0x0000000000400000, 0x0000700000000000)$.
+     - **Alignment & Modulo Congruence**: `p_align` must be a power of two ($4096$) and satisfy $(p\_vaddr \pmod{p\_align}) == (p\_offset \pmod{p\_align})$.
+     - **Overlapping Segment Trapping**: Extents of loadable segments checked for collision; overlapping segments rejected with `ELF_ERR_SEGMENT_OVERLAP`.
+     - **W^X Permission Enforcement**: No segment may be simultaneously writable and executable (`(p_flags & (PF_W | PF_X)) != (PF_W | PF_X)`), returning `ELF_ERR_WX_CONFLICT`.
+     - **Entry Point Verification**: `e_entry` must reside within an executable `PT_LOAD` segment (`ELF_ERR_INVALID_ENTRY`).
+     - **Dynamic Segment Rejection**: `PT_INTERP` and `PT_DYNAMIC` rejected with `ELF_ERR_DYNAMIC_NOT_SUPPORTED`.
+
+2. **Hardware Address-Space Isolation & W^X Enforcement**:
+   - **Separate PML4 Root per Process**: Every user process operates in an independent page directory hierarchy (`vmm_create_process_space`), preventing cross-process address space collision.
+   - **User/Supervisor Bit Discipline**: All user pages have `PTE_USER` set. Supervisor higher-half mappings ($0xFFFF800000000000$ and $0xFFFFFFFF80000000$) do NOT have `PTE_USER`, ensuring Ring 3 access instantly triggers CPU `#PF` (Vector 14).
+   - **W^X User Stack**: Dedicated 4-page user stack ($16\text{ KiB}$) mapped from `0x0000700000000000` to `0x0000700000004000` with `VMM_PAGE_NX` flag set. Any attempt to execute code on the stack triggers hardware `#PF` (`Fetch=1`, `ASTRA_USER_NX_PROTECTION_OK`).
+   - **Unmapped Stack Guard Page**: An unmapped guard page is explicitly left below the stack at `0x00006ffffff00000` (`USER_STACK_GUARD_VA`). Stack overflows immediately trigger `#PF` (`Present=0`, `ASTRA_USER_GUARD_PAGE_OK`), preventing kernel stack corruption.
+   - **User Pointer Validation**: `user_ptr_valid()` verifies all syscall buffers reside in canonical user virtual space below $0x00007FFFFFFFFFFFULL$, preventing kernel pointer hijacking or address wrap-around (`ASTRA_SYSCALL_SECURITY_OK`).
+
+3. **Process Lifecycle, File Descriptor Ownership & Resource Reclamation**:
+   - **Process Descriptor Ownership**: `vfs_file_t` tracks `owner_pid`. On `sys_open`, descriptor owner is initialized to `proc->pid`.
+   - **Cross-Process Access Protection**: `sys_read`, `sys_write`, `sys_close`, and `sys_fsync` verify `vfs_get_owner(fd) == proc->pid`, rejecting cross-process operations with `-EBADF` (`ASTRA_FD_OWNERSHIP_OK`).
+   - **Automatic Exit Reclamation**: `process_exit()` calls `vfs_close_all_for_pid(proc->pid)`, closing all open descriptors, in addition to `wm_destroy_all_for_pid()`, destroying all GUI windows.
+   - **Page Directory Destruction**: `vmm_destroy_process_space()` traverses user PML4 entries (0..255) and frees PT, PD, PDPT, and PML4 frames back to PMM, while leaving shared higher-half kernel entries intact.
+   - **Parent-Child Status Propagation**: `proc->parent_pid` tracks relationship; `sys_waitpid()` and `process_waitpid()` support `WNOHANG` non-blocking checks and blocking reaping, propagating exit codes and returning `-ECHILD` for invalid or already-reaped processes (`ASTRA_PROCESS_WAITPID_OK`).
+   - **PMM Physical Memory Balance**: Verified zero physical frames leaked across 10 repeated creation, execution, and termination cycles of Ring 3 applications (`ASTRA_PROCESS_LIFECYCLE_STRESS_OK`).
+
+4. **Multi-Application Isolation & Concurrency**:
+   - 3 independent Ring 3 ELF executables compiled into initramfs:
+     - `/bin/normal_app.elf`: PID discovery, arithmetic verification ($\sum_{1}^{100} = 5050$), VFS file write and close, exit 0.
+     - `/bin/faulting_app.elf`: Deliberate supervisor memory read at `0xffffffff80400000`, cleanly trapped by `#PF` Vector 14 without crashing the kernel.
+     - `/bin/worker_app.elf`: 50 rounds of CPU loop computation interleaved with `sys_yield()`, clean exit 0.
+   - Concurrently scheduled and verified with distinct PIDs, distinct CR3 page directories, and complete hardware fault containment (`ASTRA_MULTI_APP_ISOLATION_OK`).
+
+### Phase AK Verification Summary
+- `tests/test_elf_host.py`: **PASS** (16/16 ELF64 security, bounds, alignment, W^X, and allocation tests).
+- `tests/test_block_host.py`: **PASS** (20/20 block device & ATA flush host tests).
+- `tests/test_fs_host.py`: **PASS** (27/27 AstraFS persistent filesystem host tests).
+- `tests/test_bookmark_storage.py`: **PASS** (16/16 browser bookmark persistence tests).
+- `tests/test_vfs_host.py`: **PASS** (6/6 VFS & mutable RAMFS unit tests).
+- `tests/test_browser_networking.py`: **PASS** (17/17 adversarial networking and stress tests).
+- `tests/test_js_fuzz.py`: **PASS** (500 fuzz iterations).
+- `tests/test_crypto_host.py`: **PASS** (Cryptographic suite).
+- QEMU nofb mode (`python tests/test_runner.py --ram 512M --mode nofb`): **PASS** (All boot markers, user-space browser execution, clean halt).
+- QEMU normal mode (`python tests/test_runner.py --ram 512M --mode normal`): **PASS** (Full GUI desktop, window manager, user-space browser execution, all Phase AK markers).
+- Oracle VirtualBox 7 EFI (`python scripts/test_vbox.py`): **PASS** (All 86 boot markers verified in VirtualBox headless session).
+
+---
+
+## 48. Phase AL: Preemptive Multitasking, Process Lifecycle & Scheduler Qualification
+
+### Overview & Architecture
+Phase AL provides independent verification, hardening, and qualification of AstraOS timer-driven preemption, multi-process concurrency, blocking/wakeup transitions, parent-child process lifecycle management, memory reclamation, scheduler fairness, and SMP capability.
+
+```
+                          +-------------------------------------------------+
+                          |               Local APIC Timer IRQ              |
+                          +-------------------------------------------------+
+                                                   |
+                                                   v
+                                     [ irq_common_stub (ASM) ]
+                                                   |
+                       +---------------------------+---------------------------+
+                       |                                                       |
+                       v                                                       v
+         [ Ring 3 Preemption Check ]                             [ Ring 0 Kernel Invariant ]
+        Is user process CPU-bound?                              Interrupt depth == 0?
+        preempt_count == 0?                                     preempt_count == 0?
+        interrupted_rflags.IF == 1?                             need_resched() == true?
+                       |                                                       |
+                       +---------------------------+---------------------------+
+                                                   |
+                                                   v
+                                   [ sched_try_preempt_irq_exit ]
+                                                   |
+                       +---------------------------+---------------------------+
+                       |                                                       |
+                       v                                                       v
+         prev->state = THREAD_READY;                             next->state = THREAD_RUNNING;
+         prev->process->state = PROCESS_READY;                   next->process->state = PROCESS_RUNNING;
+         sched_enqueue(prev);                                    sched_prepare_switch(next);
+                                                                 thread_switch_asm(&prev, next);
+```
+
+### Architectural Subsystems & Invariants
+
+1. **Timer-Driven Ring 3 Preemption**:
+   - `cpu_worker.elf` executes a compute-intensive CPU loop without voluntary yields (`sys_yield()`) or blocking syscalls.
+   - The APIC timer generates periodic hardware interrupts (IRQ 32). On interrupt return, `irq_common_stub` invokes `sched_try_preempt_irq_exit(interrupted_rflags)`.
+   - If `preempt_count() == 0`, `g_interrupt_depth == 0`, and the interrupted context had interrupts enabled (`IF == 1`), the scheduler moves the running thread to `THREAD_READY` and switches to the next thread.
+   - `heartbeat.elf` successfully runs alongside `cpu_worker.elf`, completing all 10 heartbeat progress ticks (`ASTRA_PREEMPT_RING3_OK`).
+
+2. **Multiple Independent User Processes**:
+   - 5 distinct applications concurrently loaded and scheduled:
+     - `cpu_worker.elf`: CPU-bound busy arithmetic.
+     - `heartbeat.elf`: Periodic progress monitoring.
+     - `blocking_worker.elf`: Bounded sleep via `sys_sleep()`.
+     - `faulting_app.elf`: Hardware memory violation contained without kernel panic.
+     - `normal_app.elf`: Standard computation with clean exit code 0.
+   - Each process possesses a unique PID, dedicated PML4 page directory, independent user virtual stack, isolated heap/mmap space, and individual process table slot (`ASTRA_MULTI_PROCESS_OK`).
+
+3. **Blocking, Waiting, and Wakeup Cycles**:
+   - Explicit lifecycle verification of `RUNNING -> BLOCKED -> READY -> RUNNING` states across timer queues (`sys_sleep` / `thread_sleep_ticks`) and wait queues (`waitpid` / `event_wait`).
+   - Sched block primitives enforce that blocked threads cannot be present in the ready queue, preventing double-queueing panics and lost wakeups (`ASTRA_BLOCK_WAKEUP_OK`).
+
+4. **Parent-Child Lifecycle & `waitpid()` Correctness**:
+   - **Parent Authorization**: Non-parent processes attempting to wait on unauthorized children are rejected with `-ECHILD`.
+   - **WNOHANG Non-Blocking**: Returns 0 when the child process is still actively executing.
+   - **Zombie Reaping**: Retrieves child exit status, frees address space structures, and transitions state to `PROCESS_UNUSED`.
+   - **Repeated Wait Defense**: Subsequent `waitpid()` invocations on reaped or invalid PIDs return `-ECHILD` (`ASTRA_WAITPID_LIFECYCLE_OK`).
+
+5. **Process Cleanup & Atomic Teardown**:
+   - `thread_create_process()` atomically links `t->process = proc` and `proc->thread = t` prior to runqueue insertion (`sched_enqueue`), eliminating preemption races during embryonic process creation.
+   - `process_exit()` executes under preemption guards (`preempt_disable`), switches CR3 back to `vmm_get_kernel_pml4()` before dismantling user page tables, and leaves the process in `PROCESS_DEAD` only until its underlying execution thread reaches `THREAD_EXITED`.
+   - 10x process lifecycle stress test verified with strict physical frame accounting: zero leaked physical memory frames (`ASTRA_PROCESS_CLEANUP_OK`).
+
+6. **Scheduler Fairness & Stability**:
+   - Mixed workloads (CPU-bound worker, periodic heartbeat, blocking sleeper, and standard application) scheduled concurrently without starvation. All applications completed within bounded tick deadlines (`ASTRA_SCHED_FAIRNESS_OK`).
+
+7. **SMP Hardware Capability & Architectural Reality**:
+   - CPUID queries report hardware topology.
+   - Limine boot requests do not request MP bootstrap; execution proceeds strictly on CPU 0 (the Bootstrap Processor).
+   - Scheduler maintains a single global runqueue without multi-core locks or IPI rescheduling. Multi-core SMP scheduling is formally classified as **NOT IMPLEMENTED** (`ASTRA_SMP_AUDIT_OK`).
+
+### Phase AL Verification Summary
+- `tests/test_elf_host.py`: **PASS** (16/16 ELF64 security, bounds, alignment, W^X, and allocation tests).
+- `tests/test_block_host.py`: **PASS** (20/20 block device & ATA flush host tests).
+- `tests/test_fs_host.py`: **PASS** (27/27 AstraFS persistent filesystem host tests).
+- `tests/test_bookmark_storage.py`: **PASS** (16/16 browser bookmark persistence tests).
+- `tests/test_vfs_host.py`: **PASS** (6/6 VFS & mutable RAMFS unit tests).
+- `tests/test_browser_networking.py`: **PASS** (17/17 adversarial networking and stress tests).
+- `tests/test_js_fuzz.py`: **PASS** (500 fuzz iterations).
+- `tests/test_crypto_host.py`: **PASS** (Cryptographic suite).
+- QEMU nofb mode (`python tests/test_runner.py --ram 512M --mode nofb`): **PASS** (All boot markers, user-space browser execution, all Phase AL markers, clean halt).
+- QEMU normal mode (`python tests/test_runner.py --ram 512M --mode normal`): **PASS** (Full GUI desktop, window manager, user-space browser execution, all Phase AL markers).
+- Oracle VirtualBox 7 EFI (`python scripts/test_vbox.py`): **PASS** (All 93 boot markers verified in VirtualBox headless session).
+
+---
+
+## 49. Phase AM — Symmetric Multiprocessing (SMP), AP Bring-Up & Multi-Core Scheduler Safety
+
+### Architectural Overview & Boot Topology
+Phase AM upgrades AstraOS from single-core uniprocessor execution to genuine Symmetric Multiprocessing (SMP) on x86-64. Application Processors (APs) are dynamically discovered via the Limine SMP boot protocol, brought online into 64-bit long mode, and integrated into a shared, spinlock-protected multi-core scheduler.
+
+```
+       +-----------------------------------------------------------+
+       |               Limine Bootloader MP Protocol               |
+       |  - Parses ACPI MADT / CPU topology                        |
+       |  - Sets up 64-bit trampoline for all discovered APs       |
+       +-----------------------------+-----------------------------+
+                                     |
+           +-------------------------+-------------------------+
+           |                                                   |
+           v                                                   v
++----------------------+                           +----------------------+
+| CPU 0 (BSP)          |                           | CPU 1..N-1 (APs)     |
+| - LAPIC Initialized  |                           | - Released via       |
+| - Per-CPU GDT/TSS    |                           |   goto_address       |
+| - IDT Loaded         |                           | - Per-CPU GDT/TSS    |
+| - Boots subsystems   |                           | - Local APIC Timer   |
+| - Triggers AP launch |                           | - Enters Idle Loop   |
++----------+-----------+                           +-----------+----------+
+           |                                                   |
+           +-------------------------+-------------------------+
+                                     |
+                                     v
++-------------------------------------------------------------------------+
+|                  Shared Multi-Core Kernel Subsystems                    |
+| - PMM Bitmap Protected by IRQ-Safe Spinlock (g_pmm_lock)                |
+| - Transactional Heap Protected by IRQ-Safe Spinlock (g_heap_lock)       |
+| - Process Table Protected by Spinlock (g_proc_lock)                     |
+| - Global Ready Queue Protected by Spinlock (g_sched_lock)               |
+| - Global Sleeper Queue Protected by Spinlock (g_sleep_lock)             |
+| - Synchronization Primitives Protected by Internal Spinlocks (m->lock)  |
++------------------------------------+------------------------------------+
+                                     |
+                                     v
++-------------------------------------------------------------------------+
+|                  Concurrent Multi-Core Workloads                        |
+| - Ring 3 Parallel Execution: cpu_worker_a & cpu_worker_b                |
+| - Overlap Detection: Atomic Counters Confirm True Multi-Core Concurrency|
+| - Thread Affinity & Migration: Single Thread Never Executed on >1 CPU   |
+| - Syscall 37: sys_getcpuid Returns Calling CPU ID                       |
++-------------------------------------------------------------------------+
+```
+
+### Key Architectural Invariants
+
+1. **Limine MP Boot Protocol**:
+   - `struct limine_smp_request` submitted to the bootloader with flags set for x86-64 long mode.
+   - `smp_init()` reads `struct limine_smp_response`, extracting `cpu_count`, `bsp_lapic_id`, and array of `limine_smp_info` descriptors.
+   - Each AP is awakened by setting `info->goto_address = ap_entry_c` with memory barriers (`__ATOMIC_SEQ_CST`).
+   - BSP conducts bounded polling until `g_cpus[cpu_id].online == true` before proceeding.
+
+2. **Per-CPU Architecture & State Isolation**:
+   - `cpu_state_t g_cpus[MAX_CPUS]` encapsulates per-core hardware and scheduling structures:
+     - Independent GDT (`gdt[7]`) and Task State Segment (`tss`) with dedicated Double-Fault IST1 stack.
+     - Task Register loaded via `ltr` on every core (`GDT_TSS_SEG = 0x28`).
+     - Independent Local APIC timer initialized in periodic mode (vector 32, divide by 16).
+     - Per-core preemption count (`cpu->preempt_count`), need-resched flag (`cpu->need_resched`), and interrupt depth (`cpu->interrupt_depth`).
+     - Dedicated idle thread (`cpu->idle_thread`) executing `hlt` when no threads are ready.
+
+3. **IRQ-Safe Spinlocks & Re-Entrancy Defense**:
+   - Defined in `kernel/include/kernel/spinlock.h`:
+     ```c
+     typedef struct spinlock {
+         volatile u32 lock;
+     } spinlock_t;
+     ```
+   - Implemented using atomic compiler builtins (`__atomic_test_and_set` / `__atomic_clear`) with `__asm__ volatile("pause")` backoff.
+   - `spinlock_acquire_irqsave(&lock)` preserves incoming `RFLAGS` via `pushfq; popq`, disables interrupts (`cli`), and spins until lock acquisition.
+   - `spinlock_release_irqrestore(&lock, flags)` releases the lock and safely restores incoming interrupt enable state (`IF`).
+   - Every shared resource is rigorously locked:
+     - `g_pmm_lock`: Physical memory allocation and free bitmap manipulation.
+     - `g_heap_lock`: Kernel heap arena allocation, coalescing, and statistics.
+     - `g_sched_lock`: Ready queue (`g_ready_head` / `g_ready_tail`) enqueuing and dequeuing.
+     - `g_sleep_lock`: Sleeper queue insertion, tick accounting, and waking.
+     - `g_proc_lock`: Process table iteration, state updates, and zombie reaping.
+
+4. **Atomic Block-and-Unlock Protocol**:
+   - Solves the classic sleep/wakeup race condition across multiple cores:
+     ```c
+     void sched_block_current_locked(spinlock_t *subsystem_lock, u64 rflags,
+                                     const char *reason, void *channel);
+     ```
+   - Atomically records the blocking reason, transitions thread state to `THREAD_BLOCKED`, releases the caller's subsystem spinlock, and switches context without re-enabling interrupts or exposing a window for lost wakeups.
+
+5. **Thread Execution Exclusivity Invariant**:
+   - Each thread possesses an atomic flag: `volatile u32 is_executing`.
+   - In `sched_switch()` / `sched_block_current_locked()`:
+     - A core selecting `next` uses CAS (`__atomic_compare_exchange_n(&next->is_executing, &expected_zero, 1)`) to claim execution rights.
+     - If the thread is still being switched out by another core, the core yields or picks the per-CPU idle thread.
+     - Outgoing thread's `is_executing` flag is cleared in `thread_switch_asm` immediately after RSP is saved to stack.
+     - Invariant: A thread is NEVER executed on two CPUs simultaneously.
+
+6. **Context-Switch Stack Staging & TLB Invalidation**:
+   - Thread stacks allocated across 4 pages (16 KiB).
+   - `vmm_map_page()` invalidates the TLB (`invlpg(va)`) on each stack page to eliminate stale translations.
+   - Initial 9-quadword context frame (`thread_switch_asm` return address, callee-saved registers, `thread_entry_trampoline`) is staged directly into physical memory via the Higher Half Direct Map (`(top_pa + hhdm)`), eliminating dependence on unmapped or lazily-synced PML4 tables across APs.
+
+7. **Multi-Core User Space Concurrency & Syscall 37**:
+   - Syscall 37 (`SYS_GETCPUID`) implemented, returning `smp_cur_cpu_id()`.
+   - Multi-process user space verification:
+     - `cpu_worker_a.elf` and `cpu_worker_b.elf` execute compute-heavy Ring 3 loops simultaneously.
+     - Shared atomic counter in kernel tracks concurrent execution overlap.
+     - Reaching simultaneous execution on distinct cores emits `ASTRA_SMP_PARALLEL_EXECUTION_OK`.
+     - Parent process waiting, termination, and resource reclamation across multiple cores emit `ASTRA_SMP_LIFECYCLE_OK`.
+
+### Phase AM Verification Summary
+- **Multi-Core Test Matrix (QEMU 1, 2, 4, 8 Cores)**:
+  - `-smp 1 --mode normal`: **PASS** (100% of boot, memory, scheduler, process, GUI, net, storage tests).
+  - `-smp 1 --mode nofb`: **PASS** (100% of headless tests).
+  - `-smp 2 --mode normal`: **PASS** (100% with dual-core AP bring-up).
+  - `-smp 2 --mode nofb`: **PASS** (100% with dual-core AP bring-up).
+  - `-smp 4 --mode normal`: **PASS** (100% with quad-core AP bring-up).
+  - `-smp 4 --mode nofb`: **PASS** (100% with quad-core AP bring-up).
+  - `-smp 8 --mode normal`: **PASS** (100% with 8-core AP bring-up and full GUI suite).
+  - `-smp 8 --mode nofb`: **PASS** (100% with 8-core AP bring-up and headless suite).
+- **Host Unit Test Suites**:
+  - `tests/test_crypto_host.py`: **PASS** (SHA-256, HMAC, HKDF, ChaCha20-Poly1305, X25519, X.509 cert validation).
+  - `tests/test_vfs_host.py`: **PASS** (Archive validation, lookup, pread, stat, readdir, mutable RAMFS).
+  - `tests/test_block_host.py`: **PASS** (20/20 block device & ATA flush host tests).
+  - `tests/test_fs_host.py`: **PASS** (27/27 AstraFS persistent filesystem host tests).
+  - `tests/test_elf_host.py`: **PASS** (16/16 ELF64 security, bounds, alignment, W^X, and allocation tests).
+  - `tests/test_bookmark_storage.py`: **PASS** (16/16 browser bookmark persistence tests).
+  - `tests/test_browser_networking.py`: **PASS** (17/17 adversarial networking and stress tests).
+- **Oracle VirtualBox 7 EFI (`python scripts/test_vbox.py`)**:
+  - **PASS**: All 93 / 93 boot markers verified in headless EFI VM session.
+
+---
+
+## 50. SMP Memory Safety, Inter-Processor TLB Shootdown & Concurrency Hardening (Phase AN)
+
+### 50.1 Cross-CPU TLB Shootdown Engine & Local APIC IPI Protocol
+- **Vector Allocation**: IDT vector 251 (`APIC_TLB_IPI_VECTOR`) configured as a 64-bit Interrupt Gate (DPL=0, IST=0).
+- **IPI Delivery**:
+  - Dispatched via Local APIC ICR (Interrupt Command Register) writing `(0x00080000 | 251)` to `APIC_REG_ICR_LOW` to broadcast to "All Excluding Self" shorthand, or targeted via `APIC_REG_ICR_HIGH` destination LAPIC ID.
+- **Protocol State (`g_tlb_req`)**:
+  - Protected by `g_tlb_req.lock` (spinlock).
+  - Target CPU mask `g_tlb_req.target_mask`, target CR3 `g_tlb_req.cr3`, virtual address `g_tlb_req.va`, and completion counter `g_tlb_req.ack_count`.
+- **Deadlock Avoidance During In-Flight Shootdowns**:
+  - If CPU A holds `g_tlb_req.lock` and broadcasts an IPI while CPU B attempts to acquire `g_tlb_req.lock` with IRQs disabled (`irqsave`), CPU B cannot take interrupt 251.
+  - To prevent mutual deadlock, `smp_tlb_shootdown()` checks `(g_tlb_req.target_mask & (1U << cur_cpu))` and directly executes `smp_handle_tlb_shootdown()` while spinning on `spinlock_try_acquire(&g_tlb_req.lock)`.
+
+### 50.2 Page Table Synchronization & VMM Mutex Protocol
+- **`g_vmm_lock` Spinlock**:
+  - All page table allocations and modifications (`vmm_map_page`, `vmm_unmap_page`, `vmm_alloc_page_table`) serialize under `g_vmm_lock`.
+  - Memory structures are modified and PTE entries cleared under lock, but `g_vmm_lock` is explicitly released *before* invoking `smp_tlb_shootdown()` to prevent lock-convoy priority inversions across remote cores.
+
+### 50.3 Process Address-Space Teardown & Quiescence Protocol
+- **Per-Process `active_cpu_mask`**:
+  - A 32-bit atomic bitmask records which CPUs currently have the process's page table active in `CR3`.
+  - Updated upon context switch when loading or unloading a process's PML4.
+- **Quiescent Physical Page Reclamation**:
+  - During `process_reap_zombies()` or `process_destroy()`, the kernel checks `proc->active_cpu_mask`.
+  - If any remote CPU still has the PML4 loaded (e.g. transitioning or tearing down a sibling thread), the reaping CPU issues `smp_tlb_shootdown(proc->pml4_phys, 0)` and spins with a bounded timeout until `proc->active_cpu_mask == 0` before calling `pmm_free_page()` on user frames and page directory tables.
+  - Guarantees zero use-after-free or cross-core TLB incoherence during process termination.
+
+### 50.4 Hardware-Accelerated Per-CPU State via `IA32_GS_BASE`
+- **MSR `0xC0000101` Configuration**:
+  - Both the BSP and all APs configure `IA32_GS_BASE` during early bring-up to point to `&g_cpus[cpu_id]`.
+  - Offset 0 of `cpu_state_t` stores a self-pointer (`self`).
+  - `smp_cur_cpu()` executes in a single instruction (`movq %gs:0, %rax`), eliminating MMIO bus contention (`APIC_REG_ID` reads) during high-frequency scheduler operations (`thread_current()`, `preempt_count()`, spinlocks).
+- **Segment Register Preservation**:
+  - User-mode transitions (`user_jump_to_ring3`) preserve `%gs` rather than loading user selectors, maintaining hardware base pointer integrity across user/kernel boundary crossings.
+
+### 50.5 Context Switch Stack Collision Elimination (`switch.S`)
+- **Strict Execution Flag Sequencing**:
+  - Multi-core execution race in `switch.S` eliminated: `prev->is_executing = 0` is cleared strictly *after* switching the hardware stack pointer `%rsp` to `next->rsp`.
+  - Guarantees another core searching for a ready thread will not resume `prev` while its stack frame is still partially active on the retiring core.
+  - Multi-core clobber of global thread pointers removed in favor of per-CPU `current_thread` slots.
+
+### 50.6 Hardware ATA Storage Serialization
+- **`g_ata_lock` Spinlock**:
+  - ATA/IDE I/O ports (`0x1F0`–`0x1F7`, `0x3F6`) are protected by an `irqsave` spinlock across sector reads, writes, and cache flushes.
+  - Prevents interleaved commands from concurrent threads or processes on distinct CPUs.
+
+### 50.7 Phase AN Verification Summary
+- **Multi-Core Test Matrix (QEMU 1, 2, 4, 8 Cores)**:
+  - `-smp 1 --mode normal`: **PASS** (100% of boot, memory, scheduler, process, GUI, net, storage tests).
+  - `-smp 2 --mode normal`: **PASS** (100% with dual-core AP bring-up).
+  - `-smp 4 --mode normal`: **PASS** (100% with quad-core AP bring-up).
+  - `-smp 8 --mode normal`: **PASS** (100% with 8-core AP bring-up and full test suite).
+  - `-smp 4 --mode nofb`: **PASS** (100% of headless tests).
+- **Host Unit Test Suites**:
+  - `tests/test_crypto_host.py`: **PASS**
+  - `tests/test_vfs_host.py`: **PASS**
+  - `tests/test_block_host.py`: **PASS**
+  - `tests/test_fs_host.py`: **PASS**
+  - `tests/test_elf_host.py`: **PASS**
+  - `tests/test_bookmark_storage.py`: **PASS**
+  - `tests/test_browser_networking.py`: **PASS**
+- **Oracle VirtualBox 7 EFI (`python scripts/test_vbox.py`)**:
+  - **PASS**: All 93 / 93 boot markers verified in headless EFI VM session.
+
+---
+
+## 51. Phase AO — SMP Correctness Proof, Adversarial Testing & Concurrency Hardening
+
+### 51.1 Address-Space Activation Race Prevention
+- **Strict Bitmask Invariant Sequencing**:
+  - When context switching between processes (`sched_prepare_switch()`), the incoming process's core bit (`next->process->active_cpu_mask |= (1 << cpu_id)`) is set **strictly before** loading `CR3` (`write_cr3()`).
+  - The outgoing process's core bit (`prev->process->active_cpu_mask &= ~(1 << cpu_id)`) is cleared **strictly after** the `write_cr3()` instruction completes.
+  - For intra-process thread context switches (`prev->process == next->process`), the core mask bit is retained without modification or transient clearing.
+  - **Correctness Invariant**: A core is registered as active in `active_cpu_mask` at all times when its hardware TLB can potentially hold or cache translations for that PML4, eliminating stale cross-core TLB reuse during concurrent unmapping and page teardown.
+  - **Marker**: `ASTRA_SMP_ASPACE_ACTIVATION_RACE_OK`.
+
+### 51.2 Monotonic Sequence-Tracked Cross-Core TLB Shootdown Engine
+- **Sequence Tracking & Deadlock Elimination**:
+  - The TLB shootdown subsystem maintains a globally monotonic 64-bit sequence counter `g_tlb_seq`.
+  - Every `cpu_state_t` maintains `acked_tlb_seq` recording the highest sequence acknowledged by that core.
+  - Stale IPIs or duplicate deliveries cannot cause redundant invalidations or race conditions.
+  - While spinning on `g_tlb_req.lock`, any core with pending shootdown requests services them immediately, preventing multi-core circular wait deadlocks.
+- **Whole Address-Space Invalidation Fallback**:
+  - When a process address space is destroyed (`vmm_destroy_space()`), `smp_tlb_shootdown(pml4, 0, 0)` broadcasts a whole-space invalidation.
+  - Remote cores receiving this IPI check `read_cr3()`. If the remote core is currently executing that retiring space (`cur_cr3 == req_pml4`), it immediately switches to `vmm_get_kernel_pml4()` before setting its ACK, ensuring that physical page directory tables can be reclaimed immediately with zero use-after-free risk.
+  - **Markers**: `ASTRA_SMP_CONCURRENT_TLB_OK`, `ASTRA_SMP_STALE_TLB_REUSE_OK`.
+
+### 51.3 Deadlock-Free Deferred Reclamation (`sched_reap`)
+- **Non-Blocking List Dequeue**:
+  - Exited threads queued on `g_reap_head` are popped atomically under `g_sched_lock` and severed from the global head (`g_reap_head = NULL; spinlock_release(&g_sched_lock)`).
+  - The harvesting core privately owns the popped list; no global reap lock is held while unmapping stack pages (`vmm_unmap_page()`) or freeing frames (`pmm_free_page()`).
+  - This eliminates IPI shootdown inversion: remote cores in idle or scheduler loops never disable interrupts while waiting on reap operations.
+- **Asynchronous Context Switch Linger Protection**:
+  - Outgoing threads queued by `thread_exit()` retain `is_executing == 1` until `thread_switch_asm` executes `movl $0, (%rcx)` after swapping `%rsp`.
+  - `sched_reap()` verifies `is_executing == 0` via a bounded pause loop; if still active, it re-queues the thread to `g_reap_head` under `g_sched_lock` without stalling.
+  - Thread-to-process dislinking (`t->process->thread = NULL`) occurs under `g_proc_lock` prior to `kfree(t)`.
+  - Zero-leak verified across sustained thread creation and termination cycles.
+  - **Marker**: `ASTRA_SMP_DEFERRED_RECLAIM_OK`.
+
+### 51.4 Kernel Synchronization & Strict Lock Ordering Hierarchy
+- **Strict Acyclic Lock Graph**:
+  - Level 1: `g_vfs_lock` (VFS mount table and directory operations)
+  - Level 2: `g_fs_lock` (AstraFS filesystem state and dual-set commits)
+  - Level 3: `g_proc_lock` (Process table, PID allocation, thread dislinking)
+  - Level 4: `g_vmm_lock` (Page table mapping and unmapping)
+  - Level 5 (Leaf Locks): `g_pmm_lock`, `g_sched_lock`, `g_sleep_lock`, `g_ata_lock`
+- **Formal Invariants**:
+  - No lock at Level $N$ may be acquired while holding a lock at Level $\ge N$.
+  - All Level 5 leaf locks must be acquired with interrupts disabled (`spinlock_acquire_irqsave`) and released before acquiring any other lock.
+  - Multi-CPU stress audits confirmed zero lock inversions or deadlock cycles across sustained concurrent operations.
+  - **Marker**: `ASTRA_SMP_LOCK_ORDER_OK`.
+
+### 51.5 Hardware Per-CPU Data Isolation (`IA32_GS_BASE`)
+- **Independent Context Validation**:
+  - `IA32_GS_BASE` MSR (`0xC0000101`) verified across all active cores.
+  - Each core's `cpu_state_t` self-pointer (`movq %gs:0, %rax`) maps strictly to its independent structure in `g_cpus[]`.
+  - Cross-core inspection confirms that no CPU mutates or clobbers the run state, `current_thread`, `lapic_id`, or interrupt depth of any other CPU.
+  - **Marker**: `ASTRA_SMP_PERCPU_ISOLATION_OK`.
+
+### 51.6 Allocator & Storage Hardware Fault Injection Qualification
+- **PMM Exhaustion Containment**:
+  - High-order allocations encountering frame exhaustion cleanly return `PMM_ERR_OUT_OF_MEM`.
+  - Callers (`process_create`, `vmm_map_page`, `kmalloc`) roll back partial allocations with zero memory leaks or unhandled kernel faults.
+  - **Marker**: `ASTRA_SMP_ALLOCATOR_FAULT_TEST_OK`.
+- **Storage Subsystem Fault Containment**:
+  - ATA/IDE simulated device write failures, bad sectors, and offline states cleanly return `BLOCK_ERR_IO`.
+  - AstraFS rolls back uncommitted metadata to the intact prior generation, preserving filesystem integrity.
+  - **Marker**: `ASTRA_SMP_STORAGE_FAULT_TEST_OK`.
+
+### 51.7 Phase AO Qualification Matrix Summary
+- **Multi-Core Test Matrix (QEMU 1, 2, 4, 8 Cores)**:
+  - `-smp 1 --mode normal`: **PASS** (100% of all Phase A-AO tests).
+  - `-smp 2 --mode normal`: **PASS** (100% with dual-core AP bring-up).
+  - `-smp 4 --mode normal`: **PASS** (100% with quad-core AP bring-up).
+  - `-smp 8 --mode normal`: **PASS** (100% with 8-core AP bring-up).
+  - `-smp 4 --mode nofb`: **PASS** (100% headless).
+- **All 7 Host Test Suites**: **PASS (100%)**
+- **Oracle VirtualBox 7 EFI**: **PASS (93 / 93 Markers Verified)**
+
+---
+
+## 52. Phase AP — Independent SMP Qualification, Test Integrity & Reliability Audit
+
+### 52.1 Address-Space Teardown vs. Activation Protocol Hardening
+- **The Teardown vs. Activation Race Window**:
+  - In prior phases, setting `active_cpu_mask` before `write_cr3()` and clearing after was proved to be insufficient on its own during process destruction. Specifically, if CPU B called `process_exit()`, cleared its core bit, and waited for `active_cpu_mask == 0`, CPU A could concurrently select another thread of that same process, enter `sched_prepare_switch()`, and load `proc->pml4_phys` into `CR3` right as CPU B was freeing the page tables.
+- **The `PROCESS_DYING` State Protocol**:
+  - Added `PROCESS_DYING` state to `process_state_t` in `kernel/include/kernel/process.h`.
+  - In `process_exit()`, the process atomically transitions `proc->state = PROCESS_DYING` under `g_proc_lock`.
+  - In `sched_prepare_switch()`, the activation logic guards with `if (next->process->state < PROCESS_DYING)`. Any process that is in `PROCESS_DYING` or `PROCESS_DEAD` is strictly rejected from activation: its bit is not added to `active_cpu_mask`, and the hardware `CR3` register loads the stable fallback `vmm_get_kernel_pml4()`.
+  - Once the exiting CPU observes `active_cpu_mask == 0`, no other CPU can ever re-activate or load that process's PML4.
+- **Single-Winner Teardown Protection**:
+  - If multiple threads or cores invoke `process_exit()` concurrently on the same process, the second caller observes `proc->state >= PROCESS_DYING` under `g_proc_lock` and immediately delegates to `thread_exit()` without repeating page table teardown or freeing user memory frames twice.
+  - **Marker**: `ASTRA_AP_ASPACE_PROTOCOL_OK`.
+
+### 52.2 Cross-CPU TLB Invalidation Protocol Invariants
+- **Monotonic Sequence Enforcement**:
+  - Sequence tracking via `smp_get_tlb_seq()` verified across multi-core shootdowns. Each shootdown increments `g_tlb_seq` monotonically.
+  - Remote cores acknowledge each request by updating `acked_tlb_seq` and setting their bit in `g_tlb_req.ack_mask`.
+- **Target Mask Normalization**:
+  - In single-CPU runs (`g_cpu_count <= 1`), `smp_tlb_shootdown()` executes local `invlpg` or `write_cr3()` without sending remote IPIs, avoiding unnecessary APIC ICR bus cycles.
+  - Offline cores or non-existent AP bits in `target_mask` are filtered out before sending IPIs, preventing infinite spinning or hangs.
+  - Full-space flushes (`page_count == 0`) correctly reload `CR3` across all targeted cores.
+  - **Marker**: `ASTRA_AP_TLB_PROTOCOL_AUDIT_OK`.
+
+### 52.3 Physical Memory Frame Reclamation Accounting
+- **Exact Zero-Leak Accounting Verification**:
+  - PMM free frame tracking via `pmm_get_stats()` audits the physical page pool before and after address-space lifecycle events.
+  - Allocating a full process address space with multiple mapped user pages (code, data, heap, stack) and intermediate page tables (PML4, PDPT, PD, PT), unmapping each page, and destroying the process space with `vmm_destroy_process_space()` returns `pmm_stats.free_pages` to the exact initial baseline with zero delta.
+  - Demonstrates complete absence of physical frame leaks, orphaned page tables, and double-free anomalies.
+  - **Marker**: `ASTRA_AP_FRAME_RECLAMATION_OK`.
+
+### 52.4 Kernel Synchronization & Complete Lock Hierarchy Verification
+- **Full Tier Lock Ordering**:
+  - Formally verified non-inversion ordering across all 6 core kernel locks:
+    - Tier 1: `g_ata_lock` (Storage hardware leaf)
+    - Tier 2: `g_proc_lock` (Process table and lifecycle)
+    - Tier 3: `g_vmm_lock` (Virtual memory page tables)
+    - Tier 4: `g_sched_lock` (Scheduler runqueues and thread states)
+    - Tier 5: `g_pmm_lock` (Physical frame allocator)
+  - Simultaneous multi-tier acquisition (`g_proc_lock -> g_vmm_lock -> g_sched_lock -> g_pmm_lock`) and reverse descending release verified with zero deadlocks and zero spinlock inversions.
+  - **Marker**: `ASTRA_AP_LOCK_HIERARCHY_OK`.
+
+### 52.5 Test Harness Integrity & False-Positive Elimination
+- **Rigorous Single-Core vs. Multi-Core Reporting**:
+  - In `tests/test_runner.py`, audited test parsing so that on single-core runs (`--smp 1`), `ASTRA_SMP_SINGLE_CPU_OK` explicitly logs that multi-core parallel tests are `NOT APPLICABLE` rather than falsely claiming multi-core execution succeeded.
+  - On `--smp >= 2`, genuine multi-core parallel execution is strictly enforced via `ASTRA_SMP_PARALLEL_EXECUTION_OK`.
+  - In kernel self-tests, CPU count is verified and reported truthfully.
+  - **Marker**: `ASTRA_AP_TEST_HARNESS_INTEGRITY_OK`.
+
+### 52.6 Defensive Negative Testing & Error Handling
+- **Fault Injection & Boundary Defense**:
+  - `process_find_by_pid(0)` and non-existent PIDs safely return `NULL`.
+  - `pmm_free_page(0)` returns `PMM_ERR_PAGE_ZERO (-3)`.
+  - `pmm_free_page(0x1234)` (unaligned) returns `PMM_ERR_UNALIGNED (-2)`.
+  - Double-freeing an allocated frame cleanly returns `PMM_ERR_DOUBLE_FREE (-5)`.
+  - `vmm_unmap_page()` with an unaligned address returns `VMM_ERR_UNALIGNED (-3)`.
+  - `vmm_unmap_page()` on an unmapped virtual address returns `VMM_ERR_NOT_MAPPED (-7)`.
+  - All errors are handled gracefully without panics, memory corruption, or lock leaks.
+  - **Marker**: `ASTRA_AP_NEGATIVE_TESTS_OK`.
+
+### 52.7 Phase AP Full Qualification Matrix
+- **QEMU Full Matrix**:
+  - `python tests/test_runner.py --ram 512M --smp 1`: **PASS** (100% of all markers verified; single-core integrity verified).
+  - `python tests/test_runner.py --ram 512M --smp 2`: **PASS** (100% with dual-core AP bring-up & Phase AP markers).
+  - `python tests/test_runner.py --ram 512M --smp 4`: **PASS** (100% with quad-core AP bring-up & Phase AP markers).
+  - `python tests/test_runner.py --ram 512M --smp 8`: **PASS** (100% with 8-core AP bring-up & Phase AP markers).
+  - `python tests/test_runner.py --ram 512M --smp 4 --mode nofb`: **PASS** (100% in headless serial-only mode).
+- **All 7 Host Test Suites**:
+  - `python tests/test_crypto_host.py`: **PASS** (6/6 tests).
+  - `python tests/test_vfs_host.py`: **PASS** (6/6 tests).
+  - `python tests/test_block_host.py`: **PASS** (20/20 tests).
+  - `python tests/test_fs_host.py`: **PASS** (27/27 tests).
+  - `python tests/test_elf_host.py`: **PASS** (16/16 tests).
+  - `python tests/test_bookmark_storage.py`: **PASS** (16/16 tests).
+  - `python tests/test_browser_networking.py`: **PASS** (17/17 tests).
+- **Oracle VirtualBox 7 EFI (`python scripts/test_vbox.py`)**:
+  - **PASS**: All 116 / 116 boot and qualification markers verified in headless EFI VM session.
+
+---
+
+## 53. Phase AQ — Adversarial SMP Concurrency, TLB Shootdown & Memory Reclamation
+
+### 53.1 Shootdown Parameter Publication & Remote ACK Invariants
+Phase AQ audited and hardened the cross-CPU TLB shootdown publication protocol against adversarial core races:
+1. **Parameter Publication Ordering**: In `smp_tlb_shootdown()`, request parameters (`pml4_phys`, `va`, `page_count`, `ack_mask = 0`) are written and memory-fenced with `__atomic_thread_fence(__ATOMIC_SEQ_CST)` before publishing the new monotonic sequence `g_tlb_req.seq = cur_seq`. The `target_mask` is then published with a subsequent sequential consistency fence.
+2. **Target Mask Filtering**: In `smp_handle_tlb_shootdown()`, a remote AP first loads `g_tlb_req.target_mask` and immediately returns if its bit is clear (`(target & (1U << my_cpu)) == 0`). This prevents an AP from reading uninitialized parameters or acknowledging a shootdown not directed at it.
+3. **Monotonic Sequence Progression**: Remote APs verify `g_cpus[my_cpu].acked_tlb_seq < req_seq` and record their acknowledgement monotonically, ensuring duplicate IPIs or spin-service routines do not corrupt state.
+- **Marker**: `ASTRA_AQ_CONCURRENT_SHOOTDOWN_OK`.
+
+### 53.2 VMM Error Propagation & Frame Reclamation Lifecycle Ordering
+To enforce hardware cache coherency and memory safety, AstraOS guarantees the strict lifecycle ordering:
+$$\text{Unmap Page} \longrightarrow \text{TLB Shootdown} \longrightarrow \text{Required ACKs} \longrightarrow \text{Frame Reclamation} \longrightarrow \text{Frame Reuse}$$
+1. **Shootdown Return Handling in VMM**: In `vmm_unmap_page()`, page table clearing is serialized under `g_vmm_lock`. After clearing the PTE and intermediate empty tables, `smp_tlb_shootdown(pml4_phys, va, 1)` is called. If the shootdown fails or times out, `vmm_unmap_page()` returns `VMM_ERR_SHOOTDOWN_FAILED (-9)`.
+2. **Reclamation Refusal**: Callers (such as thread cleanup and process teardown) strictly check that `vmm_unmap_page()` returns `VMM_SUCCESS` before freeing the underlying physical frame with `pmm_free_page()`. If shootdown fails, the frame remains un-freed, eliminating stale TLB translation attacks and premature frame reuse.
+- **Marker**: `ASTRA_AQ_FRAME_REUSE_ORDERING_OK`.
+
+### 53.3 Address-Space Transient Activation Double-Check Defense
+During high-contention multi-core scheduling, a thread may be selected right as its process begins teardown:
+1. In `sched_prepare_switch()`, after setting the CPU bit in `next->process->active_cpu_mask`, the scheduler performs a double-check on `next->process->state >= PROCESS_DYING`.
+2. If the process transitioned to dying concurrently, the scheduler immediately clears its bit in `active_cpu_mask` and forces CR3 to fall back to `vmm_get_kernel_pml4()`, preventing even transient activation of dying page directory structures.
+- **Marker**: `ASTRA_AQ_ASPACE_ADVERSARIAL_OK`.
+
+### 53.4 Shootdown Fault-Injection & Defensive Timeout Handling
+Phase AQ introduced deterministic fault-injection controls in the SMP engine:
+1. **Delayed Remote ACK (`g_tlb_inject_delay_cpu`)**: Verifies that remote core latency is tolerated within the bounded timeout window without spurious timeouts.
+2. **Dropped / Missing ACK (`g_tlb_inject_missing_ack_cpu`)**: Confirms that when a remote core intentionally omits an ACK, `smp_tlb_shootdown()` cleanly detects the timeout, releases spinlocks, clears `target_mask`, and returns `false` without kernel hang or lock corruption.
+3. **Multi-Tier Lock Hierarchy Stress**: High-concurrency stress testing across 100 interleaved iterations of all 5 lock tiers (`g_ata_lock`, `g_proc_lock`, `g_vmm_lock`, `g_sched_lock`, `g_pmm_lock`) confirms absolute deadlock freedom.
+- **Markers**: `ASTRA_AQ_TLB_FAULT_INJECTION_OK`, `ASTRA_AQ_LOCK_DEADLOCK_AUDIT_OK`.
+
+### 53.5 Phase AQ Qualification Matrix
+The complete AstraOS Phase AQ qualification matrix passed across all test environments:
+- **QEMU Multi-Core Suite**:
+  - `python tests/test_runner.py --ram 512M --smp 1`: **PASS** (Single-core regression).
+  - `python tests/test_runner.py --ram 512M --smp 2`: **PASS** (Dual-core cross-CPU shootdown).
+  - `python tests/test_runner.py --ram 512M --smp 4`: **PASS** (4-CPU default multi-core concurrency).
+  - `python tests/test_runner.py --ram 512M --smp 8`: **PASS** (8-CPU high-contention stress).
+  - `python tests/test_runner.py --ram 512M --smp 4 --mode nofb`: **PASS** (4-CPU headless serial console).
+- **All 7 Host Test Suites**:
+  - `python tests/test_crypto_host.py`: **PASS** (6/6 tests).
+  - `python tests/test_vfs_host.py`: **PASS** (6/6 tests).
+  - `python tests/test_block_host.py`: **PASS** (20/20 tests).
+  - `python tests/test_fs_host.py`: **PASS** (27/27 tests).
+  - `python tests/test_elf_host.py`: **PASS** (16/16 tests).
+  - `python tests/test_bookmark_storage.py`: **PASS** (16/16 tests).
+  - `python tests/test_browser_networking.py`: **PASS** (17/17 tests).
+- **Oracle VirtualBox 7 EFI (`python scripts/test_vbox.py`)**:
+  - **PASS**: All 122 / 122 boot and qualification markers verified in headless EFI VM session.
+- **Marker**: `ASTRA_AQ_HARNESS_CLASSIFICATION_OK`.
 
 
+---
+
+## 54. Phase AR: Independent TLB Protocol Audit, Request Lifetime Safety & SMP Proof
+
+Phase AR performed an adversarial, source-level and runtime audit of the SMP subsystem, resolving request lifetime races, delayed IPI cross-talk, stale acknowledgments, and premature frame reclamation.
+
+### 54.1 Independent Per-CPU Request Queues & Multi-Initiator Architecture
+To eliminate global lock serialization and parameter overwrite races between simultaneous initiators:
+1. **Per-CPU Queue Structure**: Replaced the single global `g_tlb_req` descriptor with independent per-CPU request queues:
+   ```c
+   #define SMP_TLB_SLOTS_PER_CPU 4
+   typedef struct {
+       spinlock_t lock;
+       u32 head;
+       smp_tlb_slot_t slots[SMP_TLB_SLOTS_PER_CPU];
+   } smp_cpu_tlb_queue_t;
+   extern smp_cpu_tlb_queue_t g_smp_tlb_queues[MAX_CPUS];
+   ```
+2. **Zero Contention Initiators**: Senders acquire only their own private queue lock (`g_smp_tlb_queues[cur_cpu].lock`). Multiple CPUs can initiate cross-CPU shootdowns simultaneously without lock collision.
+3. **Mutual In-Flight Servicing**: While waiting for remote ACKs, senders execute `smp_service_pending_tlb_requests(cur_cpu)` to service incoming shootdowns from other cores, guaranteeing freedom from mutual lock-wait convoys.
+- **Marker**: `ASTRA_AR_CONCURRENT_INITIATORS_OK`.
+
+### 54.2 Generational Request Identity & Delayed IPI Lifetime Safety
+1. **Monotonic Generation Counter (`g_tlb_gen_counter`)**: Every shootdown request receives a globally unique 64-bit generation number.
+2. **Delayed IPI Protection**: If a shootdown times out (e.g. due to hardware latency or dropped ACK), the slot is marked `TLB_SLOT_TIMED_OUT` and retained. Subsequent requests allocate a new slot from the sender's queue (`head++`).
+3. **Stale ACK Rejection**: When a delayed core eventually services its queued IPI, it checks the slot's generation and target mask, executes invalidation for that slot's specific address, and sets its bit in that slot's `ack_mask`. It cannot ACK a newer request or corrupt unrelated slots.
+4. **Duplicate IPI Idempotence**: Receivers verify `(slot->ack_mask & (1 << my_cpu)) == 0` before processing; duplicate IPI delivery is silently discarded without state change.
+- **Markers**: `ASTRA_AR_DELAYED_IPI_LIFETIME_OK`, `ASTRA_AR_STALE_ACK_REJECTION_OK`.
+
+### 54.3 VMM Unmap Rollback & Strict Frame Retention Invariants
+1. **PTE Rollback & Table Preservation**: In `vmm_unmap_page()`, leaf PTE clearing is temporarily performed. If `smp_tlb_shootdown()` fails or times out, the original PTE is restored under `g_vmm_lock`, and empty page tables (PT, PD, PDPT) are **not** freed.
+2. **Safe Table Cleanup on Success**: Only when cross-CPU shootdown succeeds are empty page directory tables pruned and freed.
+3. **Universal Caller Safety**: All callers of `vmm_unmap_page()` (`sched_reap`, `sys_munmap`, thread creation rollback) and `smp_tlb_shootdown()` (`process_exit`) verify success return codes before calling `pmm_free_page()`. On timeout/failure, physical data frames and page tables remain strictly retained, completely eliminating stale TLB translation use-after-free.
+- **Markers**: `ASTRA_AR_TIMEOUT_FRAME_RETENTION_OK`, `ASTRA_AR_UNMAP_CALLER_SAFETY_OK`.
+
+### 54.4 Complete End-to-End Multi-Core Reclamation Proof
+- Continuous 5-cycle creation, mapping, unmapping, shootdown verification, and destruction of process spaces verified exact zero-leak physical memory balance across cores.
+- **Marker**: `ASTRA_AR_END_TO_END_PROOF_OK`.
+
+### 54.5 Comprehensive Phase AR Qualification Matrix
+| Configuration | Environment | Result | Evidence / Markers |
+|---|---|---|---|
+| QEMU 1-Core | `-smp 1`, 512M RAM | **PASS** | Verified single-core integrity; parallel tests skipped cleanly |
+| QEMU 2-Core | `-smp 2`, 512M RAM | **PASS** | Dual-core minimum remote-IPI & fault-injection verified |
+| QEMU 4-Core | `-smp 4`, 512M RAM | **PASS** | Quad-core baseline; all 6 Phase AR markers verified |
+| QEMU 8-Core | `-smp 8`, 512M RAM | **PASS** | 8-core high-contention multi-core scheduler stress verified |
+| QEMU 4-Core (`nofb`) | `-smp 4`, 512M RAM, headless serial | **PASS** | Headless serial console mode verified |
+| Host Cryptographic Suite | `tests/test_crypto_host.py` | **PASS** | 6/6 tests passing |
+| Host VFS Suite | `tests/test_vfs_host.py` | **PASS** | 6/6 tests passing |
+| Host Block Device Suite | `tests/test_block_host.py` | **PASS** | 20/20 tests passing |
+| Host AstraFS Suite | `tests/test_fs_host.py` | **PASS** | 27/27 tests passing |
+| Host ELF Loader Suite | `tests/test_elf_host.py` | **PASS** | 16/16 tests passing |
+| Host Bookmark Storage Suite | `tests/test_bookmark_storage.py` | **PASS** | 16/16 tests passing |
+| Host Browser Networking Suite| `tests/test_browser_networking.py` | **PASS** | 17/17 tests passing |
+| Oracle VirtualBox 7 EFI | VirtualBox 7, EFI firmware, SATA AHCI | **PASS** | **All 128 / 128 markers verified** |
+
+---
+
+## 55. Phase AS: TLB Queue Lifecycle Verification, Atomicity & Failure-Recovery Qualification
+
+Phase AS performed an independent source-level, runtime and failure-injection qualification of the per-CPU TLB request queues, slot lifetime state machine, generation-matched ACK atomicity, re-entrant request servicing, and concurrent leaf PTE rollback invariance.
+
+### 55.1 Per-CPU Request Queue State Machine & Wraparound Invariants
+1. **Four-State Lifecycle**:
+   - `TLB_SLOT_FREE (0)`: Available for allocation.
+   - `TLB_SLOT_ACTIVE (1)`: Published with unique generation, address range, and target bitmask. Target APs actively invalidate.
+   - `TLB_SLOT_TIMED_OUT (2)`: Sender exceeded timeout deadline and returned failure to caller. Slot is preserved; cannot be recycled while remote cores still process it.
+   - `TLB_SLOT_RETIRED (3)`: All target CPUs in `target_mask` have acknowledged. Safe for sender CPU to reclaim as `FREE`.
+2. **Explicit Slot Scanning & Queue-Full Protection**:
+   - When a CPU initiates a shootdown, the allocator scans all `SMP_TLB_SLOTS_PER_CPU` (4) slots for a `FREE` or `RETIRED` slot starting from `head`.
+   - If all 4 slots are occupied (`ACTIVE` or `TIMED_OUT`), the sender waits boundedly while servicing incoming requests.
+   - If the queue remains exhausted after the drain timeout, `smp_tlb_shootdown()` explicitly returns `false` without corrupting existing slots or overwriting timed-out requests.
+3. **Modular Wraparound Invariance**:
+   - Head pointer advances modulo `SMP_TLB_SLOTS_PER_CPU` (`(allocated_idx + 1) % 4`), guaranteeing seamless wraparound and zero slot corruption.
+- **Marker**: `ASTRA_AS_QUEUE_LIFECYCLE_OK`.
+
+### 55.2 Monotonic Generation Identity & ACK Atomicity
+1. **Invariant Enforcement**: Every cross-CPU invalidation ACK must identify exactly one request generation and one target CPU.
+2. **Per-Target Verified Generation Array**:
+   ```c
+   typedef struct {
+       volatile u64 gen;
+       u32 sender_cpu;
+       phys_addr_t pml4_phys;
+       virt_addr_t va;
+       size_t page_count;
+       volatile u32 target_mask;
+       volatile u32 ack_mask;
+       volatile u64 ack_gens[MAX_CPUS];
+       volatile tlb_slot_state_t state;
+   } smp_tlb_slot_t;
+   ```
+3. **Atomic Verification**:
+   - Remote receivers record `slot->ack_gens[my_cpu] = req_gen;` and update `slot->ack_mask` with release memory barriers.
+   - Senders verify that for every target $T$, `slot->ack_gens[T] == req_gen`.
+   - Duplicate or stale IPI invocations find `(ack_mask & (1 << my_cpu)) != 0` and are idempotently skipped without mutating state.
+- **Marker**: `ASTRA_AS_GENERATION_ACK_ATOMICS_OK`.
+
+### 55.3 Timed-Out Slot Lifecycle & Delayed Receiver Drainage
+1. **Retention on Timeout**: On shootdown timeout, the slot transitions to `TLB_SLOT_TIMED_OUT`. The initiator returns `false` (triggering leaf PTE rollback and physical frame retention).
+2. **Delayed Invalidation & Auto-Retirement**:
+   - When a delayed AP core awakens, it detects the slot in `TLB_SLOT_TIMED_OUT`, executes the required invalidation, and records its generation-matched ACK.
+   - Once all targeted CPUs have completed servicing (`(new_acks & targets) == targets`), the slot automatically transitions to `TLB_SLOT_RETIRED` and clears `target_mask = 0`.
+3. **Zero-Reboot Recovery**: The sender CPU's next shootdown reclaims the retired slot as `TLB_SLOT_FREE`, restoring full queue capacity without rebooting or leaking slots.
+- **Marker**: `ASTRA_AS_TIMEDOUT_SLOT_DRAIN_OK`.
+
+### 55.4 Re-Entrant Lock-Free Request Servicing & Deadlock Immunity
+1. **Lock-Free Incoming Invalidation**: `smp_service_pending_tlb_requests(my_cpu)` accesses remote queues using lock-free atomic operations (`__ATOMIC_SEQ_CST`).
+2. **Deadlock Freedom**: Because it never acquires any queue spinlock or memory lock (`g_vmm_lock`, `g_pmm_lock`, `g_sched_lock`), it can be safely called from within a sender's wait loop while holding its own private queue lock without causing lock recursion or circular wait conditions between CPUs.
+- **Marker**: `ASTRA_AS_REENTRANT_SERVICING_OK`.
+
+### 55.5 Leaf PTE Rollback & Concurrent Modification Invariance
+1. **Architectural Software Flag (`PTE_TRANSITION`)**:
+   - Defined `#define PTE_TRANSITION (1ULL << 9)` (bit 9 is designated for OS use by x86-64 MMU architecture; ignored when `PTE_PRESENT` is 0).
+   - `vmm_unmap_page()` provisionally marks leaf PTEs: `pt[pt_idx] = (old_pte & ~PTE_PRESENT) | PTE_TRANSITION;`.
+2. **Mutual Exclusion without Stalling**:
+   - Hardware MMU treats the page as Not-Present (triggers #PF on any access).
+   - `vmm_map_page()` checks `(pt[pt_idx] & (PTE_PRESENT | PTE_TRANSITION))` and rejects duplicate mappings with `VMM_ERR_ALREADY_MAPPED`.
+   - Concurrent `vmm_unmap_page()` checks `!(pt[pt_idx] & PTE_PRESENT)` and rejects with `VMM_ERR_NOT_MAPPED`.
+3. **Safe Conditional Rollback**:
+   - If shootdown times out or fails, `pt[pt_idx]` is rolled back to `old_pte` only if `pt[pt_idx] == ((old_pte & ~PTE_PRESENT) | PTE_TRANSITION)`.
+   - If concurrent modifications took place, rollback preserves newer state. Empty page directory tables are never pruned on failure.
+- **Marker**: `ASTRA_AS_PTE_ROLLBACK_CONCURRENCY_OK`.
+
+### 55.6 End-to-End Failure Injection Qualification
+- Continuous 3-cycle multi-core process space lifecycle under injected missing ACKs, delayed IPIs, and timeout rollback verified exact zero-leak physical memory balance across cores.
+- **Marker**: `ASTRA_AS_END_TO_END_FAILURE_QUAL_OK`.
+
+### 55.7 Final Phase AS Qualification Matrix
+| Configuration | Environment | Result | Evidence / Markers |
+|---|---|---|---|
+| QEMU 1-Core | `-smp 1`, 512M RAM | **PASS** | Verified single-core integrity; parallel tests skipped cleanly |
+| QEMU 2-Core | `-smp 2`, 512M RAM | **PASS** | Dual-core minimum remote-IPI & fault-injection verified |
+| QEMU 4-Core | `-smp 4`, 512M RAM | **PASS** | Quad-core baseline; all 6 Phase AS markers verified |
+| QEMU 8-Core | `-smp 8`, 512M RAM | **PASS** | 8-core high-contention multi-core scheduler stress verified |
+| QEMU 4-Core (`nofb`) | `-smp 4`, 512M RAM, headless serial | **PASS** | Headless serial console mode verified |
+| Host Cryptographic Suite | `tests/test_crypto_host.py` | **PASS** | 6/6 tests passing |
+| Host VFS Suite | `tests/test_vfs_host.py` | **PASS** | 6/6 tests passing |
+| Host Block Device Suite | `tests/test_block_host.py` | **PASS** | 20/20 tests passing |
+| Host AstraFS Suite | `tests/test_fs_host.py` | **PASS** | 27/27 tests passing |
+| Host ELF Loader Suite | `tests/test_elf_host.py` | **PASS** | 16/16 tests passing |
+| Host Bookmark Storage Suite | `tests/test_bookmark_storage.py` | **PASS** | 16/16 tests passing |
+| Host Browser Networking Suite| `tests/test_browser_networking.py` | **PASS** | 17/17 tests passing |
+| Oracle VirtualBox 7 EFI | VirtualBox 7, EFI firmware, SATA AHCI | **PASS** | **All 134 / 134 markers verified** |
 
 
+---
+
+## 56. Phase AT — SMP Memory-Model Correctness, TLB Slot Lifetime & Remote Handler Safety
+
+Phase AT completes the deep verification and hardening of the distributed per-CPU TLB request queue under the C99/C11 memory model and hardware x86-64 execution.
+
+### 56.1 C Memory Model Formalization & Data-Race Elimination
+1. **Explicit Atomic Builtins**:
+   - Mixed bare assignment operations and atomic accesses across cores are eliminated.
+   - All shared slot fields (`state`, `gen`, `target_mask`, `ack_mask`, `ack_gens`, `in_flight_mask`) are read and written strictly using GCC/Clang builtins:
+     - `__atomic_load_n(&slot->field, __ATOMIC_SEQ_CST)` (or `__ATOMIC_ACQUIRE`)
+     - `__atomic_store_n(&slot->field, val, __ATOMIC_SEQ_CST)` (or `__ATOMIC_RELEASE`)
+     - `__atomic_fetch_or(&slot->field, val, __ATOMIC_SEQ_CST)`
+     - `__atomic_fetch_and(&slot->field, val, __ATOMIC_SEQ_CST)`
+2. **Release/Acquire Publication Barrier**:
+   - Request parameters (`pml4_phys`, `va`, `page_count`) are populated by the initiator while the slot is in `TLB_SLOT_FREE`.
+   - An explicit release fence `__atomic_thread_fence(__ATOMIC_RELEASE)` precedes transitioning the state to `TLB_SLOT_ACTIVE`, guaranteeing that remote cores observing `state == ACTIVE` cannot observe stale or torn parameter words.
+   - **Marker**: `ASTRA_AT_MEMORY_MODEL_ATOMICS_OK`.
+
+### 56.2 In-Flight Remote Handler Lifetime Tracking (`in_flight_mask`)
+1. **Reader Registration Invariant**:
+   - Added `volatile u32 in_flight_mask` to each `smp_tlb_slot_t`.
+   - Before reading any slot parameters or executing TLB invalidation instructions, a remote core atomically sets its bit:
+     `__atomic_fetch_or(&slot->in_flight_mask, (1U << my_cpu), __ATOMIC_SEQ_CST)`.
+   - Upon completion or cancellation of servicing, the remote core atomically clears its bit:
+     `__atomic_fetch_and(&slot->in_flight_mask, ~(1U << my_cpu), __ATOMIC_SEQ_CST)`.
+2. **Allocator Immunity**:
+   - A slot is eligible for reallocation/reuse by the sender CPU only if:
+     `(slot->state == TLB_SLOT_FREE || slot->state == TLB_SLOT_RETIRED) && (slot->in_flight_mask == 0)`.
+   - Even if a sender times out or all target ACKs arrive, the slot CANNOT be overwritten, reclaimed, or re-initialized until all in-flight readers have completely vacated the slot.
+   - **Marker**: `ASTRA_AT_REMOTE_HANDLER_LIFETIME_OK`.
+
+### 56.3 Double-Generation Verification & Stale ACK Immunity
+1. **Pre- and Post-Invalidation Checks**:
+   - Upon entering `smp_service_pending_tlb_requests(my_cpu)`, the core reads `req_gen = slot->gen`.
+   - After executing invalidations (`invlpg` / `write_cr3`), the handler re-reads `post_gen = slot->gen`.
+   - The ACK is published to `ack_gens[my_cpu]` and `ack_mask` ONLY IF `post_gen == req_gen`.
+   - If the generation changed mid-flight, the handler aborts without recording an acknowledgement, ensuring complete immunity against stale or delayed IPIs corrupting newer requests.
+   - **Marker**: `ASTRA_AT_DOUBLE_GEN_VERIFY_OK`.
+
+### 56.4 Re-Entrant Lock-Free Servicing Invariance
+1. **Lock-Free Remote Queue Traversal**:
+   - Remote request servicing traverses queues and slot states using lock-free atomic primitives without acquiring sender queue spinlocks or global memory locks.
+   - Re-entrant execution from within nested interrupt handlers or while holding local queue spinlocks executes cleanly with 0 deadlocks.
+   - **Marker**: `ASTRA_AT_LOCKFREE_SERVICING_OK`.
+
+### 56.5 PTE_TRANSITION Architectural Protection & Fault Containment
+1. **Architectural Leaf Status**:
+   - `PTE_TRANSITION` (bit 9) is ignored by hardware x86-64 MMU when `PTE_PRESENT` is 0.
+   - Memory access to a transitioning page triggers Page Fault (`#PF`, vector 14) with Present=0.
+   - In user mode (`CPL=3`), the fault routes to `process_exit_from_fault()`, ensuring user process isolation without kernel panic.
+   - Concurrent `vmm_map_page` and `vmm_unmap_page` operations safely detect transitioning entries and return `VMM_ERR_ALREADY_MAPPED` or `VMM_ERR_NOT_MAPPED`.
+   - **Marker**: `ASTRA_AT_PTE_TRANSITION_ISOLATION_OK`.
+
+### 56.6 End-to-End Stress & Physical Frame Reclamation Proof
+- Continuous multi-cycle mapping, unmapping with shootdown, delayed receiver injection, missing ACK timeouts, and delayed drainage qualified exact 0-leak physical frame balance across all virtual cores.
+- **Marker**: `ASTRA_AT_END_TO_END_MEM_MODEL_OK`.
+
+### 56.7 Final Phase AT Qualification Matrix
+| Configuration | Environment | Result | Evidence / Markers |
+|---|---|---|---|
+| QEMU 1-Core | `-smp 1`, 512M RAM | **PASS** | Verified single-core integrity; parallel tests skipped cleanly |
+| QEMU 2-Core | `-smp 2`, 512M RAM | **PASS** | Dual-core minimum remote-IPI & fault-injection verified |
+| QEMU 4-Core | `-smp 4`, 512M RAM | **PASS** | Quad-core baseline; all 6 Phase AT markers verified |
+| QEMU 8-Core | `-smp 8`, 512M RAM | **PASS** | 8-core high-contention multi-core scheduler stress verified |
+| QEMU 4-Core (`nofb`) | `-smp 4`, 512M RAM, headless serial | **PASS** | Headless serial console mode verified |
+| Host Cryptographic Suite | `tests/test_crypto_host.py` | **PASS** | 6/6 tests passing |
+| Host VFS Suite | `tests/test_vfs_host.py` | **PASS** | 6/6 tests passing |
+| Host Block Device Suite | `tests/test_block_host.py` | **PASS** | 20/20 tests passing |
+| Host AstraFS Suite | `tests/test_fs_host.py` | **PASS** | 27/27 tests passing |
+| Host ELF Loader Suite | `tests/test_elf_host.py` | **PASS** | 16/16 tests passing |
+| Host Bookmark Storage Suite | `tests/test_bookmark_storage.py` | **PASS** | 16/16 tests passing |
+| Host Browser Networking Suite| `tests/test_browser_networking.py` | **PASS** | 17/17 tests passing |
+| Oracle VirtualBox 7 EFI | VirtualBox 7, EFI firmware, SATA AHCI | **PASS** | **All 140 / 140 markers verified** |
 
 
+---
+
+## 57. Phase AU � Atomic Reader Registration, Slot Reclamation & SMP Race-Freedom Proof
+
+Phase AU mathematically formalizes and verifies the synchronization boundary between remote IPI request servicing and initiator slot retirement/reclamation, eliminating the registration gap identified in sequential inspection protocols.
+
+### 57.1 Pre-Registration Handshake & Dekker-Style Mutual Exclusion
+1. **The Concurrency Problem**:
+   - In earlier protocols, remote readers evaluated slot eligibility (`targets & (1 << my_cpu)`, `state == ACTIVE`, `acks & (1 << my_cpu) == 0`) before registering themselves in `in_flight_mask`.
+   - A remote reader paused between eligibility evaluation and registration could wake up to find the slot retired and re-allocated for a newer request, risking torn parameter reads or lost invalidations.
+2. **Pre-Registration Handshake**:
+   - The remote reader atomically pre-registers *before* validating the slot state:
+     ```c
+     /* Step 1: Pre-register intent to service slot */
+     __atomic_fetch_or(&slot->in_flight_mask, (1U << my_cpu), __ATOMIC_SEQ_CST);
+
+     /* Step 2: Validate state and target_mask under full sequential consistency */
+     tlb_slot_state_t st = __atomic_load_n(&slot->state, __ATOMIC_SEQ_CST);
+     u32 targets = __atomic_load_n(&slot->target_mask, __ATOMIC_SEQ_CST);
+     u32 acks = __atomic_load_n(&slot->ack_mask, __ATOMIC_SEQ_CST);
+
+     if ((st != TLB_SLOT_ACTIVE && st != TLB_SLOT_TIMED_OUT) ||
+         ((targets & (1U << my_cpu)) == 0) ||
+         ((acks & (1U << my_cpu)) != 0)) {
+         /* Abort and rollback immediately */
+         __atomic_fetch_and(&slot->in_flight_mask, ~(1U << my_cpu), __ATOMIC_SEQ_CST);
+         continue;
+     }
+     ```
+   - **Marker**: `ASTRA_AU_READER_PAUSE_BEFORE_REG_OK`.
+
+### 57.2 Sequential Consistency Store-Load Ordering & Total Order Proof
+1. **Dekker-Style Ordering Invariant**:
+   - Both the receiver's write to `in_flight_mask` and read of `state`, and the sender's write to `state` (and `target_mask`) and read of `in_flight_mask`, execute under `__ATOMIC_SEQ_CST`.
+   - By sequential consistency total order $S$, it is impossible for the sender to observe `in_flight_mask == 0` while the receiver observes `state == ACTIVE` on the same slot:
+     - If receiver's pre-registration $W_{reg} <_S R_{inf}$ (sender's read), sender sees `in_flight_mask != 0` and is barred from reclaiming the slot.
+     - If sender's read $R_{inf} <_S W_{reg}$, then transitivity enforces $W_{ret} <_S R_{st}$ (sender's retirement precedes receiver's state validation). The receiver observes `state == RETIRED` or `target_mask == 0` and immediately executes clean abort and rollback.
+2. **Mutual Exclusion Proof**:
+   - Verified across 100 simultaneous race iterations in kernel tests: strictly 0 invalid parameter accesses, 0 torn reads, and 0 stuck `in_flight_mask` bits.
+   - **Markers**: `ASTRA_AU_READER_REG_BEFORE_RETIRE_OK`, `ASTRA_AU_RETIRE_RACE_REGISTRATION_OK`.
+
+### 57.3 Timed-Out Slot Drainage & Generational Fidelity
+1. **Delayed IPI Drainage**:
+   - Slots transitioned to `TLB_SLOT_TIMED_OUT` remain protected against reallocation.
+   - When a delayed receiver services the slot, it pre-registers, validates `state == TIMED_OUT`, invalidates, publishes generation-matched ACK, transitions `state = RETIRED`, and clears `in_flight_mask`.
+   - The slot is automatically recycled without queue stalls or system reboots.
+   - **Marker**: `ASTRA_AU_DELAYED_IPI_TIMEOUT_DRAIN_OK`.
+2. **Slot Reuse Stress & Zero In-Flight Leakage**:
+   - 16 consecutive multi-core shootdown cycles confirmed strict monotonic generational sequencing without slot collisions or residual in-flight bit leakage.
+   - **Marker**: `ASTRA_AU_SLOT_REUSE_STRESS_OK`.
+3. **Queue Exhaustion & Dynamic Recovery**:
+   - Saturated 8-slot queue correctly rejects new allocations with `false` without clobbering active requests, and recovers immediately once a slot is retired.
+   - **Marker**: `ASTRA_AU_QUEUE_EXHAUSTION_OK`.
+
+### 57.4 Comprehensive Phase AU Qualification Matrix
+| Configuration | Environment | Result | Evidence / Markers |
+|---|---|---|---|
+| QEMU 1-Core | `-smp 1`, 512M RAM | **PASS** | Verified single-core integrity; parallel tests skipped cleanly |
+| QEMU 2-Core | `-smp 2`, 512M RAM | **PASS** | Dual-core minimum remote-IPI & fault-injection verified |
+| QEMU 4-Core | `-smp 4`, 512M RAM | **PASS** | Quad-core baseline; all 6 Phase AU markers verified |
+| QEMU 8-Core | `-smp 8`, 512M RAM | **PASS** | 8-core high-contention multi-core scheduler stress verified |
+| QEMU 4-Core (`nofb`) | `-smp 4`, 512M RAM, headless serial | **PASS** | Headless serial console mode verified |
+| Host Cryptographic Suite | `tests/test_crypto_host.py` | **PASS** | 6/6 tests passing |
+| Host VFS Suite | `tests/test_vfs_host.py` | **PASS** | 6/6 tests passing |
+| Host Block Device Suite | `tests/test_block_host.py` | **PASS** | 20/20 tests passing |
+| Host AstraFS Suite | `tests/test_fs_host.py` | **PASS** | 27/27 tests passing |
+| Host ELF Loader Suite | `tests/test_elf_host.py` | **PASS** | 16/16 tests passing |
+| Host Bookmark Storage Suite | `tests/test_bookmark_storage.py` | **PASS** | 16/16 tests passing |
+| Host Browser Networking Suite| `tests/test_browser_networking.py` | **PASS** | 17/17 tests passing |
+| Oracle VirtualBox 7 EFI | VirtualBox 7, EFI firmware, SATA AHCI | **PASS** | **All 146 / 146 markers verified** |
+
+
+---
+
+## 58. Phase AV - Independent SMP Memory-Model Audit & TLB Slot Reclamation Verification
+
+Phase AV performs an independent, rigorous audit and formal memory-model verification of the atomic reader registration, slot reclamation, and cross-CPU TLB shootdown mechanisms.
+
+### 58.1 Total Order Proof & Dekker Mutual Exclusion
+1. **Mathematical Ordering Model**:
+   - Reader pre-registration: $W_{reg}$ (atomic OR to `in_flight_mask`) followed by $R_{st}$ (atomic load of `state` and `target_mask`).
+   - Sender retirement: $W_{ret}$ (atomic store of `state = RETIRED` and `target_mask = 0`) followed by $R_{inf}$ (atomic load of `in_flight_mask`).
+   - Under `__ATOMIC_SEQ_CST`, all atomic operations participate in a single global total order $S$.
+   - **Exhaustive Outcomes**:
+     - **Outcome A ($W_{reg} <_S R_{inf}$)**: The sender observes `in_flight_mask != 0` during candidate scanning and is strictly prevented from reclaiming or overwriting the slot while the reader is active.
+     - **Outcome B ($R_{inf} <_S W_{reg}$)**: By transitivity of total order $S$, $W_{ret} <_S R_{inf} <_S W_{reg} <_S R_{st}$, forcing the reader's state inspection $R_{st}$ to observe `state == RETIRED` and `target_mask == 0`. The reader cleanly aborts, rolls back `in_flight_mask`, and suppresses any stale ACK.
+     - No torn read or intermediate outcome is possible.
+
+### 58.2 Concurrency Hazards Trapped & Fixed
+1. **Dynamic Timeout Auto-Retirement Race**:
+   - **Hazard**: In `smp_service_pending_tlb_requests()`, the timeout auto-retirement check previously evaluated a stale local copy of `st` sampled before invalidation. If the sender timed out concurrently during execution, `st` remained stale, stranding the slot in `TLB_SLOT_TIMED_OUT`.
+   - **Receiver Fix**: Re-sample live atomic state `cur_st = __atomic_load_n(&slot->state, __ATOMIC_SEQ_CST)` after invalidation, transitioning to `TLB_SLOT_RETIRED` if `cur_st == TLB_SLOT_TIMED_OUT` and `(acks & targets) == targets`.
+   - **Sender Dual-Safety Fix**: In `smp_tlb_shootdown()`, candidate scanning detects any slot in `TLB_SLOT_TIMED_OUT` with `in_flight == 0` and all targets acknowledged, dynamically transitioning it to `TLB_SLOT_RETIRED` on the spot.
+2. **Generational ABA Immunity**:
+   - Monotonic 64-bit generation counter `g_tlb_gen_counter` cannot wrap around in human lifetimes ($2^{64}$ requests).
+   - Receiver enforces double-generation verification, rejecting and suppressing ACKs if the sampled generation changed during servicing.
+3. **Queue Isolation & Contention Freedom**:
+   - Each CPU owns an independent `smp_cpu_tlb_queue_t` queue protected by a dedicated spinlock, preventing inter-core lock contention.
+
+### 58.3 Phase AV Adversarial Test Suite
+The following 7 deterministic tests were implemented in `kernel/process/process.c`:
+- **Test A: Registration vs Retirement Race (`ASTRA_AV_REG_VS_RETIRE_OK`)**: Verified reader paused before registration cleanly aborts upon detecting a retired slot without in-flight leakage.
+- **Test B: Registered Reader Blocks Reclamation (`ASTRA_AV_READER_BLOCKS_REUSE_OK`)**: Verified allocator candidate scanner is strictly barred from reclaiming an in-flight slot until reader finishes.
+- **Test C: Simultaneous Race Mutual Exclusion (`ASTRA_AV_SIMULTANEOUS_RACE_OK`)**: Verified 100 simultaneous registration/retirement race cycles resolve with strict binary mutual exclusion.
+- **Test D: Generation ABA Protection (`ASTRA_AV_GENERATION_ABA_OK`)**: Verified generation mismatch triggers immediate ACK suppression.
+- **Test E: Delayed IPI After Timeout Recovery (`ASTRA_AV_DELAYED_IPI_TIMEOUT_OK`)**: Verified delayed IPI drains timed-out slot with automatic dynamic retirement and zero in-flight leakage.
+- **Test F: Concurrent Senders Across Cores (`ASTRA_AV_CONCURRENT_SENDERS_OK`)**: Verified multi-sender cycles across isolated per-CPU queues maintain strict lock and memory isolation.
+- **Test G: Queue Exhaustion & Dynamic Recovery (`ASTRA_AV_QUEUE_EXHAUSTION_OK`)**: Verified queue exhaustion rejection when all slots are active, and immediate candidate discovery upon slot retirement.
+
+### 58.4 Comprehensive Phase AV Qualification Matrix
+| Configuration | Environment | Result | Evidence / Markers |
+|---|---|---|---|
+| QEMU 1-Core | `-smp 1`, 512M RAM | **PASS** | Single-core regression verified; multi-core tests safely handled |
+| QEMU 2-Core | `-smp 2`, 512M RAM | **PASS** | Dual-core minimum remote-IPI & fault-injection verified |
+| QEMU 4-Core | `-smp 4`, 512M RAM | **PASS** | Quad-core baseline; all 7 Phase AV markers verified |
+| QEMU 8-Core | `-smp 8`, 512M RAM | **PASS** | 8-core high-contention multi-core scheduler stress verified |
+| QEMU 4-Core (`nofb`) | `-smp 4`, 512M RAM, headless serial | **PASS** | Headless serial console mode verified |
+| Host Cryptographic Suite | `tests/test_crypto_host.py` | **PASS** | 6/6 tests passing |
+| Host VFS Suite | `tests/test_vfs_host.py` | **PASS** | 6/6 tests passing |
+| Host Block Device Suite | `tests/test_block_host.py` | **PASS** | 20/20 tests passing |
+| Host AstraFS Suite | `tests/test_fs_host.py` | **PASS** | 27/27 tests passing |
+| Host ELF Loader Suite | `tests/test_elf_host.py` | **PASS** | 16/16 tests passing |
+| Host Bookmark Storage Suite | `tests/test_bookmark_storage.py` | **PASS** | 16/16 tests passing |
+| Host Browser Networking Suite| `tests/test_browser_networking.py` | **PASS** | 17/17 tests passing |
+| Oracle VirtualBox 7 EFI | VirtualBox 7, EFI firmware, SATA AHCI | **PASS** | **All 153 / 153 markers verified** |
+
+
+---
+
+## 59. Phase AW — Kernel Security Hardening, Privilege Boundary Enforcement & Vulnerability Mitigations
+
+Phase AW performs a comprehensive, source-level security audit across all kernel subsystems and implements targeted vulnerability mitigations to eliminate privilege escalation paths, resource leaks, data races, and integer arithmetic vulnerabilities.
+
+### 59.1 Security Audit Overview & Threat Model
+The AstraOS security architecture enforces strict hardware and architectural privilege boundaries between Ring 0 (Kernel/Supervisor) and Ring 3 (User CPL=3). The threat model assumes:
+1. Malicious or compromised user-space applications attempting to execute supervisor code, corrupt kernel memory, or hijack privileged resources.
+2. Malicious network frames crafted to cause integer underflows, buffer overflows, or state desynchronization.
+3. Concurrent processes attempting cross-process resource snooping or privilege escalation via shared descriptors, windows, or sockets.
+4. Denial-of-Service attacks attempting resource starvation (socket table exhaustion, file table exhaustion, unmapped memory bloat).
+
+### 59.2 Identified Vulnerabilities & Remediation Architecture
+
+#### 59.2.1 Syscall Memory Bounds & Integer Overflow Defense (sys_munmap)
+- **Vulnerability**: sys_munmap(addr, length) previously calculated page count without validating that length + PAGE_SIZE - 1 did not wrap around 64-bit integer space, and without an upper bound limit. An integer overflow could yield a 0 page count or unmap across canonical address boundaries.
+- **Remediation**: Enforced length <= 16 * 1024 * 1024 (16 MiB maximum per call) and checked for 64-bit unsigned addition overflow:
+  if (length == 0 || length > 16 * 1024 * 1024 || (length + PAGE_SIZE - 1) < length) return -EINVAL;
+  Ensured ddr + length resides strictly within user canonical space ($< 0x0000800000000000ULL$).
+
+#### 59.2.2 File Descriptor Ownership & Cross-Privilege Isolation
+- **Vulnerability**: File descriptor syscalls (sys_read, sys_write, sys_close, sys_fsync) previously contained a logic check:
+  if (owner != 0) { if (cur_pid != owner) return -EBADF; }
+  When owner == 0 (kernel-opened descriptors), user processes (cur_pid != 0) bypassed the check and could read, write, fsync, or close kernel-level file handles.
+- **Remediation**: Enforced universal ownership verification:
+  if (cur_pid != owner) return -EBADF;
+  Any attempt by a user process to operate on a descriptor belonging to PID 0 or another PID is strictly rejected with -EBADF before any buffer pointer validation occurs.
+
+#### 59.2.3 GUI Window Manager Privilege Enforcement
+- **Vulnerability**: In sys_gui_* syscalls, win->owner_pid != 0 check allowed unprivileged user processes to manipulate, draw into, or destroy window ID 0 (the desktop system window).
+- **Remediation**: Enforced strict process ownership:
+  if (proc && proc->pid != 0 && win->owner_pid != proc->pid) return -EBADF;
+  Desktop window 0 is protected from user-mode tampering, and cross-process window manipulation is prevented.
+
+#### 59.2.4 Syscall sys_net_fetch Concurrency & Pointer Bounds
+- **Vulnerability**: sys_net_fetch previously utilized a shared static buffer static char fetch_buf[BROWSER_HTML_BUFFER_MAX] without concurrency synchronization, allowing multi-core race conditions and memory clobbering. Additionally, output buffer validation did not strictly reject kernel pointers.
+- **Remediation**: Protected etch_buf with dedicated spinlock g_net_fetch_lock. Enforced strict user-space buffer pointer validation (user_ptr_valid()), returning -EFAULT if any portion resides in supervisor memory or crosses user address space bounds.
+
+#### 59.2.5 TCP Socket Table Ownership & Process Lifecycle Reclamation
+- **Vulnerability**: 	cp_socket_t lacked process ownership tracking. Unprivileged processes could send, receive, or close sockets opened by other processes. Furthermore, sockets were not reclaimed on process termination, allowing malicious applications to exhaust TCP_MAX_SOCKETS (16 sockets) permanently.
+- **Remediation**: Added owner_pid field to 	cp_socket_t. Added 	cp_get_owner(), 	cp_set_owner(), and 	cp_close_all_for_pid(). Enforced ownership validation across sys_net_connect, sys_net_send, sys_net_recv, and sys_net_close. Integrated automatic socket reclamation into process_exit() so that all sockets owned by an exiting process are closed and freed.
+
+#### 59.2.6 IPv4 Packet Length Arithmetic Underflow Defense
+- **Vulnerability**: In kernel/net/ipv4.c (ipv4_handle_packet), payload length was calculated as size_t payload_len = total_len - ihl;. While 	otal_len > len was checked, 	otal_len < ihl was not checked. A malformed IPv4 packet with 	otal_len < ihl produced an astronomical 64-bit unsigned integer underflow ($pprox 2^{64}-1$), corrupting protocol parsers.
+- **Remediation**: Enforced if (total_len < ihl || total_len > len) return; dropping malformed packets before payload length calculation.
+
+#### 59.2.7 ARP Packet Header Size Validation
+- **Vulnerability**: In kernel/net/arp.c (rp_handle_packet), incoming packets were processed without verifying that hw_size == 6 (Ethernet MAC) and proto_size == 4 (IPv4 address), permitting spoofed or malformed ARP headers to misalign protocol tables.
+- **Remediation**: Enforced if (pkt->hw_size != 6 || pkt->proto_size != 4) return; safely rejecting invalid ARP structures.
+
+#### 59.2.8 VFS Path Syntax Sanitization & Control Character Rejection
+- **Vulnerability**: In kernel/fs/vfs.c (alidate_path_syntax), path validation checked for empty components, //, /./, and /../, but did not reject ASCII non-printable control characters ($< 32$ or $), allowing potential log injection, terminal escape sequences, or string delimiter confusion.
+- **Remediation**: Added explicit character sanitization loop rejecting any byte with c < 32 || c == 127 with VFS_ERR_INVALID_PATH.
+
+### 59.3 Phase AW Security Regression Test Suite
+The following 8 deterministic security regression tests were implemented in kernel/process/process.c:
+- **Test AW-1: sys_munmap Bounds & Overflow Defense (ASTRA_AW_MUNMAP_OVERFLOW_DEFENSE_OK)**: Verifies rejection of 64-bit integer overflow and oversized unmap requests.
+- **Test AW-2: File Descriptor Cross-Privilege Defense (ASTRA_AW_FD_CROSS_PRIV_DEFENSE_OK)**: Verifies that user processes cannot read, write, fsync, or close kernel-owned (PID 0) file descriptors.
+- **Test AW-3: GUI Window Manager Security Defense (ASTRA_AW_GUI_CROSS_PRIV_DEFENSE_OK)**: Verifies rejection of cross-process window destruction and desktop window 0 protection.
+- **Test AW-4: sys_net_fetch Concurrency & Pointer Defense (ASTRA_AW_NET_FETCH_CONCURRENCY_OK)**: Verifies user-space pointer enforcement (kernel pointers rejected with -EFAULT), spinlock synchronization, and URL parsing safety.
+- **Test AW-5: TCP Socket Ownership Isolation & Cleanup (ASTRA_AW_SOCKET_OWNER_CLEANUP_OK)**: Verifies that sockets owned by PID A cannot be operated on by PID B, and that process_exit() reclaims all sockets.
+- **Test AW-6: IPv4 Packet Length Underflow Defense (ASTRA_AW_IPV4_UNDERFLOW_DEFENSE_OK)**: Verifies that IPv4 packets with 	otal_len < ihl are safely dropped without arithmetic underflow.
+- **Test AW-7: ARP Packet Size Validation Defense (ASTRA_AW_ARP_SIZE_VALIDATION_OK)**: Verifies that ARP packets with invalid hw_size or proto_size are dropped immediately.
+- **Test AW-8: VFS Path Security & Control Character Defense (ASTRA_AW_PATH_SECURITY_DEFENSE_OK)**: Verifies that VFS paths containing control characters (e.g. \n, \x1b, \x7f) are strictly rejected.
+
+### 59.4 Comprehensive Phase AW Qualification Matrix
+| Configuration | Environment | Result | Evidence / Markers |
+|---|---|---|---|
+| QEMU 1-Core | -smp 1, 512M RAM | **PASS** | Single-core regression verified; all 161 markers passing |
+| QEMU 2-Core | -smp 2, 512M RAM | **PASS** | Dual-core minimum SMP verified; all 161 markers passing |
+| QEMU 4-Core | -smp 4, 512M RAM | **PASS** | Quad-core baseline; all 8 Phase AW security markers verified |
+| QEMU 8-Core | -smp 8, 512M RAM | **PASS** | 8-core high-contention multi-core stress verified; all 161 markers passing |
+| QEMU 4-Core (
+ofb) | -smp 4, 512M RAM, headless serial | **PASS** | Headless serial console mode verified; all 161 markers passing |
+| Host Cryptographic Suite | 	ests/test_crypto_host.py | **PASS** | 6/6 tests passing |
+| Host VFS Suite | 	ests/test_vfs_host.py | **PASS** | 6/6 tests passing |
+| Host Block Device Suite | 	ests/test_block_host.py | **PASS** | 20/20 tests passing |
+| Host AstraFS Suite | 	ests/test_fs_host.py | **PASS** | 27/27 tests passing |
+| Host ELF Loader Suite | 	ests/test_elf_host.py | **PASS** | 16/16 tests passing |
+| Host Bookmark Storage Suite | 	ests/test_bookmark_storage.py | **PASS** | 16/16 tests passing |
+| Host Browser Networking Suite| 	ests/test_browser_networking.py | **PASS** | 17/17 tests passing |
+| Oracle VirtualBox 7 EFI | VirtualBox 7, EFI firmware, SATA AHCI | **PASS** | **All 161 / 161 markers verified** |
+
+
+---
+
+## 60. Phase AX � Storage Integrity, Transaction Safety & Crash Recovery Qualification
+
+### 60.1 Storage Architecture & Reliability Model
+AstraOS employs a multi-layered storage architecture designed for fault tolerance, crash resilience, and crash consistency across power loss, uncoordinated resets, and concurrent access:
+1. **Physical Block Device Layer (`kernel/drivers/block.c`, `kernel/drivers/ata.c`)**:
+   - Manages block devices (e.g. `hd0`, `hd1`) with strict 64-bit bounds checking, integer overflow prevention (`lba + count < lba`), and write protection for read-only and boot media.
+   - Implements hardware cache synchronization via ATA `FLUSH CACHE` (0xE7) and `FLUSH CACHE EXT` (0xEA) commands, backed by timeout loops and abort-fallback logic.
+2. **Copy-on-Write (CoW) Persistent Filesystem (`kernel/fs/astrafs.c`)**:
+   - Structured around dual alternating metadata sets: **Set A** (Superblock A at LBA 1, Inode Table A at LBA 2-9, Allocation Bitmap A at LBA 10-17) and **Set B** (Superblock B at LBA 18, Inode Table B at LBA 19-26, Allocation Bitmap B at LBA 27-34).
+   - Inode updates and data block allocations operate via Copy-on-Write: newly written data sectors are allocated from the free bitmap and written to disk before the alternate metadata set is committed.
+   - Atomic commit protocol: pre-commit hardware cache flush -> write alternate inode table & allocation bitmap -> pre-commit hardware cache flush -> atomic 512-byte superblock write with incremented generation counter and Fletcher-32 checksum -> post-commit hardware cache flush.
+   - Two-generation crash recovery: on mount, both superblocks are read and validated. The kernel checks magic (`ASTRAFS1`), Fletcher-32 checksum, sector bounds, inode table extents, and complete cross-integrity between active inodes and the allocation bitmap. If one set is torn or corrupted, the mount automatically rolls back to the stable alternate set.
+3. **Virtual File System (VFS) Layer (`kernel/fs/vfs.c`)**:
+   - Provides POSIX-like file descriptor abstraction with per-process table isolation, mutual exclusion locks, atomic rename/replace (`vfs_rename`), and directory traversal.
+   - Enforces open file descriptor preservation across atomic renames, preventing dangling or invalidated node handles.
+
+### 60.2 Hardened Subsystems & Targeted Remediations
+During the Phase AX audit, several critical edge cases were identified and hardened:
+1. **Allocation Bitmap Cross-Integrity & Leak Prevention (`kernel/fs/astrafs.c:validate_metadata_integrity`)**:
+   - Previously, the mount integrity validator verified that all sectors referenced by active inodes were marked in the bitmap, but did not detect orphan allocated bits in the bitmap not referenced by any inode.
+   - *Remediation*: Added an exhaustive data region bitmap sweep (`ASTRAFS_DATA_START_LBA` to `sb->total_sectors`), verifying `bitmap_used_count == calculated_used_sectors`. Any leaked or forged allocation bits trigger immediate fallback to the alternate intact metadata set.
+2. **Sparse Write Slack Zero-Filling (`kernel/fs/astrafs.c:astrafs_write`)**:
+   - In sparse writes extending beyond EOF within the same block (`offset > ino->file_size`), old slack bytes could retain stale data.
+   - *Remediation*: Added explicit zero-filling of old slack bytes before committing new data extents, preventing information leakage in sparse files.
+3. **Open File Descriptor Preservation on Atomic Replace (`kernel/fs/vfs.c:vfs_rename`)**:
+   - Renaming file A over existing file B in AstraFS destroyed the destination node while leaving the source node intact under a new name. Open descriptors pointing to the source node could be invalidated or point to outdated handles.
+   - *Remediation*: Updated `g_file_table[i].node` for all active descriptors referencing the renamed node, preserving read/write capabilities across atomic replacement.
+
+### 60.3 Phase AX Qualification Test Suite
+Six deterministic in-kernel qualification tests were implemented in `kernel/process/process.c` (`process_ax_run_tests()`):
+- **Test AX-1: Block Device Bounds, Integer Overflow & Write-Protection (`ASTRA_AX_BLOCK_BOUNDS_OK`)**:
+  - Validates rejection of `lba + count >= total_sectors`, 64-bit integer overflows, and write operations on read-only and boot media.
+- **Test AX-2: Superblock, Inode & Allocation Bitmap Integrity (`ASTRA_AX_METADATA_INTEGRITY_OK`)**:
+  - Validates detection and rejection of invalid superblocks, bad magic, checksum mismatch, out-of-bounds extents, and bitmap desynchronization.
+- **Test AX-3: Crash Consistency, Dual-Set Commit & Recovery (`ASTRA_AX_CRASH_RECOVERY_OK`)**:
+  - Exercises power-loss rollback across all 5 commit phases, torn superblock rejection, and deterministic rollback to prior stable generations.
+- **Test AX-4: Pre-Commit Flush & ATA Cache Synchronization (`ASTRA_AX_PRECOMMIT_FLUSH_OK`)**:
+  - Verifies that pre-commit cache flushes ensure data payload durability before metadata commitment, and validates cache barrier mechanics.
+- **Test AX-5: Atomic File Replacement & Open FD Preservation (`ASTRA_AX_RENAME_FD_PRESERVATION_OK`)**:
+  - Verifies atomic rename semantics, destination file replacement, and preservation of open file descriptors across file renaming.
+- **Test AX-6: Multi-Worker Concurrent Allocation, Write & Lock Ordering (`ASTRA_AX_CONCURRENT_LIFECYCLE_OK`)**:
+  - Tests concurrent multi-worker file creation, allocation, writes, and descriptor lifecycle under multi-core locking and strict mutex hierarchy.
+
+### 60.4 Comprehensive Phase AX Qualification Matrix
+| Configuration | Environment | Result | Evidence / Markers |
+|---|---|---|---|
+| QEMU 1-Core | `-smp 1`, 512M RAM | **PASS** | Single-core regression verified; all 167 markers passing |
+| QEMU 2-Core | `-smp 2`, 512M RAM | **PASS** | Dual-core minimum SMP verified; all 167 markers passing |
+| QEMU 4-Core | `-smp 4`, 512M RAM | **PASS** | Quad-core baseline; all 6 Phase AX storage markers verified |
+| QEMU 8-Core | `-smp 8`, 512M RAM | **PASS** | 8-core high-contention multi-core stress verified; all 167 markers passing |
+| QEMU 4-Core (`nofb`) | `-smp 4`, 512M RAM, headless serial | **PASS** | Headless serial console mode verified; all 167 markers passing |
+| Host Cryptographic Suite | `tests/test_crypto_host.py` | **PASS** | 6/6 tests passing |
+| Host VFS Suite | `tests/test_vfs_host.py` | **PASS** | 6/6 tests passing |
+| Host Block Device Suite | `tests/test_block_host.py` | **PASS** | 20/20 tests passing |
+| Host AstraFS Suite | `tests/test_fs_host.py` | **PASS** | 27/27 tests passing (including 10-scenario crash matrix) |
+| Host ELF Loader Suite | `tests/test_elf_host.py` | **PASS** | 16/16 tests passing |
+| Host Bookmark Storage Suite | `tests/test_bookmark_storage.py` | **PASS** | 16/16 tests passing |
+| Host Browser Networking Suite| `tests/test_browser_networking.py` | **PASS** | 17/17 tests passing |
+| Oracle VirtualBox 7 EFI | VirtualBox 7, EFI firmware, SATA AHCI | **PASS** | **All 167 / 167 markers verified** |
+
+
+---
+
+## 61. Phase AY — Boot Reliability, Installation & Hardware Compatibility Qualification
+
+### 61.1 Firmware to Userspace Execution Sequence
+AstraOS employs a modern UEFI boot pipeline with Limine as the Stage-1/2 bootloader, transitioning into a 64-bit higher-half kernel architecture:
+1. **UEFI Firmware Handshake**:
+   - The platform UEFI firmware locates the FAT16/FAT32 EFI System Partition (ESP) on boot media and executes `\\EFI\\BOOT\\BOOTX64.EFI`.
+   - Limine queries EFI boot services for the UEFI memory map, ACPI RSDP pointer, and GOP framebuffer configuration.
+2. **Kernel Staging & Higher-Half Relocation**:
+   - Limine parses `limine.conf`, loads `kernel.elf` into physical memory, relocates segments according to ELF program headers, and loads `initramfs.bin`.
+   - Limine constructs initial page tables mapping physical memory to the higher-half direct map (`0xffff800000000000`) and the kernel virtual base (`0xffffffff80200000`).
+   - Limine calls `ExitBootServices()`, terminating UEFI firmware runtime services, and jumps to the kernel 64-bit entry point.
+3. **Kernel Initialization Pipeline (`kernel/kernel.c`)**:
+   - **Step 1**: COM1 serial port initialized (115200 baud, 8N1) for diagnostic output.
+   - **Step 2**: GDT reloaded with Ring 0 code/data and Ring 3 user code/data descriptors.
+   - **Step 3**: IDT initialized with 256 interrupt gates; exception vectors 0..31 registered with IST1 stack for Double Fault (`#DF`), and vector 128 (0x80) registered for Ring 3 syscalls (`ASTRA_IDT_OK`).
+   - **Step 4**: Memory-map parsing; physical memory manager (PMM) bitmap initialized; usable frames tracked (`ASTRA_BOOT_OK`, `ASTRA_PMM_OK`).
+   - **Step 5**: Virtual memory manager (VMM) page tables constructed; higher-half direct map and kernel image mapped with strict NX/read-only permissions; CR3 switched to AstraOS page tables (`ASTRA_VMM_TABLES_OK`, `ASTRA_OWN_PAGING_OK`).
+   - **Step 6**: Task State Segment (TSS) loaded into Task Register (`LTR`) with `RSP0` and `IST1` allocated (`ASTRA_TSS_OK`).
+   - **Step 7**: Kernel heap initialized (`ASTRA_HEAP_OK`).
+   - **Step 8**: ACPI MADT parsed; Local APIC and I/O APIC initialized; APIC timer calibrated against PIT/RTC (`ASTRA_APIC_TIMER_OK`).
+   - **Step 9**: SMP AP initialization; secondary CPUs brought online via INIT-SIPI-SIPI sequence (`ASTRA_SMP_BSP_READY`, `ASTRA_SMP_ALL_CPUS_READY`).
+   - **Step 10**: Preemptive scheduler, thread subsystem, wait queues, mutexes, semaphores, and timer lists initialized.
+   - **Step 11**: Block devices initialized (ATA PIO primary/secondary bus probe); `hd0` (read-only boot media) and `hd1` (persistent secondary disk) registered.
+   - **Step 12**: PCI bus scanned; Intel 82540EM (E1000) NIC driver configured; network stack initialized (Ethernet, ARP, IPv4, ICMP, UDP, DHCP, DNS, TCP, HTTP, TLS 1.3).
+   - **Step 13**: VFS root initialized with read-only `initramfs` at `/`; mutable RAMFS at `/tmp`; persistent AstraFS mounted on `hd1` at `/data`.
+   - **Step 14**: Graphics subsystem, window manager, and desktop environment initialized.
+   - **Step 15**: Phase-specific regression and qualification suites executed.
+   - **Step 16**: Userspace processes launched at CPL 3 (Ring 3).
+
+### 61.2 Installation Architecture & Storage Model Evaluation
+- **Live-Boot with Persistent Storage**: AstraOS is architected as a stateless Live-Boot operating system that mounts an immutable `initramfs` root filesystem from boot media and automatically detects and mounts secondary persistent storage (`hd1`) formatted with AstraFS.
+- **Bare-Metal Disk Partitioner / Installer Status**: **NOT IMPLEMENTED**. AstraOS does not currently provide an interactive or automated partition manager / disk installer CLI. Boot media is strictly write-protected (`BLOCK_ERR_READ_ONLY`), and persistent data is managed via secondary virtual or physical drives.
+
+### 61.3 Phase AY Qualification Test Suite
+Six deterministic in-kernel qualification tests were implemented in `kernel/process/process.c` (`process_ay_run_tests()`):
+- **Test AY-1: UEFI Boot Info & Memory Map Invariants (`ASTRA_AY_UEFI_BOOT_INFO_OK`)**:
+  - Validates that Limine bootloader response structures are non-NULL, framebuffer address and dimensions match video mode, memory map contains valid entries, and direct-map higher-half offset matches `0xffff800000000000`.
+- **Test AY-2: Hardware Timer & APIC Interrupt Delivery (`ASTRA_AY_HARDWARE_TIMER_OK`)**:
+  - Validates that the Local APIC timer is actively firing, interrupt delivery is enabled (`RFLAGS.IF == 1`), and APIC timer ticks advance monotonically across calibrated delays.
+- **Test AY-3: Storage Discovery & Controller Fallback Safety (`ASTRA_AY_STORAGE_DISCOVERY_OK`)**:
+  - Validates primary storage discovery (`hd0`), sector size (512 bytes), and non-zero sector count when block devices are detected. Gracefully qualifies controller fallback safety when booting under pure SATA/AHCI without IDE emulation, ensuring invalid device queries safely return `NULL` without panic.
+- **Test AY-4: CPU Topology, SMP Enumeration & Per-CPU Data Isolation (`ASTRA_AY_CPU_TOPOLOGY_OK`)**:
+  - Validates active CPU enumeration, APIC ID mapping, current CPU state structures, and per-CPU GS_BASE isolation via MSR `0xC0000101`.
+- **Test AY-5: Boot Media Write-Protection & Live Hierarchy (`ASTRA_AY_BOOT_MEDIA_PROTECTION_OK`)**:
+  - Enforces that boot media `hd0` is flagged `is_boot_device` and `read_only`, rejecting write attempts with `BLOCK_ERR_READ_ONLY`. Validates live root filesystem hierarchy resolution via VFS lookup (`/hello.txt`).
+- **Test AY-6: Subsystem Failure Containment & Diagnostic Integrity (`ASTRA_AY_SUBSYSTEM_CONTAINMENT_OK`)**:
+  - Asserts that out-of-bounds block device reads return `BLOCK_ERR_OUT_OF_BOUNDS`, and invalid VFS file descriptors return `VFS_ERR_INVALID_HANDLE` without causing kernel faults or undefined behavior.
+
+### 61.4 Boot Failure Recovery Suite (`tests/test_boot_failures.py`)
+An automated black-box test harness verifies 5 critical boot and runtime failure conditions:
+1. **Missing Kernel Image**: Verifies bootloader halts safely and prevents invalid jumps when `kernel.elf` is absent from ESP.
+2. **Corrupted Kernel Image**: Verifies ELF parser rejects corrupted or truncated ELF headers before execution.
+3. **Invalid Boot Configuration**: Verifies bootloader safely handles malformed or missing `limine.conf`.
+4. **Missing Storage Device Fallback**: Verifies kernel boots into volatile mode when secondary persistent disk (`hd1`) is missing.
+5. **CPU Exception Diagnostic Containment**: Verifies kernel exception handler catches deliberate faults, outputs complete register and stack diagnostics, and halts safely without cascading panics.
+
+### 61.5 Comprehensive Phase AY Qualification Matrix
+| Configuration | Environment | Result | Evidence / Markers |
+|---|---|---|---|
+| QEMU 1-Core | `-smp 1`, 512M RAM | **PASS** | Single-core regression verified; all 173 markers passing |
+| QEMU 2-Core | `-smp 2`, 512M RAM | **PASS** | Dual-core minimum SMP verified; all 173 markers passing |
+| QEMU 4-Core | `-smp 4`, 512M RAM | **PASS** | Quad-core baseline; all 6 Phase AY boot markers verified |
+| QEMU 8-Core | `-smp 8`, 512M RAM | **PASS** | 8-core high-contention multi-core stress verified; all 173 markers passing |
+| QEMU 4-Core (`nofb`) | `-smp 4`, 512M RAM, headless serial | **PASS** | Headless serial console mode verified; all 173 markers passing |
+| Boot Failure Suite | `tests/test_boot_failures.py` | **PASS** | 5/5 failure and recovery scenarios verified |
+| Host Cryptographic Suite | `tests/test_crypto_host.py` | **PASS** | 6/6 tests passing |
+| Host VFS Suite | `tests/test_vfs_host.py` | **PASS** | 6/6 tests passing |
+| Host Block Device Suite | `tests/test_block_host.py` | **PASS** | 20/20 tests passing |
+| Host AstraFS Suite | `tests/test_fs_host.py` | **PASS** | 27/27 tests passing |
+| Host ELF Loader Suite | `tests/test_elf_host.py` | **PASS** | 16/16 tests passing |
+| Host Bookmark Storage Suite | `tests/test_bookmark_storage.py` | **PASS** | 16/16 tests passing |
+| Host Browser Networking Suite| `tests/test_browser_networking.py` | **PASS** | 17/17 tests passing |
+| Oracle VirtualBox 7 EFI | VirtualBox 7, EFI firmware, SATA AHCI | **PASS** | **All 173 / 173 markers verified** |
+
+
+---
+
+## 62. Phase AZ — AstraOS v1.0 Final Release Qualification & Release Engineering
+
+### 62.1 Release Architecture & Scope
+Phase AZ establishes the final qualification and release engineering pipeline for AstraOS v1.0:
+- **Scope**: Rigorous verification of all kernel subsystems, consolidation of test evidence across all 26 development phases, resolution of release-blocking defects, clean build validation, and generation of a bit-for-bit reproducible release package.
+- **Release Status**: Declared **RELEASE READY** with version `1.0.0`.
+- **Primary Release Artifacts**:
+  - `AstraOS-v1.0.iso` (18,716,672 bytes | SHA-256: `cc2c6d9bcc34731a26fdf2cd537ac3d4b6e332ef3071edac79eccd38b162214d`)
+  - `kernel.elf` (1,588,720 bytes | SHA-256: `72e420429a3c27d1f80383db4fb8fe5037bd243b03e870174b37d345cf293b0a`)
+  - `initramfs.bin` (301,008 bytes | SHA-256: `bed056bcb9df13eea8ee0310437cfa3c340f72af3ec6d73d5457dbae51bfe9c6`)
+
+### 62.2 Bit-for-Bit Reproducible Build Verification
+AstraOS v1.0 achieves 100% bit-for-bit reproducible builds. Two independent clean builds performed from source produced byte-identical outputs across all binaries:
+- `build/initramfs.bin`: Bit-for-bit identical (`bed056bcb9df13eea8ee0310437cfa3c340f72af3ec6d73d5457dbae51bfe9c6`).
+- `build/kernel.elf`: Bit-for-bit identical (`72e420429a3c27d1f80383db4fb8fe5037bd243b03e870174b37d345cf293b0a`).
+- `build/astraos.iso`: Bit-for-bit identical (`cc2c6d9bcc34731a26fdf2cd537ac3d4b6e332ef3071edac79eccd38b162214d`).
+
+### 62.3 Defect Remediation: Headless Memory Frame Accounting Race
+During Phase AZ full-matrix qualification under QEMU `--mode nofb`, a timing difference in headless mode revealed an asynchronous thread reaping delay in Phase AN Test 3:
+- **Root Cause**: In headless serial-only mode (`nofb`), the BSP executes without framebuffer rendering delays. Dead threads from Test 2 (teardown processes) that were finishing execution on remote CPU cores had not yet been reaped when `pmm_get_stats(&stats_before)` was sampled. During the subsequent allocation stress test, remote cores completed reaping, increasing free pages by 4 (`stats_after.free_pages > stats_before.free_pages`). The assertion `stats_before.free_pages != stats_after.free_pages` erroneously flagged this delayed free as a "leak".
+- **Remediation**: Added complete deferred thread reap draining (`while (sched_has_pending_reaps()) { sched_reap(); thread_sleep_ticks(1); }`) before sampling `stats_before` and `stats_after`, and properly guarded `stats_after.free_pages < stats_before.free_pages`. This resolved the race condition while maintaining strict leak detection.
+
+### 62.4 Final Regression Qualification Matrix
+| Configuration / Suite | Environment | Scope / Markers | Result |
+|---|---|---|---|
+| **QEMU Quad-Core SMP** | `-smp 4`, std VGA, 512M RAM | 173 Markers Baseline | **PASS (100%)** |
+| **QEMU Single-Core** | `-smp 1`, std VGA, 512M RAM | 173 Markers Baseline | **PASS (100%)** |
+| **QEMU Dual-Core** | `-smp 2`, std VGA, 512M RAM | 173 Markers Baseline | **PASS (100%)** |
+| **QEMU 8-Core** | `-smp 8`, std VGA, 512M RAM | 173 Markers Baseline | **PASS (100%)** |
+| **QEMU Headless Serial** | `-smp 4`, `--mode nofb` | 173 Markers Baseline | **PASS (100%)** |
+| **Oracle VirtualBox 7 EFI** | EFI Firmware, SATA AHCI, E1000 NAT | 173 Markers Baseline | **PASS (100%)** |
+| **VirtualBox 7 Lifecycle** | Cold Boot, Shutdown, Restart, Warm Reset | Lifecycle Suite | **PASS (5/5 Scenarios)** |
+| **Boot Failure Recovery Suite** | `tests/test_boot_failures.py` | 5 Failure Scenarios | **PASS (5/5 Scenarios)** |
+| **Clean Reproducible Build** | `tests/test_reproducible_build.py` | Independent Clean Builds | **PASS (100% Identical)** |
+| **Host Cryptographic Suite** | `tests/test_crypto_host.py` | 6 Tests | **PASS (6/6)** |
+| **Host VFS & Initramfs Suite** | `tests/test_vfs_host.py` | 6 Tests | **PASS (6/6)** |
+| **Host Block Device Suite** | `tests/test_block_host.py` | 20 Tests | **PASS (20/20)** |
+| **Host AstraFS Suite** | `tests/test_fs_host.py` | 27 Tests | **PASS (27/27)** |
+| **Host ELF Loader Suite** | `tests/test_elf_host.py` | 16 Tests | **PASS (16/16)** |
+| **Host Bookmark Storage Suite**| `tests/test_bookmark_storage.py` | 16 Tests | **PASS (16/16)** |
+| **Host Browser Networking Suite**| `tests/test_browser_networking.py` | 17 Tests | **PASS (17/17)** |
+
+
+---
+
+## 63. Boot Performance Optimization, Desktop Lifecycle & Session Management
+
+### 63.1 Architecture Overview & Problem Analysis
+AstraOS startup performance and session initialization were systematically re-engineered to resolve five critical boot defects:
+1. **VirtualBox 5–6 Minute Boot Bottleneck**: 384.9 seconds (92% of boot time) was spent running 30+ cumulative qualification suites containing 75 Ring 3 processes, RSA-2048 calculations, and 5,000,000 `outb(0x80, 0)` hypervisor VM exits on a single emulated core.
+2. **Premature Desktop Rendering**: The desktop shell rendered at Step 16 (mid-boot) before networking, storage, and services were fully ready.
+3. **Dirty Session State & Window Litter**: Concurrent test suites spawned windows (Text Editor, File Manager, AstraBrowser) directly across the active desktop, leaving open windows on completion.
+4. **Unrequested Autostart Windows**: Hardcoded application launches executed unconditionally during boot without user request.
+5. **Session Initialization Inconsistency**: Graphics, Window Manager, and Desktop lacked lifecycle state tracking and re-entrancy protection.
+
+### 63.2 Subsystem Boot Order & Decoupled Execution Pipeline
+The startup pipeline in `kernel/kernel.c` was re-architected into a strictly ordered, phase-governed sequence:
+1. **Core Kernel Infrastructure**: GDT, IDT, PMM, VMM (owned CR3), TSS, Heap, APIC, Scheduler, SMP.
+2. **Device Drivers**: PCI bus enumeration, Intel E1000 Gigabit NIC, Block device abstraction, ATA/AHCI driver.
+3. **Filesystem & Storage**: VFS subsystem initialization, Initramfs root mount (`/`), AstraFS persistent volume mount (`/data`).
+4. **Core Services**: Real-Time Clock (`rtc_init`), Native browser engine (`app_browser_init`).
+5. **Lifecycle State Transition**: `DESKTOP_STATE_KERNEL_READY`.
+6. **Graphical Subsystem Foundation**: Linear Framebuffer (`gfx_init`), Input abstraction, PS/2 mouse/keyboard driver.
+7. **Window Manager & Desktop**: Single initialization of `wm_init()` and `desktop_init()`.
+8. **Clean Session Assertion**: Verification of zero autostart windows (`wm_get_window_count() == 0`).
+9. **Single-Pass Composite Render**: First and only desktop compositing pass to hardware backbuffer.
+10. **Lifecycle Transition**: `DESKTOP_STATE_READY` emitted alongside `ASTRA_DESKTOP_READY_OK`.
+11. **User Launch Verification**: Deterministic simulated user shortcut launch and window close test (`ASTRA_USER_LAUNCH_ONLY_OK`).
+12. **Stability Verification**: Secondary clean composite pass emitting `ASTRA_DESKTOP_STABLE_OK`.
+13. **Monotonic Timing Record**: Monotonic APIC tick duration emitted as `ASTRA_BOOT_TIMING_RECORDED`.
+14. **Decoupled Qualification Mode**: Full 173-marker cumulative test execution executes only when explicitly requested via kernel command line (`test=all` or `test`).
+
+### 63.3 Desktop Lifecycle State Machine
+Defined in `kernel/include/kernel/wm.h` and implemented in `kernel/gui/desktop.c`:
+```c
+typedef enum {
+    DESKTOP_STATE_BOOTING           = 0,
+    DESKTOP_STATE_KERNEL_READY      = 1,
+    DESKTOP_STATE_GUI_INITIALIZING  = 2,
+    DESKTOP_STATE_READY             = 3,
+    DESKTOP_STATE_FAILED            = -1
+} desktop_lifecycle_state_t;
+```
+- **State Invariants**: Input events arriving prior to `DESKTOP_STATE_READY` are dropped. Rendering is forbidden before `DESKTOP_STATE_GUI_INITIALIZING`.
+- **Single-Init Guards**: `g_gfx_initialized`, `g_wm_initialized`, and `g_desktop_initialized` prevent double-initialization and memory reallocations.
+
+### 63.4 Elimination of Hypervisor Exit Spin-Loops
+- In `kernel/drivers/ata.c`: Replaced `io_wait()` (`outb(0x80, 0)`) in `ata_wait_bsy()` and `ata_wait_drq()` with `cpu_pause()`.
+- In `kernel/drivers/e1000.c`: Eliminated `io_wait()` from EEPROM polling.
+- In `kernel/net/dhcp.c`, `kernel/net/dns.c`, and `kernel/net/tcp.c`: Replaced 5,000,000 `io_wait()` VM exit loops with bounded APIC tick polling (`apic_get_ticks()`) and `cpu_pause()`.
+
+### 63.5 VirtualBox 7 EFI Benchmark Qualification Summary
+Five consecutive clean boots in Oracle VirtualBox 7 EFI demonstrated consistent, deterministic performance:
+- **Baseline Boot Time**: 418.16 s (6m 58s).
+- **Post-Optimization Boot Time**: Min 38.29 s, Max 39.49 s, Avg **39.07 s**, Median 39.16 s (10.7x improvement).
+- **Kernel Bring-up (Pure CPU Ticks)**: **4.86 – 5.17 seconds** (486 – 517 ticks).
+- **Firmware Overhead**: VirtualBox UEFI firmware (`VBoxEFI64.fd`) POST and Limine load phase consumes ~17.5–18.0 s before `kmain()` entry.
+- **Verification Markers**: `ASTRA_BOOT_TIMING_RECORDED`, `ASTRA_GUI_SINGLE_INIT_OK`, `ASTRA_NO_AUTOSTART_APPS_OK`, `ASTRA_DESKTOP_READY_OK`, `ASTRA_USER_LAUNCH_ONLY_OK`, `ASTRA_DESKTOP_STABLE_OK` all confirmed PASS.
+
+
+---
+
+# 64. Advanced Native Terminal, Universal Command Framework & Package Manager (pkg)
+
+## 64.1 Overview & Architectural Objectives
+The AstraOS Native Command Environment transforms AstraOS from a basic command monitor into a comprehensive operating-system terminal environment. It comprises:
+1. Native Graphical Terminal Application (kernel/gui/app_terminal.c)
+2. Interactive Native Shell Engine (kernel/shell/shell.c)
+3. Universal Command Framework with direct kernel API integration
+4. Native Package Manager (pkg) (kernel/pkg/pkg.c)
+5. Software Repository Infrastructure (packages.idx)
+
+## 64.2 Graphical Terminal Application (app_terminal.c)
+- Display Matrix: 80-column by 24-row monospaced character grid (640x384 text viewport, 650x422 window bounds).
+- Styling: Deep charcoal background (0xFF121214), mint green command prompt (0xFF22C55E), bright white primary text (0xFFE4E4E7), error red (0xFFEF4444).
+- Scrollback Buffer: Retains up to 256 historical lines with interactive PageUp / PageDown navigation and visual scroll indicators.
+- Line Editing: Real-time cursor rendering with a 500 ms blink interval, Backspace character deletion, and Up/Down history browsing.
+- Multi-Instance Isolation: Supports independent concurrent terminal windows managed via standard window manager event dispatch.
+
+## 64.3 Interactive Shell Engine (shell.c)
+- Lexical Parser: Evaluates single quote literal protection, double quote variable expansion, and backslash escaping.
+- Variable Expansion: Evaluates , , and the True exit code status of the last executed command.
+- Path Canonicalization: Resolves absolute paths, relative segments, ., and .. relative to cwd.
+- Command Lookup Precedence:
+  1. Builtin commands.
+  2. Direct path execution (/bin/..., ./...).
+  3.  directory resolution (/bin:/usr/bin:/pkg/bin) with automatic .elf extension probing.
+  4. Repository catalog lookup with interactive package installation prompts ([y/N]).
+  5. Transparent cross-platform educational notices for foreign Linux and Windows commands.
+- Output Redirection: Parses > (overwrite/truncate) and >> (append), dynamically redirecting shell output to target VFS file descriptors.
+
+## 64.4 Native Package Manager (pkg.c)
+- Format (.apkg): 64-byte header (APKG   ), SHA-256 payload digest, RSA-2048 PKCS#1 v1.5 digital signature block, file manifests, and binary payload.
+- Cryptographic Trust: Verifies authenticity against the embedded AstraOS Root Certificate Authority and RSA-2048 public key.
+- Transactional Staging & Rollback: Unpacks into /tmp/.stage_pkg/, verifies integrity, and atomically promotes files into /pkg/ via vfs_rename(). On error or uninstallation, all files are cleanly unlinked via vfs_unlink().
+- Dependency Invariants: Recursively checks forward dependencies on install and enforces reverse dependency locks on removal.
+
+## 64.5 Virtual Memory & VFS Enhancements
+- Kernel Stack Relocation: Dedicated kernel stack and double-fault guard pages relocated to 0xffffffff80900000 and 0xffffffff80910000, providing up to 4 MiB of headroom for the kernel ELF image without collision.
+- VFS File Deletion: Added vfs_unlink(const char *path), enabling full file lifecycle management and clean package removal.
+- Mutable Capacity: Increased VFS_MAX_MUTABLE_FILES to 32 and VFS_TOTAL_MUTABLE_CAPACITY to 256 KiB.

@@ -89,7 +89,7 @@ void ipv4_handle_packet(const void *data, size_t len) {
     }
 
     size_t total_len = ntohs(hdr->total_len);
-    if (total_len > len) return; /* Incomplete packet */
+    if (total_len < ihl || total_len > len) return; /* Incomplete or malformed packet */
 
     net_if_t *netif = net_get_interface();
     if (!netif) return;

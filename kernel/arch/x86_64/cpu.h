@@ -3,6 +3,8 @@
 
 #include <kernel/types.h>
 
+#ifndef HOST_TEST
+
 static inline void outb(u16 port, u8 val) {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
 }
@@ -21,6 +23,14 @@ static inline u16 inw(u16 port) {
     u16 ret;
     __asm__ volatile ("inw %1, %0" : "=a"(ret) : "Nd"(port));
     return ret;
+}
+
+static inline void insw(u16 port, void *addr, size_t count) {
+    __asm__ volatile ("rep insw" : "+D"(addr), "+c"(count) : "d"(port) : "memory");
+}
+
+static inline void outsw(u16 port, const void *addr, size_t count) {
+    __asm__ volatile ("rep outsw" : "+S"(addr), "+c"(count) : "d"(port) : "memory");
 }
 
 static inline void outl(u16 port, u32 val) {
@@ -47,6 +57,10 @@ static inline void sti(void) {
 
 static inline void hlt(void) {
     __asm__ volatile ("hlt");
+}
+
+static inline void cpu_pause(void) {
+    __asm__ volatile ("pause" ::: "memory");
 }
 
 static inline u64 read_rflags(void) {
@@ -83,10 +97,6 @@ static inline u64 read_cr0(void) {
 static inline void write_cr0(u64 val) {
     __asm__ volatile ("mov %0, %%cr0" : : "r"(val) : "memory");
 }
-
-
-
-
 
 static inline u64 read_cr2(void) {
     u64 val;
@@ -140,5 +150,28 @@ static inline void write_msr(u32 msr, u64 val) {
     u32 high = (u32)(val >> 32);
     __asm__ volatile ("wrmsr" : : "c"(msr), "a"(low), "d"(high));
 }
+
+#else /* HOST_TEST */
+
+static inline void cli(void) { }
+static inline void sti(void) { }
+static inline void cpu_pause(void) { }
+static inline u64 irq_save(void) { return 0; }
+static inline void irq_restore(u64 flags) { (void)flags; }
+
+static inline void cpuid(u32 leaf, u32 subleaf, u32 *eax, u32 *ebx, u32 *ecx, u32 *edx) {
+    u32 a = 0, b = 0, c = 0, d = 0;
+#if defined(__x86_64__) || defined(_M_X64)
+    __asm__ volatile ("cpuid"
+                      : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
+                      : "a"(leaf), "c"(subleaf));
+#endif
+    if (eax) *eax = a;
+    if (ebx) *ebx = b;
+    if (ecx) *ecx = c;
+    if (edx) *edx = d;
+}
+
+#endif /* !HOST_TEST */
 
 #endif /* ASTRA_ARCH_X86_64_CPU_H */

@@ -1,8 +1,10 @@
 #include <kernel/pmm.h>
 #include <kernel/kprintf.h>
 #include <kernel/arch/x86_64/cpu.h>
+#include <kernel/sync.h>
 
 static struct pmm_context g_live_pmm;
+spinlock_t g_pmm_lock = SPINLOCK_INIT;
 
 static void *kmemset(void *dest, int val, size_t len) {
     u8 *d = (u8 *)dest;
@@ -352,35 +354,37 @@ int pmm_init(struct limine_memmap_response *mmap, u64 hhdm_offset) {
 }
 
 int pmm_alloc_page(phys_addr_t *out_paddr) {
-    u64 flags = irq_save();
+    u64 flags = spinlock_acquire_irqsave(&g_pmm_lock);
     int ret = pmm_context_alloc_page(&g_live_pmm, out_paddr);
-    irq_restore(flags);
+    spinlock_release_irqrestore(&g_pmm_lock, flags);
     return ret;
 }
 
 int pmm_free_page(phys_addr_t paddr) {
-    u64 flags = irq_save();
+    u64 flags = spinlock_acquire_irqsave(&g_pmm_lock);
     int ret = pmm_context_free_page(&g_live_pmm, paddr);
-    irq_restore(flags);
+    spinlock_release_irqrestore(&g_pmm_lock, flags);
     return ret;
 }
 
 int pmm_alloc_contiguous(size_t count, phys_addr_t *out_paddr) {
-    u64 flags = irq_save();
+    u64 flags = spinlock_acquire_irqsave(&g_pmm_lock);
     int ret = pmm_context_alloc_pages(&g_live_pmm, count, out_paddr);
-    irq_restore(flags);
+    spinlock_release_irqrestore(&g_pmm_lock, flags);
     return ret;
 }
 
 int pmm_free_contiguous(phys_addr_t paddr, size_t count) {
-    u64 flags = irq_save();
+    u64 flags = spinlock_acquire_irqsave(&g_pmm_lock);
     int ret = pmm_context_free_pages(&g_live_pmm, paddr, count);
-    irq_restore(flags);
+    spinlock_release_irqrestore(&g_pmm_lock, flags);
     return ret;
 }
 
 void pmm_get_stats(struct pmm_stats *out_stats) {
+    u64 flags = spinlock_acquire_irqsave(&g_pmm_lock);
     pmm_context_get_stats(&g_live_pmm, out_stats);
+    spinlock_release_irqrestore(&g_pmm_lock, flags);
 }
 
 void pmm_print_stats(void) {

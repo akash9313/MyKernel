@@ -2,6 +2,9 @@
 #include <kernel/pmm.h>
 #include <kernel/kprintf.h>
 #include <kernel/arch/x86_64/cpu.h>
+#include <kernel/smp.h>
+
+spinlock_t g_vmm_lock = SPINLOCK_INIT;
 
 static u64 g_hhdm_offset = 0;
 static struct vmm_cpu_info g_cpu_info;
@@ -377,8 +380,8 @@ int vmm_map_page(phys_addr_t pml4_phys, virt_addr_t va, phys_addr_t pa, u32 flag
     u64 pt_idx = (va >> 12) & 0x1FF;
     u64 *pt = (u64 *)(pt_phys + g_hhdm_offset);
 
-    if (pt[pt_idx] & PTE_PRESENT) {
-        /* Reject duplicate mappings */
+    if (pt[pt_idx] & (PTE_PRESENT | PTE_TRANSITION)) {
+        /* Reject duplicate mappings or mappings in transition */
         for (int i = 0; i < rollback_count; i++) {
             *(rollbacks[i].parent_entry) = 0;
             pmm_free_page(rollbacks[i].table_phys);
@@ -421,9 +424,12 @@ int vmm_unmap_page(phys_addr_t pml4_phys, virt_addr_t va) {
         return VMM_ERR_NONCANONICAL;
     }
 
+    u64 flags = spinlock_acquire_irqsave(&g_vmm_lock);
+
     u64 pml4_idx = (va >> 39) & 0x1FF;
     u64 *pml4 = (u64 *)(pml4_phys + g_hhdm_offset);
     if (!(pml4[pml4_idx] & PTE_PRESENT)) {
+        spinlock_release_irqrestore(&g_vmm_lock, flags);
         return VMM_ERR_NOT_MAPPED;
     }
 
@@ -431,9 +437,11 @@ int vmm_unmap_page(phys_addr_t pml4_phys, virt_addr_t va) {
     u64 pdpt_idx = (va >> 30) & 0x1FF;
     u64 *pdpt = (u64 *)(pdpt_phys + g_hhdm_offset);
     if (!(pdpt[pdpt_idx] & PTE_PRESENT)) {
+        spinlock_release_irqrestore(&g_vmm_lock, flags);
         return VMM_ERR_NOT_MAPPED;
     }
     if (pdpt[pdpt_idx] & PTE_HUGE) {
+        spinlock_release_irqrestore(&g_vmm_lock, flags);
         return VMM_ERR_HUGE_CONFLICT;
     }
 
@@ -441,9 +449,11 @@ int vmm_unmap_page(phys_addr_t pml4_phys, virt_addr_t va) {
     u64 pd_idx = (va >> 21) & 0x1FF;
     u64 *pd = (u64 *)(pd_phys + g_hhdm_offset);
     if (!(pd[pd_idx] & PTE_PRESENT)) {
+        spinlock_release_irqrestore(&g_vmm_lock, flags);
         return VMM_ERR_NOT_MAPPED;
     }
     if (pd[pd_idx] & PTE_HUGE) {
+        spinlock_release_irqrestore(&g_vmm_lock, flags);
         return VMM_ERR_HUGE_CONFLICT;
     }
 
@@ -451,13 +461,29 @@ int vmm_unmap_page(phys_addr_t pml4_phys, virt_addr_t va) {
     u64 pt_idx = (va >> 12) & 0x1FF;
     u64 *pt = (u64 *)(pt_phys + g_hhdm_offset);
     if (!(pt[pt_idx] & PTE_PRESENT)) {
+        spinlock_release_irqrestore(&g_vmm_lock, flags);
         return VMM_ERR_NOT_MAPPED;
     }
 
-    /* Clear leaf entry (does NOT free the mapped data page) */
-    pt[pt_idx] = 0;
+    u64 old_pte = pt[pt_idx];
+    /* Mark leaf entry as in-transition while holding lock */
+    pt[pt_idx] = (old_pte & ~PTE_PRESENT) | PTE_TRANSITION;
+    spinlock_release_irqrestore(&g_vmm_lock, flags);
 
-    /* Clean up empty owned tables */
+    /* Phase AR/AS: Broadcast cross-CPU TLB shootdown for the unmapped VA */
+    if (!smp_tlb_shootdown(pml4_phys, va, 1)) {
+        /* Shootdown failed/timed out: restore leaf entry only if still in our transition state */
+        flags = spinlock_acquire_irqsave(&g_vmm_lock);
+        if (pt[pt_idx] == ((old_pte & ~PTE_PRESENT) | PTE_TRANSITION)) {
+            pt[pt_idx] = old_pte;
+        }
+        spinlock_release_irqrestore(&g_vmm_lock, flags);
+        return VMM_ERR_SHOOTDOWN_FAILED;
+    }
+
+    /* Shootdown verified: clear transition entry and clean up empty owned page directory tables under lock */
+    flags = spinlock_acquire_irqsave(&g_vmm_lock);
+    pt[pt_idx] = 0;
     bool pt_empty = true;
     for (int i = 0; i < 512; i++) {
         if (pt[i] != 0) {
@@ -493,6 +519,7 @@ int vmm_unmap_page(phys_addr_t pml4_phys, virt_addr_t va) {
             }
         }
     }
+    spinlock_release_irqrestore(&g_vmm_lock, flags);
 
     return VMM_SUCCESS;
 }

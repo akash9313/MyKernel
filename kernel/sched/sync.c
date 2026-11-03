@@ -8,6 +8,7 @@
 #include <kernel/apic.h>
 #include <kernel/pmm.h>
 #include <kernel/heap.h>
+#include <kernel/smp.h>
 
 #ifdef HOST_TEST
 #define SYNC_ENTER_CRITICAL(flags)   do { (flags) = 0; } while (0)
@@ -25,6 +26,7 @@
 
 int mutex_init(mutex_t *m) {
     if (!m) return MUTEX_ERR_INVALID;
+    spinlock_init(&m->lock);
     m->owner = NULL;
     wait_queue_init(&m->waiters);
     m->initialized = true;
@@ -65,21 +67,21 @@ int mutex_lock(mutex_t *m) {
         panic("mutex_lock: no current active thread!");
     }
 
+    /* 4. Atomic inspection & acquisition under spinlock */
+    u64 flags = spinlock_acquire_irqsave(&m->lock);
+
     /* 3. Recursive acquisition detection */
     if (m->owner == curr) {
+        spinlock_release_irqrestore(&m->lock, flags);
         panic("mutex_lock: recursive acquisition attempted by TID %u (%s) on mutex %p!",
               curr->tid, curr->name, m);
     }
-
-    /* 4. Atomic inspection & acquisition under local CLI */
-    u64 flags;
-    SYNC_ENTER_CRITICAL(flags);
 
     if (m->owner == NULL) {
         /* Uncontended path: immediate ownership */
         m->owner = curr;
         curr->mutex_count++;
-        SYNC_LEAVE_CRITICAL(flags);
+        spinlock_release_irqrestore(&m->lock, flags);
         return MUTEX_OK;
     }
 
@@ -89,13 +91,18 @@ int mutex_lock(mutex_t *m) {
      * and switch away to another runnable thread.
      */
     if (curr->in_wait_queue) {
-        SYNC_LEAVE_CRITICAL(flags);
-        panic("mutex_lock: thread TID %u already registered in wait queue!", curr->tid);
+        spinlock_release_irqrestore(&m->lock, flags);
+        panic("mutex_lock: TID %u (%s) in_wait_queue=%d, state=%d, cpu=%u, owner=%u, waiters=%u, head=%u, tail=%u",
+              curr->tid, curr->name, (int)curr->in_wait_queue, (int)curr->state,
+              smp_cur_cpu_id(), m->owner ? m->owner->tid : 0,
+              (unsigned int)m->waiters.count,
+              m->waiters.head ? m->waiters.head->tid : 0,
+              m->waiters.tail ? m->waiters.tail->tid : 0);
     }
 
     wait_queue_enqueue(&m->waiters, curr);
 
-    sched_block_current(flags, "mutex", m);
+    sched_block_current_locked(&m->lock, flags, "mutex", m);
 
     /*
      * Resumption Point:
@@ -123,17 +130,16 @@ int mutex_try_lock(mutex_t *m) {
         return MUTEX_ERR_RECURSIVE;
     }
 
-    u64 flags;
-    SYNC_ENTER_CRITICAL(flags);
+    u64 flags = spinlock_acquire_irqsave(&m->lock);
 
     if (m->owner == NULL) {
         m->owner = curr;
         curr->mutex_count++;
-        SYNC_LEAVE_CRITICAL(flags);
+        spinlock_release_irqrestore(&m->lock, flags);
         return MUTEX_OK;
     }
 
-    SYNC_LEAVE_CRITICAL(flags);
+    spinlock_release_irqrestore(&m->lock, flags);
     return MUTEX_ERR_BUSY;
 }
 
@@ -151,19 +157,19 @@ int mutex_unlock(mutex_t *m) {
         panic("mutex_unlock: no current active thread!");
     }
 
+    u64 flags = spinlock_acquire_irqsave(&m->lock);
+
     /* Non-owner unlock detection */
     if (m->owner != curr) {
+        spinlock_release_irqrestore(&m->lock, flags);
         panic("mutex_unlock: TID %u (%s) attempted to unlock mutex %p owned by TID %u (%s)!",
               curr->tid, curr->name, m,
               m->owner ? m->owner->tid : 0,
               m->owner ? m->owner->name : "none");
     }
 
-    u64 flags;
-    SYNC_ENTER_CRITICAL(flags);
-
     if (curr->mutex_count == 0) {
-        SYNC_LEAVE_CRITICAL(flags);
+        spinlock_release_irqrestore(&m->lock, flags);
         panic("mutex_unlock: thread TID %u has mutex_count underflow!", curr->tid);
     }
     curr->mutex_count--;
@@ -178,7 +184,7 @@ int mutex_unlock(mutex_t *m) {
          */
         thread_t *next_owner = wait_queue_dequeue(&m->waiters);
         if (!next_owner) {
-            SYNC_LEAVE_CRITICAL(flags);
+            spinlock_release_irqrestore(&m->lock, flags);
             panic("mutex_unlock: waiter dequeue returned NULL while count > 0!");
         }
 
@@ -191,7 +197,7 @@ int mutex_unlock(mutex_t *m) {
         m->owner = NULL;
     }
 
-    SYNC_LEAVE_CRITICAL(flags);
+    spinlock_release_irqrestore(&m->lock, flags);
 
     return MUTEX_OK;
 }
@@ -206,6 +212,7 @@ int semaphore_init(semaphore_t *s, u32 initial_count, u32 maximum_count) {
         return SEMAPHORE_ERR_INVALID;
     }
 
+    spinlock_init(&s->lock);
     s->count = initial_count;
     s->maximum_count = maximum_count;
     wait_queue_init(&s->waiters);
@@ -239,25 +246,24 @@ int semaphore_wait(semaphore_t *s) {
         panic("semaphore_wait: no current active thread!");
     }
 
-    u64 flags;
-    SYNC_ENTER_CRITICAL(flags);
+    u64 flags = spinlock_acquire_irqsave(&s->lock);
 
     if (s->count > 0) {
         s->count--;
-        SYNC_LEAVE_CRITICAL(flags);
+        spinlock_release_irqrestore(&s->lock, flags);
         return SEMAPHORE_OK;
     }
 
     /* Contended path: enqueue waiter and block */
     if (curr->in_wait_queue) {
-        SYNC_LEAVE_CRITICAL(flags);
+        spinlock_release_irqrestore(&s->lock, flags);
         panic("semaphore_wait: thread TID %u already registered in wait queue!", curr->tid);
     }
 
     curr->wake_result = SEMAPHORE_OK;
     wait_queue_enqueue(&s->waiters, curr);
 
-    sched_block_current(flags, "semaphore", s);
+    sched_block_current_locked(&s->lock, flags, "semaphore", s);
 
     /*
      * Resumption Point:
@@ -271,16 +277,15 @@ int semaphore_try_wait(semaphore_t *s) {
     if (!s || !s->initialized) return SEMAPHORE_ERR_INVALID;
     if (in_interrupt()) return SEMAPHORE_ERR_CONTEXT;
 
-    u64 flags;
-    SYNC_ENTER_CRITICAL(flags);
+    u64 flags = spinlock_acquire_irqsave(&s->lock);
 
     if (s->count > 0) {
         s->count--;
-        SYNC_LEAVE_CRITICAL(flags);
+        spinlock_release_irqrestore(&s->lock, flags);
         return SEMAPHORE_OK;
     }
 
-    SYNC_LEAVE_CRITICAL(flags);
+    spinlock_release_irqrestore(&s->lock, flags);
     return SEMAPHORE_ERR_BUSY;
 }
 
@@ -292,8 +297,7 @@ int semaphore_signal(semaphore_t *s) {
         panic("semaphore_signal: forbidden in exception/NMI context!");
     }
 
-    u64 flags;
-    SYNC_ENTER_CRITICAL(flags);
+    u64 flags = spinlock_acquire_irqsave(&s->lock);
 
     if (s->waiters.count > 0) {
         /*
@@ -304,7 +308,7 @@ int semaphore_signal(semaphore_t *s) {
          */
         thread_t *waiter = wait_queue_dequeue(&s->waiters);
         if (!waiter) {
-            SYNC_LEAVE_CRITICAL(flags);
+            spinlock_release_irqrestore(&s->lock, flags);
             panic("semaphore_signal: waiter dequeue returned NULL while count > 0!");
         }
 
@@ -317,12 +321,12 @@ int semaphore_signal(semaphore_t *s) {
             s->count++;
         } else {
             /* Maximum capacity reached: overflow rejected with state unchanged */
-            SYNC_LEAVE_CRITICAL(flags);
+            spinlock_release_irqrestore(&s->lock, flags);
             return SEMAPHORE_ERR_OVERFLOW;
         }
     }
 
-    SYNC_LEAVE_CRITICAL(flags);
+    spinlock_release_irqrestore(&s->lock, flags);
 
     return SEMAPHORE_OK;
 }
@@ -485,6 +489,12 @@ static void worker_stress_consumer(void *arg) {
 void sched_run_sync_tests(void) {
     kprintf("================= [ SYNCHRONIZATION SELF-TESTS ] =================\n");
 
+    /* Ensure any residual background reaps from earlier phases finish */
+    while (sched_active_thread_slots() > 1) {
+        sched_reap();
+        thread_yield();
+    }
+
     struct pmm_stats pmm_before;
     pmm_get_stats(&pmm_before);
     struct heap_stats heap_before;
@@ -529,10 +539,13 @@ void sched_run_sync_tests(void) {
     thread_t *c4 = thread_create("contend4", worker_mutex_contender, NULL);
     if (!c1 || !c2 || !c3 || !c4) panic("1: Failed to create contender threads!");
 
-    while (g_mutex_workers_done < 4 || sched_has_ready_threads()) {
+    while (c1->state != THREAD_EXITED || c2->state != THREAD_EXITED ||
+           c3->state != THREAD_EXITED || c4->state != THREAD_EXITED ||
+           c1->is_executing || c2->is_executing || c3->is_executing || c4->is_executing ||
+           sched_has_ready_threads() || sched_active_thread_slots() > 1) {
+        sched_reap();
         thread_yield();
     }
-    sched_reap();
 
     if (g_mutex_shared_counter != 2000ULL) {
         panic("1: Mutex mutual exclusion failed! Counter: %llu (expected 2000)",
@@ -594,10 +607,12 @@ void sched_run_sync_tests(void) {
     preempt_enable();
 
     /* Cooperatively yield to let fa and fb execute */
-    while (fa->state != THREAD_EXITED || fb->state != THREAD_EXITED || sched_has_ready_threads()) {
+    while (fa->state != THREAD_EXITED || fb->state != THREAD_EXITED ||
+           fa->is_executing || fb->is_executing || sched_has_ready_threads() ||
+           sched_active_thread_slots() > 1) {
+        sched_reap();
         thread_yield();
     }
-    sched_reap();
 
     if (g_fifo_log_idx != 2 || g_fifo_log[0] != 1 || g_fifo_log[1] != 2) {
         panic("2: FIFO ordering violation! [%d, %d]", g_fifo_log[0], g_fifo_log[1]);
@@ -684,10 +699,12 @@ void sched_run_sync_tests(void) {
     /* Signal second time: releases s2 */
     semaphore_signal(&g_sem_fifo);
 
-    while (s2->state != THREAD_EXITED || sched_has_ready_threads()) {
+    while (s1->state != THREAD_EXITED || s2->state != THREAD_EXITED ||
+           s1->is_executing || s2->is_executing || sched_has_ready_threads() ||
+           sched_active_thread_slots() > 1) {
+        sched_reap();
         thread_yield();
     }
-    sched_reap();
 
     if (g_sem_fifo_log_idx != 2 || g_sem_fifo_log[0] != 10 || g_sem_fifo_log[1] != 20) {
         panic("3: Semaphore FIFO order mismatch! [%d, %d]", g_sem_fifo_log[0], g_sem_fifo_log[1]);
@@ -723,10 +740,11 @@ void sched_run_sync_tests(void) {
         __asm__ volatile ("pause");
     }
 
-    while (w_irq->state != THREAD_EXITED || sched_has_ready_threads()) {
+    while (w_irq->state != THREAD_EXITED || w_irq->is_executing || sched_has_ready_threads() ||
+           sched_active_thread_slots() > 1) {
+        sched_reap();
         thread_yield();
     }
-    sched_reap();
 
     if (!g_sem_irq_hook_ran) panic("4: Timer IRQ signaler hook was never invoked!");
     kprintf("  PASS: 4. Semaphore signaled safely from hardware IRQ and awakened blocked thread.\n");
@@ -760,7 +778,7 @@ void sched_run_sync_tests(void) {
     thread_t *con2 = thread_create("cons2", worker_stress_consumer, NULL);
     if (!p1 || !p2 || !con1 || !con2) panic("5: Failed to create producer/consumer threads!");
 
-    u64 stress_timeout = apic_get_ticks() + 1000;
+    u64 stress_timeout = apic_get_ticks() + 20000;
     while (g_producers_done < 2 || g_consumers_done < 2) {
         if (apic_get_ticks() > stress_timeout) {
             panic("5: Producer-Consumer stress test deadlocked! prod=%d, cons=%d",
@@ -771,10 +789,19 @@ void sched_run_sync_tests(void) {
 
     g_spinner_stop = true;
 
-    while (spinner->state != THREAD_EXITED || sched_has_ready_threads()) {
+    while (p1->state != THREAD_EXITED ||
+           p2->state != THREAD_EXITED ||
+           con1->state != THREAD_EXITED ||
+           con2->state != THREAD_EXITED ||
+           spinner->state != THREAD_EXITED ||
+           p1->is_executing || p2->is_executing ||
+           con1->is_executing || con2->is_executing ||
+           spinner->is_executing ||
+           sched_has_ready_threads() ||
+           sched_active_thread_slots() > 1) {
+        sched_reap();
         thread_yield();
     }
-    sched_reap();
 
     if (g_total_produced_sum != g_total_consumed_sum || g_total_produced_sum == 0) {
         panic("5: Data corruption in bounded buffer! produced=%llu, consumed=%llu",

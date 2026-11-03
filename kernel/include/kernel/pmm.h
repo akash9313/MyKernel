@@ -3,6 +3,9 @@
 
 #include <kernel/types.h>
 #include <limine.h>
+#include <kernel/spinlock.h>
+
+extern spinlock_t g_pmm_lock;
 
 #define PAGE_SIZE 4096ULL
 #define PAGE_SHIFT 12ULL

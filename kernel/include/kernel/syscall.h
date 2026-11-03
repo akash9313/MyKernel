@@ -4,6 +4,7 @@
 #include <kernel/types.h>
 #include <kernel/arch/x86_64/idt.h>
 #include <kernel/input.h>
+#include <kernel/net.h>
 
 /* System Call Numbers */
 #define SYS_WRITE               1
@@ -38,6 +39,11 @@
 #define SYS_MUNMAP              30
 #define SYS_NET_FETCH           31
 #define SYS_GUI_DRAW_BITMAP     32
+#define SYS_FSYNC               33
+#define SYS_SYNC                34
+#define SYS_RENAME              35
+#define SYS_WAITPID             36
+#define SYS_GETCPUID            37
 
 /* mmap protection flags */
 #define PROT_NONE       0x0
@@ -65,18 +71,23 @@ typedef struct gui_screen_info {
 #define ESRCH       3
 #define EIO         5
 #define EBADF       9
+#define ECHILD      10
 #define ENOMEM      12
 #define EACCES      13
 #define EFAULT      14
+#define EEXIST      17
 #define ENODEV      19
 #define EISDIR      21
 #define EINVAL      22
+#define ENOSPC      28
 #define EROFS       30
 #define ENOSYS      38
 #define ETIMEDOUT   110
 
+#define WNOHANG     1
+
 /* Maximum length for a single sys_write call */
-#define SYSCALL_MAX_WRITE_LEN 4096
+#define SYSCALL_MAX_WRITE_LEN 65536
 
 /* Initialize Syscall subsystem (registers IDT vector 128 / 0x80) */
 void syscall_init(void);
@@ -108,9 +119,22 @@ s64 sys_gui_draw_text(int win_id, int x, int y, const char *text, u32 fg, u32 bg
 s64 sys_gui_clear(int win_id, u32 color);
 s64 sys_gui_set_title(int win_id, const char *title);
 s64 sys_sleep(u32 ms);
+s64 sys_net_socket(void);
+s64 sys_net_connect(int sock_id, u32 remote_ip, u16 remote_port, u32 timeout_ms);
+s64 sys_net_send(int sock_id, const void *buf, size_t len);
+s64 sys_net_recv(int sock_id, void *buf, size_t max_len, u32 timeout_ms);
+s64 sys_net_close(int sock_id);
+s64 sys_net_get_config(net_if_t *user_if);
+s64 sys_net_resolve(const char *hostname, ip_addr_t *out_ip, u32 timeout_ms);
+s64 sys_net_ping(ip_addr_t dst_ip, u32 timeout_ms);
 s64 sys_mmap(void *addr, size_t length, int prot, int flags);
 s64 sys_munmap(void *addr, size_t length);
 s64 sys_net_fetch(const char *url, char *buf, size_t max_len, int *out_status);
 s64 sys_gui_draw_bitmap(int win_id, int x, int y, int w, int h, const u32 *pixels);
+s64 sys_fsync(int fd);
+s64 sys_sync(void);
+s64 sys_rename(const char *oldpath, const char *newpath);
+s64 sys_waitpid(pid_t pid, int *status_user, int options);
+u32 sys_getcpuid(void);
 
 #endif /* ASTRA_KERNEL_SYSCALL_H */

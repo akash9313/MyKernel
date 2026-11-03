@@ -2,6 +2,7 @@
 #include <kernel/kprintf.h>
 #include <kernel/mem.h>
 #include <kernel/arch/x86_64/cpu.h>
+#include <kernel/drivers/apic.h>
 
 static tcp_socket_t g_tcp_sockets[TCP_MAX_SOCKETS] = {0};
 static u16 g_tcp_next_port = 50000;
@@ -121,11 +122,13 @@ int tcp_connect(int sock_id, ip_addr_t remote_ip, u16 remote_port, u32 timeout_m
     /* Send SYN */
     tcp_send_packet(s, TCP_FLAG_SYN, NULL, 0);
 
-    /* Wait for connection establishment */
-    u32 loops = (timeout_ms > 0) ? (timeout_ms * 100) : 50000;
-    while (loops-- && s->state == TCP_STATE_SYN_SENT) {
+    /* Wait for connection establishment with bounded APIC tick polling */
+    u64 start_ticks = apic_get_ticks();
+    u64 max_ticks = (timeout_ms + 9) / 10;
+    if (max_ticks == 0) max_ticks = 1;
+    while ((apic_get_ticks() - start_ticks < max_ticks) && s->state == TCP_STATE_SYN_SENT) {
         net_poll();
-        for (volatile int d = 0; d < 100; d++) io_wait();
+        cpu_pause();
     }
 
     if (s->state == TCP_STATE_ESTABLISHED) {
@@ -160,10 +163,12 @@ int tcp_recv(int sock_id, void *buf, size_t max_len, u32 timeout_ms) {
     tcp_socket_t *s = tcp_get_socket(sock_id);
     if (!s || !buf || max_len == 0) return -1;
 
-    u32 loops = (timeout_ms > 0) ? (timeout_ms * 100) : 50000;
-    while (loops-- && s->rx_count == 0 && s->state == TCP_STATE_ESTABLISHED) {
+    u64 start_ticks = apic_get_ticks();
+    u64 max_ticks = (timeout_ms + 9) / 10;
+    if (max_ticks == 0) max_ticks = 1;
+    while ((apic_get_ticks() - start_ticks < max_ticks) && s->rx_count == 0 && s->state == TCP_STATE_ESTABLISHED) {
         net_poll();
-        for (volatile int d = 0; d < 100; d++) io_wait();
+        cpu_pause();
     }
 
     if (s->rx_count == 0) {
@@ -192,17 +197,43 @@ int tcp_close(int sock_id) {
         tcp_send_packet(s, TCP_FLAG_FIN | TCP_FLAG_ACK, NULL, 0);
         s->local_seq++;
 
-        /* Poll briefly for remote ACK */
-        u32 loops = 10000;
-        while (loops-- && s->state != TCP_STATE_CLOSED && s->state != TCP_STATE_TIME_WAIT) {
+        /* Poll briefly for remote ACK (max 2 ticks = 20ms) */
+        u64 close_t = apic_get_ticks();
+        while ((apic_get_ticks() - close_t < 2) && s->state != TCP_STATE_CLOSED && s->state != TCP_STATE_TIME_WAIT) {
             net_poll();
-            for (volatile int d = 0; d < 50; d++) io_wait();
+            cpu_pause();
         }
     }
 
     s->in_use = false;
     s->state = TCP_STATE_CLOSED;
+    s->owner_pid = 0;
     return 0;
+}
+
+pid_t tcp_get_owner(int sock_id) {
+    tcp_socket_t *s = tcp_get_socket(sock_id);
+    if (!s) return 0;
+    return s->owner_pid;
+}
+
+int tcp_set_owner(int sock_id, pid_t pid) {
+    tcp_socket_t *s = tcp_get_socket(sock_id);
+    if (!s) return -1;
+    s->owner_pid = pid;
+    return 0;
+}
+
+int tcp_close_all_for_pid(pid_t pid) {
+    if (pid == 0) return 0;
+    int closed = 0;
+    for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
+        if (g_tcp_sockets[i].in_use && g_tcp_sockets[i].owner_pid == pid) {
+            tcp_close(g_tcp_sockets[i].id);
+            closed++;
+        }
+    }
+    return closed;
 }
 
 void tcp_handle_packet(ip_addr_t src_ip, const void *data, size_t len) {

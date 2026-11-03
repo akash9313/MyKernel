@@ -336,6 +336,9 @@ void gfx_draw_cursor(gfx_surface_t *s, int x, int y) {
 }
 
 int gfx_init(void) {
+    if (g_gfx.initialized) {
+        return 0; /* Graphics subsystem initialized exactly once */
+    }
     struct limine_framebuffer_response *fb_resp = boot_get_framebuffer_response();
     if (!fb_resp || fb_resp->framebuffer_count == 0 || !fb_resp->framebuffers[0]) {
         kprintf("[GFX ERROR] Bootloader provided no framebuffer.\n");

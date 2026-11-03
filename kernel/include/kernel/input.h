@@ -36,6 +36,8 @@ typedef enum {
 #define KEY_RSHIFT       (KEY_SPECIAL_BASE + 10)
 #define KEY_LCTRL        (KEY_SPECIAL_BASE + 11)
 #define KEY_LALT         (KEY_SPECIAL_BASE + 12)
+#define KEY_PAGE_UP      (KEY_SPECIAL_BASE + 13)
+#define KEY_PAGE_DOWN    (KEY_SPECIAL_BASE + 14)
 
 /* Mouse Buttons */
 #define MOUSE_BTN_LEFT   (1 << 0)

@@ -3,6 +3,12 @@
 #include <kernel/kprintf.h>
 #include <kernel/mem.h>
 
+static size_t k_strlen(const char *s) {
+    size_t l = 0;
+    while (s && s[l]) l++;
+    return l;
+}
+
 bool net_self_test(void) {
     kprintf("\n=======================================================\n");
     kprintf("        AstraOS Phase J: Networking Subsystem Tests    \n");
@@ -116,29 +122,83 @@ bool net_self_test(void) {
     kprintf("  PASS: TCP socket allocation, checksum calculation, and lifecycle verified.\n");
     kprintf("ASTRA_TCP_OK\n\n");
 
-    /* 7. HTTP Client Test */
-    kprintf("[NET TEST] 7. Testing HTTP client request generation & parser...\n");
-    char test_resp[] = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html>AstraOS</html>";
-    int status_code = 0;
-    if (test_resp[0] == 'H' && test_resp[1] == 'T' && test_resp[2] == 'T' && test_resp[3] == 'P') {
-        const char *s = test_resp;
-        while (*s && *s != ' ') s++;
-        if (*s == ' ') {
-            s++;
-            status_code = (*s - '0') * 100 + (*(s+1) - '0') * 10 + (*(s+2) - '0');
-        }
+    /* 7. HTTP Client & Response Parser Hardening Test */
+    kprintf("[NET TEST] 7. Testing HTTP client parser hardening & adversarial recovery...\n");
+
+    /* Test 7A: Valid HTTP 200 with Content-Length */
+    const char *resp_valid = "HTTP/1.1 200 OK\r\n"
+                             "Content-Type: text/html\r\n"
+                             "Content-Length: 20\r\n"
+                             "Connection: close\r\n\r\n"
+                             "<html>AstraOS</html>";
+    http_response_t hresp;
+    if (http_parse_response(resp_valid, k_strlen(resp_valid), &hresp) != 0 || hresp.status_code != 200 ||
+        hresp.content_length != 20 || hresp.body_len != 20 || hresp.is_truncated) {
+        kprintf("[NET TEST FAIL] Valid HTTP response parser failed!\n");
+        return false;
     }
-    if (status_code != 200) {
-        kprintf("[NET TEST FAIL] HTTP status parser failed (got %d)!\n", status_code);
+
+    /* Test 7B: Malformed status line missing HTTP/ prefix */
+    const char *resp_no_http = "INVALID_RESPONSE_LINE 200 OK\r\n\r\nData";
+    if (http_parse_response(resp_no_http, k_strlen(resp_no_http), &hresp) == 0 || hresp.status_code != 502) {
+        kprintf("[NET TEST FAIL] Malformed status line was not rejected with 502!\n");
+        return false;
+    }
+
+    /* Test 7C: Conflicting duplicate Content-Length headers */
+    const char *resp_dup_cl = "HTTP/1.1 200 OK\r\n"
+                              "Content-Length: 20\r\n"
+                              "Content-Length: 40\r\n\r\n"
+                              "<html>AstraOS</html>";
+    if (http_parse_response(resp_dup_cl, k_strlen(resp_dup_cl), &hresp) == 0 || !hresp.has_duplicate_cl || hresp.status_code != 502) {
+        kprintf("[NET TEST FAIL] Conflicting Content-Length headers were not rejected!\n");
+        return false;
+    }
+
+    /* Test 7D: Truncated body detection */
+    const char *resp_trunc = "HTTP/1.1 200 OK\r\n"
+                             "Content-Length: 100\r\n\r\n"
+                             "<html>Only 20 bytes</html>";
+    if (http_parse_response(resp_trunc, k_strlen(resp_trunc), &hresp) != 0 || !hresp.is_truncated) {
+        kprintf("[NET TEST FAIL] Truncated response body was not detected!\n");
+        return false;
+    }
+
+    /* Test 7E: Valid Chunked Transfer-Encoding decoding */
+    const char *chunked_in = "4\r\nWiki\r\n6\r\npedia \r\n0\r\n\r\n";
+    char chunked_out[64];
+    int dec_len = http_decode_chunked(chunked_in, k_strlen(chunked_in), chunked_out, sizeof(chunked_out));
+    if (dec_len != 10 || kmemcmp(chunked_out, "Wikipedia ", 10) != 0) {
+        kprintf("[NET TEST FAIL] Chunked decoding failed (got %d: '%s')!\n", dec_len, chunked_out);
+        return false;
+    }
+
+    /* Test 7F: Incomplete/truncated chunk data rejection */
+    const char *bad_chunk = "20\r\nTruncated";
+    if (http_decode_chunked(bad_chunk, k_strlen(bad_chunk), chunked_out, sizeof(chunked_out)) >= 0) {
+        kprintf("[NET TEST FAIL] Incomplete chunk was not rejected!\n");
+        return false;
+    }
+
+    /* Test 7G: Location header extraction */
+    const char *resp_redir = "HTTP/1.1 302 Found\r\n"
+                             "Location: /login.html\r\n"
+                             "Content-Length: 0\r\n\r\n";
+    if (http_parse_response(resp_redir, k_strlen(resp_redir), &hresp) != 0 || hresp.status_code != 302 ||
+        kmemcmp(hresp.location, "/login.html", 11) != 0) {
+        kprintf("[NET TEST FAIL] Redirect Location extraction failed!\n");
         return false;
     }
 
     /* Attempt live HTTP GET to local gateway or virtual host if reachable */
+    int status_code = 0;
     char http_buf[512];
     (void)http_get("10.0.2.2", "/", http_buf, sizeof(http_buf), &status_code);
 
     kprintf("  PASS: HTTP GET request formatting, connection management, and status parsing verified.\n");
     kprintf("ASTRA_HTTP_CLIENT_OK\n\n");
+    kprintf("  PASS: HTTP response hardening, chunked decoding, truncation & smuggling checks verified.\n");
+    kprintf("ASTRA_HTTP_HARDENING_OK\n\n");
 
     kprintf("[NET TEST] All Networking tests passed successfully!\n");
     return true;

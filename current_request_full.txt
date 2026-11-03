@@ -1,0 +1,417 @@
+<USER_REQUEST>
+# AstraOS — Boot Performance Optimization, Desktop Stabilization & Session Management
+
+## Workspace
+`C:\Users\Akash\Documents\MyKernel`
+
+## Primary Objective
+
+Improve AstraOS startup performance and desktop reliability.
+
+Current problems:
+1. VirtualBox startup takes approximately 5–6 minutes.
+2. Desktop sometimes appears during the middle of boot execution.
+3. The final desktop is sometimes incomplete or partially initialized.
+4. Applications such as Text Editor and other windows open automatically even though the user did not request them.
+5. Desktop/session startup is inconsistent.
+
+### Performance Target
+
+Target: **10–15 seconds from VirtualBox VM start to a fully usable desktop**, under a documented and repeatable VirtualBox configuration.
+
+Do not fake this result by:
+- Skipping essential hardware initialization.
+- Disabling memory protection.
+- Removing necessary subsystem checks.
+- Hiding boot errors.
+- Starting the desktop before its dependencies are ready.
+- Replacing real initialization with static screenshots or mock interfaces.
+- Reporting desktop-ready before the desktop is actually interactive.
+
+If the target cannot be achieved safely, report the measured time and the remaining bottleneck.
+
+---
+
+# PHASE 1 — Baseline Measurement and Root-Cause Investigation
+
+Do not modify code before collecting baseline evidence.
+
+Inspect:
+
+- `kernel/kernel.c`
+- `kernel/main.c`, if present.
+- `kernel/arch/x86_64/`
+- `kernel/drivers/`
+- `kernel/mem/`
+- `kernel/fs/`
+- `kernel/net/`
+- `kernel/gui/` or the actual GUI directory.
+- Window manager implementation.
+- Desktop initialization.
+- User application startup.
+- Scheduler and process creation.
+- Bootloader configuration.
+- VirtualBox test scripts.
+- `docs/architecture.md`
+- `docs/status.md`
+
+Identify the actual boot sequence.
+
+Instrument timestamps at these milestones:
+
+1. VM start.
+2. Bootloader entry.
+3. Kernel entry.
+4. Physical memory initialization.
+5. Virtual memory initialization.
+6. ACPI and hardware discovery.
+7. Interrupt and timer initialization.
+8. SMP initialization.
+9. Scheduler ready.
+10. Storage initialization.
+11. VFS mount completion.
+12. Network initialization.
+13. GUI subsystem initialization.
+14. Window manager ready.
+15. Desktop creation.
+16. Desktop fully interactive.
+
+For each milestone, record elapsed milliseconds.
+
+Create:
+- `boot_performance_baseline.md`
+- `boot_timing.log`
+
+Identify the five most expensive startup operations.
+
+Do not guess which subsystem is slow.
+
+---
+
+# PHASE 2 — Boot Performance Optimization
+
+Investigate and optimize the actual bottlenecks.
+
+## A. Hardware Initialization
+
+- Find unnecessary repeated hardware probing.
+- Check for excessive device polling.
+- Identify long timeout loops.
+- Check ATA/AHCI initialization and missing-device fallback.
+- Check ACPI and APIC discovery.
+- Check timer initialization.
+- Identify blocking hardware operations.
+- Avoid probing unsupported devices repeatedly.
+- Ensure failed optional devices do not block desktop startup indefinitely.
+
+Do not remove required hardware checks.
+
+## B. Storage and Filesystem
+
+- Inspect disk detection and initialization.
+- Find unnecessary repeated filesystem scans.
+- Check mount-time metadata validation costs.
+- Avoid repeated initialization of the same device.
+- Identify blocking flushes or timeout loops during startup.
+- Preserve filesystem integrity and crash recovery guarantees.
+
+Do not skip filesystem integrity checks merely to improve boot time.
+
+## C. Kernel Initialization
+
+- Inspect synchronous initialization dependencies.
+- Identify operations that can safely happen after desktop startup.
+- Separate essential initialization from optional services.
+- Avoid initializing subsystems twice.
+- Remove redundant work only after proving it is redundant.
+
+Do not move initialization asynchronously if another subsystem depends on its completion.
+
+## D. Networking
+
+- Investigate whether network initialization blocks the boot sequence.
+- Avoid waiting indefinitely for DHCP, DNS, or external connectivity.
+- Use bounded timeouts.
+- Allow the desktop to start without network connectivity if networking is optional.
+
+Do not falsely report network readiness.
+
+## E. Scheduler and Process Startup
+
+- Identify processes that block desktop initialization.
+- Investigate excessive scheduling delays.
+- Ensure startup processes terminate or yield correctly.
+- Avoid busy waiting.
+- Check for lock contention and deadlocks.
+
+---
+
+# PHASE 3 — Fix Desktop Initialization and Flickering
+
+The desktop must have exactly one controlled initialization lifecycle.
+
+Inspect:
+
+- `wm_init()`
+- `wm_create_window_owner()`
+- GUI initialization.
+- Graphics/framebuffer initialization.
+- Desktop creation.
+- Window manager event loop.
+- User application launch sequence.
+- Syscall paths that create or destroy windows.
+
+Requirements:
+
+1. Initialize graphics exactly once.
+2. Initialize the window manager exactly once.
+3. Create the desktop only after graphics and window manager dependencies are ready.
+4. Ensure desktop initialization cannot be triggered repeatedly.
+5. Prevent partial desktop rendering during initialization.
+6. Prevent a second desktop instance from appearing.
+7. Prevent duplicate windows.
+8. Ensure window ownership and process lifecycle remain correct.
+9. Ensure the desktop remains visible after startup.
+10. Ensure input handling is active before declaring the desktop ready.
+
+Use a controlled lifecycle such as:
+
+`BOOTING → KERNEL_READY → GUI_INITIALIZING → DESKTOP_READY`
+
+Add appropriate failure states if initialization fails.
+
+The desktop-ready state must only be published after the desktop is actually usable.
+
+---
+
+# PHASE 4 — Application Startup Policy
+
+Applications must not open automatically unless explicitly configured.
+
+Inspect all application startup paths, including:
+
+- Text Editor.
+- Browser.
+- Terminal.
+- File Manager.
+- Other user applications.
+- Demo applications.
+- GUI test applications.
+
+Requirements:
+
+- No application should launch automatically merely because it is registered or available.
+- Desktop startup must not run demonstration applications.
+- GUI self-tests must not create visible user windows.
+- Applications must open only after a user action or an explicitly configured startup preference.
+- Closing an application must remove its window correctly.
+- Desktop startup must not restore unwanted stale test windows.
+- Previous test state must not be mistaken for user session state.
+
+Implement a clean default startup session.
+
+Default state:
+- Desktop visible.
+- No Text Editor window.
+- No Browser window.
+- No Terminal window.
+- No demo windows.
+- No unwanted tabs.
+- Only essential desktop components running.
+
+Do not delete application functionality.
+
+---
+
+# PHASE 5 — Desktop Completeness and Usability
+
+Verify that the final desktop is fully rendered and usable.
+
+Check:
+
+- Correct framebuffer resolution.
+- Background/wallpaper rendering.
+- Desktop surface.
+- Taskbar or panel.
+- Start/application launcher.
+- Mouse cursor.
+- Keyboard input.
+- Window creation and focus.
+- Window movement.
+- Window closing.
+- Application launching.
+- Screen refresh and redraw.
+- No black or blank areas.
+- No partially rendered windows.
+- No frozen desktop.
+
+If any component is not implemented, document that limitation rather than displaying a fake control.
+
+The desktop must remain stable after boot.
+
+---
+
+# PHASE 6 — Deterministic Testing
+
+Create a new boot and desktop qualification suite.
+
+Required tests:
+
+### Boot tests
+- Cold boot timing.
+- Warm reboot timing.
+- Repeated boot timing across at least five runs.
+- Boot with missing optional storage.
+- Boot without network connectivity.
+- Boot with optional device initialization failure.
+
+### Desktop tests
+- Desktop initialized exactly once.
+- Desktop-ready marker emitted only after initialization.
+- No duplicate desktop windows.
+- No partial desktop state.
+- GUI input works after startup.
+- Desktop remains active for a sustained test period.
+
+### Application tests
+- No applications open automatically.
+- Text Editor opens only after an explicit user action.
+- Browser opens only after an explicit user action.
+- Closing applications works correctly.
+- Restarting the OS returns to a clean default desktop.
+
+Add markers such as:
+
+`ASTRA_BOOT_TIMING_RECORDED`
+`ASTRA_GUI_SINGLE_INIT_OK`
+`ASTRA_DESKTOP_READY_OK`
+`ASTRA_DESKTOP_STABLE_OK`
+`ASTRA_NO_AUTOSTART_APPS_OK`
+`ASTRA_USER_LAUNCH_ONLY_OK`
+
+Markers must represent actual assertions, not unconditional success messages.
+
+---
+
+# PHASE 7 — VirtualBox Performance Qualification
+
+Use a documented VirtualBox configuration.
+
+Record:
+- VirtualBox version.
+- CPU count.
+- RAM allocation.
+- EFI setting.
+- Graphics controller.
+- Video memory.
+- Storage controller.
+- ISO version.
+- VM configuration.
+
+Measure:
+
+| Metric | Target |
+|---|---:|
+| Bootloader to kernel entry | Measure |
+| Kernel initialization | Measure |
+| Hardware initialization | Measure |
+| GUI initialization | Measure |
+| Total time to usable desktop | 10–15 seconds target |
+
+Run at least five cold boots and report:
+- Minimum.
+- Maximum.
+- Average.
+- Median.
+
+Do not measure only the fastest run.
+
+---
+
+# PHASE 8 — Regression and Safety
+
+Run:
+
+- QEMU SMP 1/2/4/8.
+- QEMU nofb.
+- VirtualBox EFI qualification.
+- All seven existing host test suites.
+- Existing 173 qualification markers.
+- New boot and desktop tests.
+
+Ensure the optimizations do not break:
+- SMP.
+- Memory management.
+- TLB shootdowns.
+- Filesystem persistence.
+- Networking.
+- User process isolation.
+- GUI window ownership.
+- Existing security protections.
+
+Capture actual exit codes and final logs.
+
+---
+
+# PHASE 9 — Documentation
+
+Create:
+
+- `boot_performance_baseline.md`
+- `boot_performance_report.md`
+- `desktop_stability_report.md`
+
+Update:
+- `docs/architecture.md`
+- `docs/status.md`
+
+Document:
+- Original startup time.
+- Root cause of delays.
+- Every optimization.
+- Before/after timing.
+- Desktop lifecycle.
+- Application startup policy.
+- Known limitations.
+- Regression results.
+
+---
+
+# STRICT RULES
+
+- Audit first.
+- Preserve existing functionality.
+- Do not perform unrelated refactoring.
+- Do not disable security checks.
+- Do not use arbitrary delays to hide initialization problems.
+- Do not fake desktop readiness.
+- Do not automatically open applications.
+- Do not weaken existing tests.
+- Do not mark incomplete tests as PASS.
+- Keep rollback copies or use Git commits before risky changes.
+- If a change breaks an existing subsystem, fix it before proceeding.
+
+Use:
+PASS / FAIL / BLOCKED / NOT TESTED / NOT APPLICABLE.
+
+## Final Deliverable
+
+Provide:
+1. Root cause of the 5–6 minute startup.
+2. Before/after timing for each boot stage.
+3. Five-run VirtualBox timing results.
+4. Desktop flicker/duplicate initialization root cause and fix.
+5. Final desktop stability evidence.
+6. Application autostart audit and results.
+7. Full regression matrix.
+8. Remaining limitations.
+
+Do not claim the 10–15 second target is achieved unless the measured results demonstrate it.
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-11-03T13:10:33+05:30.
+
+The user's current state is as follows:
+Active Document: c:\Users\Akash\Documents\MyKernel\kernel\debug\kprintf.c (LANGUAGE_UNSPECIFIED)
+Cursor is on line: 17
+</ADDITIONAL_METADATA>

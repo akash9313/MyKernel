@@ -3,6 +3,7 @@
 
 #include <kernel/types.h>
 #include <kernel/deadline.h>
+#include <kernel/spinlock.h>
 
 typedef u32 tid_t;
 
@@ -76,9 +77,9 @@ struct thread {
     char name[32];
 
     /* Queue membership tracking & invariants */
-    bool in_ready_queue;
-    bool in_wait_queue;
-    bool in_timer_queue;
+    volatile bool in_ready_queue;
+    volatile bool in_wait_queue;
+    volatile bool in_timer_queue;
 
     /* Waiter ownership, reason, and wake result */
     const char *wait_reason;
@@ -92,6 +93,10 @@ struct thread {
     /* Synchronization ownership tracking */
     u32 mutex_count;
 
+    /* SMP execution exclusivity and migration tracking */
+    volatile u32 is_executing;
+    u32 last_cpu;
+
     /* Associated process (NULL for pure kernel threads) */
     struct process *process;
 
@@ -104,6 +109,9 @@ struct thread {
 
 struct process;
 typedef struct thread thread_t;
+
+/* Scheduler Diagnostic & Slot Tracking */
+size_t sched_active_thread_slots(void);
 
 /* FIFO Wait Queue */
 typedef struct wait_queue {
@@ -132,6 +140,7 @@ void sched_enqueue(thread_t *t);
 
 /* Persistent Auto-Reset Event Primitive */
 typedef struct event {
+    spinlock_t lock;
     bool signaled;          /* Stored pending signal (coalesced) */
     wait_queue_t waiters;   /* FIFO queue of waiting threads */
     bool initialized;
@@ -143,14 +152,19 @@ void event_signal(event_t *ev);
 void event_destroy(event_t *ev);
 
 /* Public Threading & Scheduler API */
+struct process;
 void sched_init(void);
+thread_t *sched_create_idle_thread(u32 cpu_id);
+void sched_ap_start(u32 cpu_id) __attribute__((noreturn));
 thread_t *thread_create(const char *name, void (*entry)(void *), void *arg);
+thread_t *thread_create_process(const char *name, void (*entry)(void *), void *arg, struct process *proc);
 void thread_yield(void);
 void thread_exit(void) __attribute__((noreturn));
 thread_t *thread_current(void);
 size_t sched_ready_count(void);
 size_t sched_sleep_count(void);
 void sched_reap(void);
+bool sched_has_pending_reaps(void);
 bool sched_has_ready_threads(void);
 bool sched_is_initialized(void);
 
@@ -166,6 +180,11 @@ void sched_try_preempt_irq_exit(u64 interrupted_rflags);
 
 /* Internal IRQ-disabled blocking primitive */
 void sched_block_current(u64 rflags, const char *reason, void *channel);
+void sched_block_current_locked(spinlock_t *subsystem_lock, u64 rflags, const char *reason, void *channel);
+
+/* SMP parallel overlap tracking */
+extern volatile u32 g_smp_overlap_count;
+extern spinlock_t g_sched_lock;
 
 /* Interrupt context tracking */
 extern volatile int g_interrupt_depth;

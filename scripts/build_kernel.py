@@ -44,6 +44,7 @@ SOURCES = [
     'kernel/arch/x86_64/gdt.c',
     'kernel/arch/x86_64/idt.c',
     'kernel/arch/x86_64/idt_asm.S',
+    'kernel/arch/x86_64/smp.c',
     'kernel/arch/x86_64/vmm_switch.S',
     'kernel/mm/memmap.c',
     'kernel/mm/pmm.c',
@@ -59,7 +60,10 @@ SOURCES = [
     'kernel/process/elf.c',
     'kernel/fs/vfs.c',
     'kernel/fs/initramfs.c',
+    'kernel/fs/astrafs.c',
     'kernel/fs/vfs_test.c',
+    'kernel/drivers/block.c',
+    'kernel/drivers/ata.c',
     'kernel/monitor/monitor.c',
     'kernel/drivers/gfx.c',
     'kernel/drivers/input.c',
@@ -68,6 +72,9 @@ SOURCES = [
     'kernel/gui/desktop.c',
     'kernel/gui/app_editor.c',
     'kernel/gui/app_filemgr.c',
+    'kernel/gui/app_terminal.c',
+    'kernel/shell/shell.c',
+    'kernel/pkg/pkg.c',
     'kernel/drivers/pci.c',
     'kernel/drivers/e1000.c',
     'kernel/net/net.c',
@@ -159,6 +166,12 @@ def main():
     print("[BUILD] Kernel ELF built successfully.")
     # Verify ELF
     subprocess.run([READELF, '-h', kernel_elf])
+
+    # Refresh ESP directory and ISO
+    import prepare_esp
+    prepare_esp.prepare_esp()
+    import build_iso
+    build_iso.generate_iso()
 
 if __name__ == '__main__':
     main()

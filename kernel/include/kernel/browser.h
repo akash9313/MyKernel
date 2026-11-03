@@ -141,6 +141,7 @@ typedef struct {
 
 /* URL & Network Helpers */
 bool browser_url_parse(const char *raw, browser_url_t *out);
+void browser_url_resolve(const char *base_url, const char *rel, char *out, size_t out_max);
 int browser_fetch_url(const browser_url_t *url, char *out_buf, size_t max_len, int *out_status);
 
 /* HTML Parser & Layout */
@@ -151,6 +152,7 @@ int browser_layout(const html_node_t *nodes, int node_count, int viewport_w, ren
 void app_browser_init(void);
 void app_browser_launch(const char *initial_url);
 void app_browser_navigate(const char *url);
+void app_browser_navigate_ex(const char *url, bool record_history);
 bool browser_self_test(void);
 
 #endif /* ASTRA_KERNEL_BROWSER_H */

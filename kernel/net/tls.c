@@ -446,23 +446,44 @@ tls_error_t tls_connect(tls_session_t *s, const char *hostname, u16 port) {
                                           ((size_t)hs_buf[c_idx+1] << 8) |
                                           ((size_t)hs_buf[c_idx+2]);
                         c_idx += 3;
-                        if (c_idx + cert_len <= hpos + msg_total) {
-                            if (x509_parse_cert(&hs_buf[c_idx], cert_len, &s->peer_cert)) {
-                                /* Validate against Root CA */
-                                static x509_cert_t ca_cert;
-                                if (x509_parse_cert(test_ca_der, TEST_CA_DER_LEN, &ca_cert)) {
-                                    u64 now = rtc_get_unix_time();
-                                    cert_status_t cst = x509_verify_cert(&s->peer_cert, &ca_cert, s->hostname, now);
-                                    if (cst == CERT_OK) {
-                                        s->cert_verified = true;
-                                    } else {
-                                        kprintf("[TLS ERROR] Server certificate verification failed: code %d\n", (int)cst);
-                                        tcp_close(s->tcp_socket);
-                                        return (cst == CERT_ERR_HOSTNAME_MISMATCH) ? TLS_ERR_CERT_HOSTNAME_MISMATCH :
-                                               (cst == CERT_ERR_EXPIRED) ? TLS_ERR_CERT_EXPIRED : TLS_ERR_CERT_INVALID;
-                                    }
-                                }
-                            }
+                        if (c_idx + cert_len > hpos + msg_total) {
+                            kprintf("[TLS ERROR] Truncated Certificate message!\n");
+                            tcp_close(s->tcp_socket);
+                            s->tcp_socket = -1;
+                            s->state = TLS_STATE_CLOSED;
+                            return TLS_ERR_CERT_INVALID;
+                        }
+
+                        if (!x509_parse_cert(&hs_buf[c_idx], cert_len, &s->peer_cert)) {
+                            kprintf("[TLS ERROR] Failed to parse server X.509 certificate (malformed DER)!\n");
+                            tcp_close(s->tcp_socket);
+                            s->tcp_socket = -1;
+                            s->state = TLS_STATE_CLOSED;
+                            return TLS_ERR_CERT_INVALID;
+                        }
+
+                        /* Validate against Root CA */
+                        static x509_cert_t ca_cert;
+                        if (!x509_parse_cert(test_ca_der, TEST_CA_DER_LEN, &ca_cert)) {
+                            kprintf("[TLS ERROR] Failed to parse root CA certificate!\n");
+                            tcp_close(s->tcp_socket);
+                            s->tcp_socket = -1;
+                            s->state = TLS_STATE_CLOSED;
+                            return TLS_ERR_CERT_UNTRUSTED;
+                        }
+
+                        u64 now = rtc_get_unix_time();
+                        cert_status_t cst = x509_verify_cert(&s->peer_cert, &ca_cert, s->hostname, now);
+                        if (cst == CERT_OK) {
+                            s->cert_verified = true;
+                        } else {
+                            kprintf("[TLS ERROR] Server certificate verification failed: code %d\n", (int)cst);
+                            tcp_close(s->tcp_socket);
+                            s->tcp_socket = -1;
+                            s->state = TLS_STATE_CLOSED;
+                            return (cst == CERT_ERR_HOSTNAME_MISMATCH) ? TLS_ERR_CERT_HOSTNAME_MISMATCH :
+                                   (cst == CERT_ERR_EXPIRED) ? TLS_ERR_CERT_EXPIRED :
+                                   (cst == CERT_ERR_UNTRUSTED_ISSUER) ? TLS_ERR_CERT_UNTRUSTED : TLS_ERR_CERT_INVALID;
                         }
                     }
                 }
@@ -485,6 +506,14 @@ tls_error_t tls_connect(tls_session_t *s, const char *hostname, u16 port) {
                     kprintf("[TLS ERROR] Server Finished verify_data mismatch!\n");
                     tcp_close(s->tcp_socket);
                     return TLS_ERR_MAC_MISMATCH;
+                }
+
+                if (!s->cert_verified) {
+                    kprintf("[TLS ERROR] Handshake finished without verified server certificate!\n");
+                    tcp_close(s->tcp_socket);
+                    s->tcp_socket = -1;
+                    s->state = TLS_STATE_CLOSED;
+                    return TLS_ERR_CERT_INVALID;
                 }
 
                 sha256_update(&s->transcript, msg_data, msg_total);

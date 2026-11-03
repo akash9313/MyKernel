@@ -280,6 +280,46 @@ sys_gui_draw_bitmap:
     int $0x80
     retq
 
+.global sys_fsync
+.type sys_fsync, @function
+/* long sys_fsync(int fd); */
+sys_fsync:
+    movq $33, %rax
+    int $0x80
+    retq
+
+.global sys_sync
+.type sys_sync, @function
+/* long sys_sync(void); */
+sys_sync:
+    movq $34, %rax
+    int $0x80
+    retq
+
+.global sys_rename
+.type sys_rename, @function
+/* long sys_rename(const char *oldpath, const char *newpath); */
+sys_rename:
+    movq $35, %rax
+    int $0x80
+    retq
+
+.global sys_waitpid
+.type sys_waitpid, @function
+/* long sys_waitpid(int pid, int *status, int options); */
+sys_waitpid:
+    movq $36, %rax
+    int $0x80
+    retq
+
+.global sys_getcpuid
+.type sys_getcpuid, @function
+/* unsigned int sys_getcpuid(void); */
+sys_getcpuid:
+    movq $37, %rax
+    int $0x80
+    retq
+
 .global memcpy
 .type memcpy, @function
 memcpy:

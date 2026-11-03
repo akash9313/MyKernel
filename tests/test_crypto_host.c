@@ -43,3 +43,10 @@ int run_crypto_tests(void) {
     printf("[SUCCESS] All host cryptographic tests passed!\n");
     return 0;
 }
+
+#ifndef HOST_DLL
+int main(void) {
+    return run_crypto_tests();
+}
+#endif
+

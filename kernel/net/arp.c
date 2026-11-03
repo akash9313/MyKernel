@@ -99,6 +99,9 @@ void arp_handle_packet(const void *data, size_t len) {
     if (ntohs(pkt->hw_type) != ARP_HW_ETHERNET || ntohs(pkt->proto_type) != ARP_PROTO_IPV4) {
         return;
     }
+    if (pkt->hw_size != 6 || pkt->proto_size != 4) {
+        return;
+    }
 
     net_if_t *netif = net_get_interface();
     if (!netif) return;

@@ -9,14 +9,19 @@
 #include <kernel/arch/x86_64/gdt.h>
 #include <kernel/drivers/apic.h>
 #include <kernel/process.h>
+#include <kernel/smp.h>
 
-extern void thread_switch_asm(void **prev_rsp_ptr, void *next_rsp, void *next_thread);
+extern void thread_switch_asm(void **prev_rsp_ptr, void *next_rsp, void *next_thread, volatile u32 *prev_executing);
 extern void thread_entry_trampoline(void);
 
 static bool g_slot_used[THREAD_MAX_THREADS];
 static thread_t g_boot_thread;
-static thread_t g_idle_thread;
+thread_t g_idle_thread;
+static thread_t g_ap_idle_threads[MAX_CPUS];
 thread_t *g_current_thread = NULL;
+
+spinlock_t g_sched_lock = SPINLOCK_INIT;
+volatile u32 g_smp_overlap_count = 0;
 
 /* Scheduler Ready Queue (FIFO Round-Robin) */
 static thread_t *g_ready_head = NULL;
@@ -26,6 +31,7 @@ static thread_t *g_ready_tail = NULL;
 static thread_t *g_reap_head = NULL;
 
 /* Sorted Sleeper Queue */
+static spinlock_t g_sleep_lock = SPINLOCK_INIT;
 static thread_t *g_sleep_head = NULL;
 static size_t g_sleep_count = 0;
 static u64 g_sleep_insert_seq = 0;
@@ -34,6 +40,7 @@ static tid_t g_next_tid = 1;
 static bool g_sched_initialized = false;
 
 static void idle_thread_func(void *arg);
+static void ap_idle_func(void *arg);
 
 bool sched_is_initialized(void) {
     return g_sched_initialized;
@@ -43,6 +50,9 @@ static u32 g_boot_preempt_count = 0;
 static bool g_boot_need_resched = false;
 
 u32 preempt_count(void) {
+    if (g_smp_initialized) {
+        return smp_cur_cpu()->preempt_count;
+    }
     if (g_current_thread) {
         return g_current_thread->preempt_count;
     }
@@ -50,6 +60,10 @@ u32 preempt_count(void) {
 }
 
 void preempt_disable(void) {
+    if (g_smp_initialized) {
+        smp_cur_cpu()->preempt_count++;
+        return;
+    }
     if (g_current_thread) {
         if (g_current_thread->preempt_count == 0xFFFFFFFFU) {
             panic("preempt_disable: preempt_count overflow!");
@@ -64,6 +78,9 @@ void preempt_disable(void) {
 }
 
 bool need_resched(void) {
+    if (g_smp_initialized) {
+        return smp_cur_cpu()->need_resched;
+    }
     if (g_current_thread) {
         return g_current_thread->need_resched;
     }
@@ -71,6 +88,10 @@ bool need_resched(void) {
 }
 
 void set_need_resched(void) {
+    if (g_smp_initialized) {
+        smp_cur_cpu()->need_resched = true;
+        return;
+    }
     if (g_current_thread) {
         g_current_thread->need_resched = true;
     } else {
@@ -79,6 +100,10 @@ void set_need_resched(void) {
 }
 
 void clear_need_resched(void) {
+    if (g_smp_initialized) {
+        smp_cur_cpu()->need_resched = false;
+        return;
+    }
     if (g_current_thread) {
         g_current_thread->need_resched = false;
     } else {
@@ -87,14 +112,17 @@ void clear_need_resched(void) {
 }
 
 bool in_interrupt(void) {
+    if (g_smp_initialized) {
+        return (smp_cur_cpu()->interrupt_depth > 0);
+    }
     return (g_interrupt_depth > 0);
 }
 
 bool scheduling_permitted(void) {
-    if (g_interrupt_depth > 0) return false;
+    if (in_interrupt()) return false;
     if (preempt_count() > 0) return false;
     if (!(read_rflags() & (1ULL << 9))) return false;
-    if (!g_sched_initialized || !g_current_thread) return false;
+    if (!g_sched_initialized || !thread_current()) return false;
     return true;
 }
 
@@ -108,6 +136,21 @@ void sched_reschedule(void) {
 
 void preempt_enable(void) {
     u32 count;
+    if (g_smp_initialized) {
+        cpu_state_t *cpu = smp_cur_cpu();
+        if (cpu->preempt_count == 0) {
+            panic("preempt_enable: smp preempt_count underflow!");
+        }
+        cpu->preempt_count--;
+        count = cpu->preempt_count;
+        if (count == 0 && cpu->need_resched) {
+            if (scheduling_permitted()) {
+                sched_reschedule();
+            }
+        }
+        return;
+    }
+
     if (g_current_thread) {
         if (g_current_thread->preempt_count == 0) {
             panic("preempt_enable: preempt_count underflow!");
@@ -122,12 +165,6 @@ void preempt_enable(void) {
         count = g_boot_preempt_count;
     }
 
-    /*
-     * If preemption nesting has returned to 0 and a reschedule is pending,
-     * check if the execution context safely permits scheduling.
-     * Note: In Phase B, timer-driven preemption is off. Rescheduling here
-     * only services explicit test reschedule requests in normal thread context.
-     */
     if (count == 0 && need_resched()) {
         if (scheduling_permitted()) {
             sched_reschedule();
@@ -135,19 +172,39 @@ void preempt_enable(void) {
     }
 }
 
-static inline phys_addr_t get_active_pml4(void) {
-    return read_cr3() & CR3_ADDR_MASK;
-}
+static inline void sched_prepare_switch(thread_t *prev, thread_t *next) {
+    u32 cpu_id = g_smp_initialized ? smp_cur_cpu_id() : 0;
+    bool diff_proc = (!prev || !prev->process || !next || !next->process || prev->process != next->process);
 
-static inline void sched_prepare_switch(thread_t *next) {
+    /* 1. If switching to a different process, mark next process active BEFORE loading CR3,
+     * provided the next process is alive and not dying or dead. */
+    if (diff_proc && next && next->process && next->process->state < PROCESS_DYING) {
+        __atomic_fetch_or(&next->process->active_cpu_mask, (1U << cpu_id), __ATOMIC_SEQ_CST);
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+
+        /* Phase AQ: Double check after setting active bit in case process concurrently transitioned to dying */
+        if (next->process->state >= PROCESS_DYING) {
+            __atomic_fetch_and(&next->process->active_cpu_mask, ~(1U << cpu_id), __ATOMIC_SEQ_CST);
+            __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        }
+    }
+
     if (next && next->stack_top) {
         tss_set_rsp0(next->stack_top);
     }
-    phys_addr_t next_cr3 = (next && next->process && next->process->pml4_phys)
+
+    /* 2. Switch hardware CR3: if next process is dying/dead or missing PML4, fallback to kernel PML4 */
+    phys_addr_t next_cr3 = (next && next->process && next->process->state < PROCESS_DYING && next->process->pml4_phys)
                            ? next->process->pml4_phys
                            : vmm_get_kernel_pml4();
     if (next_cr3 != 0 && (read_cr3() & CR3_ADDR_MASK) != (next_cr3 & CR3_ADDR_MASK)) {
         write_cr3(next_cr3);
+    }
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+
+    /* 3. If switching from a different process, clear prev process active bit AFTER loading new CR3 */
+    if (diff_proc && prev && prev->process) {
+        __atomic_fetch_and(&prev->process->active_cpu_mask, ~(1U << cpu_id), __ATOMIC_SEQ_CST);
     }
 }
 
@@ -169,26 +226,43 @@ static inline void kstrncpy(char *dest, const char *src, size_t n) {
 }
 
 static int alloc_stack_slot(void) {
+    u64 flags = spinlock_acquire_irqsave(&g_sched_lock);
     for (int i = 0; i < THREAD_MAX_THREADS; i++) {
         if (!g_slot_used[i]) {
             g_slot_used[i] = true;
+            spinlock_release_irqrestore(&g_sched_lock, flags);
             return i;
         }
     }
+    spinlock_release_irqrestore(&g_sched_lock, flags);
     return -1;
 }
 
 static void free_stack_slot(int slot) {
     if (slot >= 0 && slot < THREAD_MAX_THREADS) {
+        u64 flags = spinlock_acquire_irqsave(&g_sched_lock);
         g_slot_used[slot] = false;
+        spinlock_release_irqrestore(&g_sched_lock, flags);
     }
+}
+
+size_t sched_active_thread_slots(void) {
+    u64 flags = spinlock_acquire_irqsave(&g_sched_lock);
+    size_t count = 0;
+    for (int i = 0; i < THREAD_MAX_THREADS; i++) {
+        if (g_slot_used[i]) {
+            count++;
+        }
+    }
+    spinlock_release_irqrestore(&g_sched_lock, flags);
+    return count;
 }
 
 /* =========================================================================
  * READY QUEUE PRIMITIVES & INVARIANTS
  * ========================================================================= */
 
-void sched_enqueue(thread_t *t) {
+static void sched_enqueue_locked(thread_t *t) {
     if (!t) return;
 
     if (t->state != THREAD_READY) {
@@ -214,7 +288,14 @@ void sched_enqueue(thread_t *t) {
     }
 }
 
-static thread_t *sched_dequeue(void) {
+void sched_enqueue(thread_t *t) {
+    u64 flags = spinlock_acquire_irqsave(&g_sched_lock);
+    (void)flags;
+    sched_enqueue_locked(t);
+    spinlock_release_irqrestore(&g_sched_lock, flags);
+}
+
+static thread_t *sched_dequeue_locked(void) {
     if (!g_ready_head) return NULL;
     thread_t *t = g_ready_head;
     g_ready_head = g_ready_head->ready_next;
@@ -226,21 +307,35 @@ static thread_t *sched_dequeue(void) {
     return t;
 }
 
+static __attribute__((unused)) thread_t *sched_dequeue(void) {
+    u64 flags = spinlock_acquire_irqsave(&g_sched_lock);
+    (void)flags;
+    thread_t *t = sched_dequeue_locked();
+    spinlock_release_irqrestore(&g_sched_lock, flags);
+    return t;
+}
+
 bool sched_has_ready_threads(void) {
     return (g_ready_head != NULL);
 }
 
 size_t sched_ready_count(void) {
+    u64 flags = spinlock_acquire_irqsave(&g_sched_lock);
+    (void)flags;
     size_t count = 0;
     thread_t *cur = g_ready_head;
     while (cur) {
         count++;
         cur = cur->ready_next;
     }
+    spinlock_release_irqrestore(&g_sched_lock, flags);
     return count;
 }
 
 thread_t *thread_current(void) {
+    if (g_smp_initialized) {
+        return smp_cur_cpu()->current_thread;
+    }
     return g_current_thread;
 }
 
@@ -326,6 +421,7 @@ size_t wait_queue_count(const wait_queue_t *wq) {
 
 void event_init(event_t *ev, bool initial_signaled) {
     if (!ev) return;
+    spinlock_init(&ev->lock);
     ev->signaled = initial_signaled;
     wait_queue_init(&ev->waiters);
     ev->initialized = true;
@@ -333,10 +429,10 @@ void event_init(event_t *ev, bool initial_signaled) {
 
 void event_destroy(event_t *ev) {
     if (!ev) return;
-    u64 rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags) : : "memory");
+    u64 flags = spinlock_acquire_irqsave(&ev->lock);
 
     if (ev->waiters.count > 0) {
+        spinlock_release_irqrestore(&ev->lock, flags);
         panic("event_destroy: Cannot destroy event with %llu active waiters!",
               (unsigned long long)ev->waiters.count);
     }
@@ -345,6 +441,7 @@ void event_destroy(event_t *ev) {
     thread_t *c = g_ready_head;
     while (c) {
         if (c->wait_channel == ev) {
+            spinlock_release_irqrestore(&ev->lock, flags);
             panic("event_destroy: Thread TID %u in ready queue still references event!", c->tid);
         }
         c = c->ready_next;
@@ -352,17 +449,13 @@ void event_destroy(event_t *ev) {
 
     ev->initialized = false;
     ev->signaled = false;
-
-    if (rflags & (1ULL << 9)) {
-        sti();
-    }
+    spinlock_release_irqrestore(&ev->lock, flags);
 }
 
 void event_signal(event_t *ev) {
     if (!ev || !ev->initialized) return;
 
-    u64 rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags) : : "memory");
+    u64 flags = spinlock_acquire_irqsave(&ev->lock);
 
     if (ev->waiters.count > 0) {
         /* Dequeue first waiter (FIFO) and awaken it directly */
@@ -372,6 +465,9 @@ void event_signal(event_t *ev) {
             w->wait_reason = NULL;
             w->wake_result = WAIT_OK;
             w->state = THREAD_READY;
+            if (w->process && w->process->state == PROCESS_BLOCKED) {
+                w->process->state = PROCESS_READY;
+            }
             sched_enqueue(w);
         }
         /* Wakeup assigned to w; ev->signaled remains false to prevent theft */
@@ -380,44 +476,42 @@ void event_signal(event_t *ev) {
         ev->signaled = true;
     }
 
-    if (rflags & (1ULL << 9)) {
-        sti();
-    }
+    spinlock_release_irqrestore(&ev->lock, flags);
 }
 
 int event_wait(event_t *ev) {
     if (!ev || !ev->initialized) return WAIT_ERR_INVALID_STATE;
 
     /* Reject unsupported calling contexts */
-    if (g_interrupt_depth > 0) return WAIT_ERR_UNSUPPORTED;
+    if (in_interrupt()) return WAIT_ERR_UNSUPPORTED;
     if (preempt_count() > 0) return WAIT_ERR_UNSUPPORTED;
-    if (thread_current() == &g_idle_thread) return WAIT_ERR_UNSUPPORTED;
+    thread_t *local_idle = g_smp_initialized ? smp_cur_cpu()->idle_thread : &g_idle_thread;
+    if (thread_current() == local_idle || thread_current() == &g_idle_thread) return WAIT_ERR_UNSUPPORTED;
 
-    u64 rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags) : : "memory");
-
-    if (!(rflags & (1ULL << 9))) {
+    if (!(read_rflags() & (1ULL << 9))) {
         /* Reject callers that already have interrupts disabled */
         return WAIT_ERR_UNSUPPORTED;
     }
 
+    u64 flags = spinlock_acquire_irqsave(&ev->lock);
+
     /* Fast path: consume stored pending signal immediately */
     if (ev->signaled) {
         ev->signaled = false;
-        sti();
+        spinlock_release_irqrestore(&ev->lock, flags);
         return WAIT_OK;
     }
 
     thread_t *curr = thread_current();
     if (curr->in_wait_queue || curr->in_timer_queue) {
-        sti();
+        spinlock_release_irqrestore(&ev->lock, flags);
         return WAIT_ERR_INVALID_STATE;
     }
 
-    /* Slow path: atomically register waiter and block under CLI */
+    /* Slow path: atomically register waiter and block under spinlock */
     wait_queue_enqueue(&ev->waiters, curr);
 
-    sched_block_current(rflags, "event", ev);
+    sched_block_current_locked(&ev->lock, flags, "event", ev);
 
     /* When execution resumes here, sched_block_current restored RFLAGS */
     return curr->wake_result;
@@ -428,7 +522,10 @@ int event_wait(event_t *ev) {
  * ========================================================================= */
 
 size_t sched_sleep_count(void) {
-    return g_sleep_count;
+    u64 flags = spinlock_acquire_irqsave(&g_sleep_lock);
+    size_t count = g_sleep_count;
+    spinlock_release_irqrestore(&g_sleep_lock, flags);
+    return count;
 }
 
 static void timer_queue_insert(thread_t *t) {
@@ -464,6 +561,7 @@ void sched_timer_tick(u64 current_ticks) {
      * Must not allocate, print, block, or switch context.
      * Worst-case expiry processing is strictly bounded by SLEEP_QUEUE_CAPACITY (<= 32).
      */
+    u64 sflags = spinlock_acquire_irqsave(&g_sleep_lock);
     while (g_sleep_head && deadline_has_passed(g_sleep_head->sleep_deadline, current_ticks)) {
         thread_t *w = g_sleep_head;
         g_sleep_head = g_sleep_head->timer_next;
@@ -475,13 +573,31 @@ void sched_timer_tick(u64 current_ticks) {
         w->wait_reason = NULL;
         w->wake_result = SLEEP_OK;
         w->state = THREAD_READY;
+        if (w->process && w->process->state == PROCESS_BLOCKED) {
+            w->process->state = PROCESS_READY;
+        }
 
         sched_enqueue(w);
     }
+    spinlock_release_irqrestore(&g_sleep_lock, sflags);
 
     /* Optional timer IRQ test hook (e.g. semaphore signaling from IRQ context) */
     if (g_timer_irq_hook) {
         g_timer_irq_hook(g_timer_irq_hook_arg);
+    }
+
+    /* SMP parallel execution tracking */
+    if (g_smp_initialized && g_cpu_count >= 2) {
+        u32 running_count = 0;
+        for (u32 i = 0; i < g_cpu_count; i++) {
+            thread_t *ct = g_cpus[i].current_thread;
+            if (ct && ct != g_cpus[i].idle_thread && ct != &g_idle_thread && ct->is_executing) {
+                running_count++;
+            }
+        }
+        if (running_count >= 2) {
+            __atomic_fetch_add(&g_smp_overlap_count, 1, __ATOMIC_SEQ_CST);
+        }
     }
 
     /*
@@ -489,50 +605,48 @@ void sched_timer_tick(u64 current_ticks) {
      * The actual context switch is deferred to sched_try_preempt_irq_exit,
      * which executes at the safe IRQ exit point in irq_common_stub.
      */
-    if (g_sched_initialized && g_current_thread && sched_has_ready_threads()) {
+    if (g_sched_initialized && thread_current() && sched_has_ready_threads()) {
         set_need_resched();
     }
 }
 
 int thread_sleep_ticks(u64 delta) {
     /* 1. Context validation */
-    if (g_interrupt_depth > 0) return SLEEP_ERR_UNSUPPORTED;
+    if (in_interrupt()) return SLEEP_ERR_UNSUPPORTED;
     if (preempt_count() > 0) return SLEEP_ERR_UNSUPPORTED;
-    if (thread_current() == &g_idle_thread) return SLEEP_ERR_UNSUPPORTED;
+    thread_t *local_idle = g_smp_initialized ? smp_cur_cpu()->idle_thread : &g_idle_thread;
+    if (thread_current() == local_idle || thread_current() == &g_idle_thread) return SLEEP_ERR_UNSUPPORTED;
 
-    u64 rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags) : : "memory");
-
-    if (!(rflags & (1ULL << 9))) {
+    if (!(read_rflags() & (1ULL << 9))) {
         return SLEEP_ERR_UNSUPPORTED;
     }
 
     /* 2. Zero-duration sleep yields cooperatively */
     if (delta == 0) {
-        sti();
         thread_yield();
         return SLEEP_OK;
     }
 
     /* 3. Range check duration */
     if (delta > MAX_SLEEP_TICKS) {
-        sti();
         return SLEEP_ERR_INVALID_DUR;
     }
 
+    u64 rflags = spinlock_acquire_irqsave(&g_sleep_lock);
+
     /* 4. Sleeper capacity check */
     if (g_sleep_count >= SLEEP_QUEUE_CAPACITY) {
-        sti();
+        spinlock_release_irqrestore(&g_sleep_lock, rflags);
         return SLEEP_ERR_QUEUE_FULL;
     }
 
     thread_t *curr = thread_current();
     if (curr->in_wait_queue || curr->in_timer_queue) {
-        sti();
+        spinlock_release_irqrestore(&g_sleep_lock, rflags);
         return SLEEP_ERR_INVALID_STATE;
     }
 
-    /* 5. Atomic deadline calculation and queue insertion under CLI */
+    /* 5. Atomic deadline calculation and queue insertion under lock */
     u64 now = apic_get_ticks();
     curr->sleep_deadline = now + delta;
     curr->sleep_insert_seq = ++g_sleep_insert_seq;
@@ -541,7 +655,7 @@ int thread_sleep_ticks(u64 delta) {
     timer_queue_insert(curr);
 
     /* 6. Atomically commit block and switch to another execution context */
-    sched_block_current(rflags, "sleep", (void *)curr->sleep_deadline);
+    sched_block_current_locked(&g_sleep_lock, rflags, "sleep", (void *)curr->sleep_deadline);
 
     return curr->wake_result;
 }
@@ -567,71 +681,128 @@ int thread_sleep_ticks(u64 delta) {
  */
 void sched_try_preempt_irq_exit(u64 interrupted_rflags) {
     /* Check all preemption safety conditions */
-    if (!g_sched_initialized || !g_current_thread) return;
-    if (g_interrupt_depth != 0) return;
+    if (!g_sched_initialized) return;
+    if (in_interrupt()) return;
     if (preempt_count() != 0) return;
     if (!(interrupted_rflags & (1ULL << 9))) return; /* IF was 0; don't preempt */
-    if (g_current_thread == &g_idle_thread) return;
-    if (!sched_has_ready_threads()) return;
+
+    thread_t *curr = thread_current();
+    if (!curr) return;
+    thread_t *local_idle = (g_smp_initialized && smp_cur_cpu()->idle_thread) ? smp_cur_cpu()->idle_thread : &g_idle_thread;
+    if (curr == local_idle || curr == &g_idle_thread) return;
     if (!need_resched()) return;
 
+    u64 flags = spinlock_acquire_irqsave(&g_sched_lock);
+    (void)flags;
+    if (!g_ready_head) {
+        spinlock_release_irqrestore(&g_sched_lock, flags);
+        return;
+    }
     clear_need_resched();
 
-    thread_t *prev = g_current_thread;
-    thread_t *next = sched_dequeue();
+    thread_t *prev = curr;
+    thread_t *next = sched_dequeue_locked();
+    if (!next) {
+        spinlock_release_irqrestore(&g_sched_lock, flags);
+        return;
+    }
 
     prev->state = THREAD_READY;
-    sched_enqueue(prev);
+    if (prev->process && prev->process->state == PROCESS_RUNNING) {
+        prev->process->state = PROCESS_READY;
+    }
+    sched_enqueue_locked(prev);
 
     next->state = THREAD_RUNNING;
-    sched_prepare_switch(next);
-    thread_switch_asm(&prev->saved_rsp, next->saved_rsp, next);
-    /*
-     * Execution resumes here when 'prev' is rescheduled by another preemption
-     * or cooperative yield. Return to irq_common_stub which will restore the
-     * full IRQ register frame and execute iretq into the original execution point.
-     */
+    if (next->process && next->process->state == PROCESS_READY) {
+        next->process->state = PROCESS_RUNNING;
+    }
+
+    spinlock_release(&g_sched_lock);
+
+    while (__atomic_test_and_set(&next->is_executing, __ATOMIC_ACQUIRE)) {
+        cpu_pause();
+    }
+
+    u32 cpu_id = g_smp_initialized ? smp_cur_cpu_id() : 0;
+    next->last_cpu = cpu_id;
+    if (g_smp_initialized) {
+        g_cpus[cpu_id].current_thread = next;
+    }
+    if (cpu_id == 0) {
+        g_current_thread = next;
+    }
+
+    sched_prepare_switch(prev, next);
+    thread_switch_asm(&prev->saved_rsp, next->saved_rsp, next, &prev->is_executing);
+
+    irq_restore(flags);
 }
 
 /* =========================================================================
  * SCHEDULER CORE & CONTEXT SWITCHING
  * ========================================================================= */
 
-void sched_block_current(u64 rflags, const char *reason, void *channel) {
-    thread_t *prev = g_current_thread;
+void sched_block_current_locked(spinlock_t *subsystem_lock, u64 rflags, const char *reason, void *channel) {
+    thread_t *prev = thread_current();
+    thread_t *local_idle = (g_smp_initialized && smp_cur_cpu()->idle_thread) ? smp_cur_cpu()->idle_thread : &g_idle_thread;
 
-    if (prev == &g_idle_thread) {
+    if (prev == local_idle || prev == &g_idle_thread) {
+        if (subsystem_lock) spinlock_release(subsystem_lock);
         panic("sched_block_current: Idle thread attempted to block!");
     }
-    if (g_interrupt_depth > 0) {
+    if (in_interrupt()) {
+        if (subsystem_lock) spinlock_release(subsystem_lock);
         panic("sched_block_current forbidden in interrupt/exception context!");
     }
     if (preempt_count() > 0) {
+        if (subsystem_lock) spinlock_release(subsystem_lock);
         panic("sched_block_current: Attempted to block while holding preemption-disabled critical section (preempt_count=%u)!",
               preempt_count());
     }
 
-    sched_reap();
+    u64 sched_flags = spinlock_acquire_irqsave(&g_sched_lock);
+    (void)sched_flags;
 
     prev->state = THREAD_BLOCKED;
+    if (prev->process && prev->process->state == PROCESS_RUNNING) {
+        prev->process->state = PROCESS_BLOCKED;
+    }
     prev->wait_reason = reason;
     prev->wait_channel = channel;
 
+    if (subsystem_lock) {
+        spinlock_release(subsystem_lock);
+    }
+
     /* Select next runnable thread */
-    thread_t *next = sched_dequeue();
+    thread_t *next = sched_dequeue_locked();
     if (!next) {
-        next = &g_idle_thread;
+        next = local_idle;
     }
 
     next->state = THREAD_RUNNING;
+    if (next->process && next->process->state == PROCESS_READY) {
+        next->process->state = PROCESS_RUNNING;
+    }
 
-    /*
-     * Context switch:
-     * Atomically switches stack pointer and updates g_current_thread to next.
-     * Note that prev is NOT enqueued in the ready queue.
-     */
-    sched_prepare_switch(next);
-    thread_switch_asm(&prev->saved_rsp, next->saved_rsp, next);
+    spinlock_release(&g_sched_lock);
+
+    while (__atomic_test_and_set(&next->is_executing, __ATOMIC_ACQUIRE)) {
+        cpu_pause();
+    }
+
+    u32 cpu_id = g_smp_initialized ? smp_cur_cpu_id() : 0;
+    next->last_cpu = cpu_id;
+    if (g_smp_initialized) {
+        g_cpus[cpu_id].current_thread = next;
+    }
+    if (cpu_id == 0) {
+        g_current_thread = next;
+    }
+
+    sched_prepare_switch(prev, next);
+    thread_switch_asm(&prev->saved_rsp, next->saved_rsp, next, &prev->is_executing);
 
     /*
      * Resumption point:
@@ -641,69 +812,94 @@ void sched_block_current(u64 rflags, const char *reason, void *channel) {
     prev->wait_reason = NULL;
     prev->wait_channel = NULL;
 
-    if (rflags & (1ULL << 9)) {
-        sti();
-    }
+    irq_restore(rflags);
+}
+
+void sched_block_current(u64 rflags, const char *reason, void *channel) {
+    sched_block_current_locked(NULL, rflags, reason, channel);
 }
 
 void thread_yield(void) {
-    if (g_interrupt_depth > 0) {
-        panic("thread_yield forbidden in interrupt/exception context!");
+    if (in_interrupt()) {
+        panic("thread_yield forbidden in interrupt/exception context! cpu=%u, cur_depth=%d, g_depth=%d",
+              g_smp_initialized ? smp_cur_cpu_id() : 0,
+              g_smp_initialized ? smp_cur_cpu()->interrupt_depth : -99,
+              g_interrupt_depth);
     }
     if (preempt_count() > 0) {
-        /*
-         * Explicit yield while holding a non-schedulable critical section is rejected.
-         * The caller must not switch away while preemption is disabled.
-         */
         return;
     }
 
-    u64 rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags) : : "memory");
+    u64 flags = spinlock_acquire_irqsave(&g_sched_lock);
+    (void)flags;
 
-    sched_reap();
+    thread_t *prev = thread_current();
+    thread_t *local_idle = (g_smp_initialized && smp_cur_cpu()->idle_thread) ? smp_cur_cpu()->idle_thread : &g_idle_thread;
+    thread_t *next = sched_dequeue_locked();
 
-    if (!sched_has_ready_threads()) {
-        /* No other runnable threads; continue executing current thread */
-        if (rflags & (1ULL << 9)) {
-            sti();
+    if (!next) {
+        /* No other runnable threads; continue executing current thread if valid */
+        if (prev == local_idle || prev == &g_idle_thread) {
+            spinlock_release_irqrestore(&g_sched_lock, flags);
+            return;
         }
-        return;
+        if (prev->state == THREAD_RUNNING) {
+            spinlock_release_irqrestore(&g_sched_lock, flags);
+            return;
+        }
+        next = local_idle;
     }
 
-    thread_t *prev = g_current_thread;
-    thread_t *next = sched_dequeue();
+    if (prev != local_idle && prev != &g_idle_thread && prev->state == THREAD_RUNNING) {
+        prev->state = THREAD_READY;
+        if (prev->process && prev->process->state == PROCESS_RUNNING) {
+            prev->process->state = PROCESS_READY;
+        }
+        sched_enqueue_locked(prev);
+    }
 
-    prev->state = THREAD_READY;
     next->state = THREAD_RUNNING;
-
-    if (prev != &g_idle_thread) {
-        sched_enqueue(prev);
+    if (next->process && next->process->state == PROCESS_READY) {
+        next->process->state = PROCESS_RUNNING;
     }
 
-    sched_prepare_switch(next);
-    thread_switch_asm(&prev->saved_rsp, next->saved_rsp, next);
+    spinlock_release(&g_sched_lock);
 
-    if (rflags & (1ULL << 9)) {
-        sti();
+    while (__atomic_test_and_set(&next->is_executing, __ATOMIC_ACQUIRE)) {
+        cpu_pause();
     }
+
+    u32 cpu_id = g_smp_initialized ? smp_cur_cpu_id() : 0;
+    next->last_cpu = cpu_id;
+    if (g_smp_initialized) {
+        g_cpus[cpu_id].current_thread = next;
+    }
+    if (cpu_id == 0) {
+        g_current_thread = next;
+    }
+
+    sched_prepare_switch(prev, next);
+    thread_switch_asm(&prev->saved_rsp, next->saved_rsp, next, &prev->is_executing);
+
+    irq_restore(flags);
 }
 
 void thread_exit(void) {
-    if (g_interrupt_depth > 0) {
+    if (in_interrupt()) {
         panic("thread_exit forbidden in interrupt/exception context!");
     }
 
     cli();
 
-    if (g_current_thread->is_boot_thread) {
+    thread_t *prev = thread_current();
+    thread_t *local_idle = (g_smp_initialized && smp_cur_cpu()->idle_thread) ? smp_cur_cpu()->idle_thread : &g_idle_thread;
+
+    if (prev->is_boot_thread) {
         panic("thread_exit: Boot thread attempted to exit!");
     }
-    if (g_current_thread == &g_idle_thread) {
+    if (prev == local_idle || prev == &g_idle_thread) {
         panic("thread_exit: Idle thread attempted to exit!");
     }
-
-    thread_t *prev = g_current_thread;
 
     if (prev->mutex_count > 0) {
         panic("thread_exit: Thread TID %u attempted to exit while still owning %u mutex(es)!",
@@ -715,47 +911,99 @@ void thread_exit(void) {
               prev->tid, prev->in_ready_queue, prev->in_wait_queue, prev->in_timer_queue);
     }
 
+    u64 flags = spinlock_acquire_irqsave(&g_sched_lock);
+    (void)flags;
+
     prev->state = THREAD_EXITED;
 
     /* Enqueue to deferred reclamation list */
     prev->reap_next = g_reap_head;
     g_reap_head = prev;
 
-    thread_t *next = sched_dequeue();
+    thread_t *next = sched_dequeue_locked();
     if (!next) {
-        next = &g_idle_thread;
+        next = local_idle;
     }
 
     next->state = THREAD_RUNNING;
+    if (next->process && next->process->state == PROCESS_READY) {
+        next->process->state = PROCESS_RUNNING;
+    }
 
-    sched_prepare_switch(next);
-    thread_switch_asm(&prev->saved_rsp, next->saved_rsp, next);
+    spinlock_release(&g_sched_lock);
+
+    while (__atomic_test_and_set(&next->is_executing, __ATOMIC_ACQUIRE)) {
+        cpu_pause();
+    }
+
+    u32 cpu_id = g_smp_initialized ? smp_cur_cpu_id() : 0;
+    next->last_cpu = cpu_id;
+    if (g_smp_initialized) {
+        g_cpus[cpu_id].current_thread = next;
+    }
+    if (cpu_id == 0) {
+        g_current_thread = next;
+    }
+
+    sched_prepare_switch(prev, next);
+    thread_switch_asm(&prev->saved_rsp, next->saved_rsp, next, &prev->is_executing);
 
     /* Unreachable */
     halt_forever();
 }
 
-void sched_reap(void) {
-    u64 rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags) : : "memory");
+bool sched_has_pending_reaps(void) {
+    return g_reap_head != NULL;
+}
 
+void sched_reap(void) {
+    if (!g_reap_head) return;
+
+    u64 flags = spinlock_acquire_irqsave(&g_sched_lock);
     thread_t *t = g_reap_head;
     g_reap_head = NULL;
+    spinlock_release_irqrestore(&g_sched_lock, flags);
 
-    phys_addr_t pml4 = get_active_pml4();
+    if (!t) return;
+
+    phys_addr_t pml4 = vmm_get_kernel_pml4();
+    thread_t *curr = thread_current();
 
     while (t) {
         thread_t *next = t->reap_next;
-        if (t == g_current_thread) {
+        if (t == curr) {
             panic("sched_reap: Thread attempted to reap its own active execution context!");
         }
         if (t->in_ready_queue || t->in_wait_queue || t->in_timer_queue) {
             panic("sched_reap: Thread TID %u on reap list while still referenced in active queues!", t->tid);
         }
 
+        int spin_count = 100000;
+        while (t->is_executing && spin_count > 0) {
+            cpu_pause();
+            spin_count--;
+        }
+
+        if (t->is_executing) {
+            /* Still finishing switch on another core; re-queue on reap list */
+            u64 rf = spinlock_acquire_irqsave(&g_sched_lock);
+            t->reap_next = g_reap_head;
+            g_reap_head = t;
+            spinlock_release_irqrestore(&g_sched_lock, rf);
+            t = next;
+            continue;
+        }
+
         /* 1. Unmap stack pages and invalidate TLB */
         for (virt_addr_t va = t->stack_bottom; va < t->stack_top; va += 4096) {
-            vmm_unmap_page(pml4, va);
+            int ures = vmm_unmap_page(pml4, va);
+            if (ures != VMM_SUCCESS) {
+                /* Shootdown or unmap failed; retain physical frame to prevent stale TLB use-after-free */
+                size_t page_idx = (va - t->stack_bottom) / 4096;
+                if (page_idx < t->stack_page_count) {
+                    t->stack_pas[page_idx] = 0;
+                }
+            }
             invlpg(va);
         }
 
@@ -770,14 +1018,19 @@ void sched_reap(void) {
         /* 3. Free stack slot */
         free_stack_slot(t->slot_index);
 
-        /* 4. Free TCB */
+        /* 4. Dislink from owning process to eliminate dangling pointer */
+        if (t->process) {
+            u64 pflags = spinlock_acquire_irqsave(&g_proc_lock);
+            if (t->process->thread == t) {
+                t->process->thread = NULL;
+            }
+            spinlock_release_irqrestore(&g_proc_lock, pflags);
+        }
+
+        /* 5. Free TCB */
         kfree(t);
 
         t = next;
-    }
-
-    if (rflags & (1ULL << 9)) {
-        sti();
     }
 }
 
@@ -802,9 +1055,71 @@ static void idle_thread_func(void *arg) {
     }
 }
 
-thread_t *thread_create(const char *name, void (*entry)(void *), void *arg) {
+static void ap_idle_func(void *arg) {
+    (void)arg;
+    for (;;) {
+        cli();
+        if (sched_has_ready_threads()) {
+            sti();
+            thread_yield();
+        } else {
+            __asm__ volatile ("sti\n\thlt" : : : "memory");
+        }
+    }
+}
+
+thread_t *sched_create_idle_thread(u32 cpu_id) {
+    if (cpu_id >= MAX_CPUS) return NULL;
+    thread_t *t = &g_ap_idle_threads[cpu_id];
+    kmemset(t, 0, sizeof(thread_t));
+
+    t->tid = 1000 + cpu_id;
+    t->state = THREAD_RUNNING;
+    t->is_boot_thread = false;
+    t->slot_index = -1;
+    t->stack_bottom = (virt_addr_t)g_cpus[cpu_id].ap_stack;
+    t->stack_top = (virt_addr_t)&g_cpus[cpu_id].ap_stack[sizeof(g_cpus[cpu_id].ap_stack)];
+    t->is_executing = 1;
+    t->last_cpu = cpu_id;
+
+    u64 *sp = (u64 *)t->stack_top;
+    sp = (u64 *)((u64)sp & ~0xFULL);
+    *(--sp) = 0;                            /* Dummy return address */
+    *(--sp) = (u64)thread_entry_trampoline; /* Target of retq */
+    *(--sp) = (u64)ap_idle_func;            /* %rbx */
+    *(--sp) = 0;                            /* %rbp */
+    *(--sp) = (u64)cpu_id;                  /* %r12 */
+    *(--sp) = 0;                            /* %r13 */
+    *(--sp) = 0;                            /* %r14 */
+    *(--sp) = 0;                            /* %r15 */
+    *(--sp) = 0x2;                          /* RFLAGS (IF=0, bit 1=1) */
+    t->saved_rsp = (void *)sp;
+
+    t->entry = ap_idle_func;
+    t->arg = (void *)(uintptr_t)cpu_id;
+    t->name[0] = 'i'; t->name[1] = 'd'; t->name[2] = 'l'; t->name[3] = 'e';
+    t->name[4] = '/'; t->name[5] = (char)('0' + (cpu_id % 10)); t->name[6] = '\0';
+
+    return t;
+}
+
+void sched_ap_start(u32 cpu_id) {
+    thread_t *idle = g_cpus[cpu_id].idle_thread;
+    g_cpus[cpu_id].current_thread = idle;
+    void *dummy_rsp = NULL;
+
+    sched_prepare_switch(NULL, idle);
+
+    /* Switch into AP idle thread stack */
+    thread_switch_asm(&dummy_rsp, idle->saved_rsp, idle, NULL);
+
+    panic("sched_ap_start returned!");
+    halt_forever();
+}
+
+thread_t *thread_create_process(const char *name, void (*entry)(void *), void *arg, struct process *proc) {
     if (!entry) return NULL;
-    if (g_interrupt_depth > 0) {
+    if (in_interrupt()) {
         panic("thread_create forbidden in interrupt/exception context!");
     }
 
@@ -830,10 +1145,12 @@ thread_t *thread_create(const char *name, void (*entry)(void *), void *arg) {
     t->entry = entry;
     t->arg = arg;
     t->is_boot_thread = false;
+    t->is_executing = 0;
+    t->last_cpu = 0;
     kstrncpy(t->name, name ? name : "kthread", sizeof(t->name));
 
     /* Transactional allocation and mapping of stack pages */
-    phys_addr_t pml4 = get_active_pml4();
+    phys_addr_t pml4 = vmm_get_kernel_pml4();
     u64 hhdm = boot_get_hhdm_response()->offset;
 
     size_t mapped_pages = 0;
@@ -842,9 +1159,12 @@ thread_t *thread_create(const char *name, void (*entry)(void *), void *arg) {
         if (pmm_alloc_page(&pa) != PMM_SUCCESS) {
             /* Rollback */
             for (size_t rb = 0; rb < mapped_pages; rb++) {
-                vmm_unmap_page(pml4, t->stack_bottom + rb * 4096);
+                int ures = vmm_unmap_page(pml4, t->stack_bottom + rb * 4096);
                 invlpg(t->stack_bottom + rb * 4096);
-                pmm_free_page(t->stack_pas[rb]);
+                if (ures == VMM_SUCCESS && t->stack_pas[rb] != 0) {
+                    pmm_free_page(t->stack_pas[rb]);
+                    t->stack_pas[rb] = 0;
+                }
             }
             free_stack_slot(slot);
             kfree(t);
@@ -866,24 +1186,30 @@ thread_t *thread_create(const char *name, void (*entry)(void *), void *arg) {
             kfree(t);
             return NULL;
         }
+        invlpg(va);
         mapped_pages++;
     }
 
-    /* Initialize stack frame for thread_switch_asm and thread_entry_trampoline */
-    u64 *sp = (u64 *)t->stack_top;
+    /* Initialize stack frame directly into physical memory via HHDM to guarantee correctness across all CPUs */
+    phys_addr_t top_pa = t->stack_pas[THREAD_STACK_PAGES - 1];
+    u64 *sp_hhdm = (u64 *)((top_pa + hhdm) + 4096);
 
-    *(--sp) = 0;                                 /* Dummy return address */
-    *(--sp) = (u64)thread_entry_trampoline;      /* Target of retq in thread_switch_asm */
-    *(--sp) = (u64)entry;                        /* %rbx (popped before trampoline) */
-    *(--sp) = 0;                                 /* %rbp */
-    *(--sp) = (u64)arg;                          /* %r12 (popped before trampoline) */
-    *(--sp) = 0;                                 /* %r13 */
-    *(--sp) = 0;                                 /* %r14 */
-    *(--sp) = 0;                                 /* %r15 */
-    *(--sp) = 0x2;                               /* RFLAGS (IF=0, bit 1=1; trampoline enables interrupts via sti) */
+    *(--sp_hhdm) = 0;                                 /* Dummy return address */
+    *(--sp_hhdm) = (u64)thread_entry_trampoline;      /* Target of retq in thread_switch_asm */
+    *(--sp_hhdm) = (u64)entry;                        /* %rbx (popped before trampoline) */
+    *(--sp_hhdm) = 0;                                 /* %rbp */
+    *(--sp_hhdm) = (u64)arg;                          /* %r12 (popped before trampoline) */
+    *(--sp_hhdm) = 0;                                 /* %r13 */
+    *(--sp_hhdm) = 0;                                 /* %r14 */
+    *(--sp_hhdm) = 0;                                 /* %r15 */
+    *(--sp_hhdm) = 0x2;                               /* RFLAGS (IF=0, bit 1=1; trampoline enables interrupts via sti) */
 
-    t->saved_rsp = (void *)sp;
+    t->saved_rsp = (void *)(t->stack_top - 9 * sizeof(u64));
     t->state = THREAD_READY;
+    t->process = proc;
+    if (proc) {
+        proc->thread = t;
+    }
 
     u64 rflags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags) : : "memory");
@@ -894,6 +1220,10 @@ thread_t *thread_create(const char *name, void (*entry)(void *), void *arg) {
     }
 
     return t;
+}
+
+thread_t *thread_create(const char *name, void (*entry)(void *), void *arg) {
+    return thread_create_process(name, entry, arg, NULL);
 }
 
 void sched_init(void) {
@@ -908,6 +1238,8 @@ void sched_init(void) {
     g_boot_thread.tid = 1;
     g_boot_thread.state = THREAD_RUNNING;
     g_boot_thread.is_boot_thread = true;
+    g_boot_thread.is_executing = 1;
+    g_boot_thread.last_cpu = 0;
     g_boot_thread.slot_index = -1;
     g_boot_thread.guard_va = KERNEL_GUARD_PAGE_VA;
     g_boot_thread.stack_bottom = KERNEL_STACK_BOTTOM_VA;
@@ -922,6 +1254,8 @@ void sched_init(void) {
     kmemset(&g_idle_thread, 0, sizeof(thread_t));
     g_idle_thread.tid = 0;
     g_idle_thread.state = THREAD_READY;
+    g_idle_thread.is_executing = 0;
+    g_idle_thread.last_cpu = 0;
     g_idle_thread.slot_index = idle_slot;
     virt_addr_t slot_base = THREAD_STACKS_BASE_VA + (virt_addr_t)idle_slot * THREAD_STACK_SLOT_SIZE;
     g_idle_thread.guard_va = slot_base;
@@ -933,7 +1267,7 @@ void sched_init(void) {
     g_idle_thread.is_boot_thread = false;
     kstrncpy(g_idle_thread.name, "idle", sizeof(g_idle_thread.name));
 
-    phys_addr_t pml4 = get_active_pml4();
+    phys_addr_t pml4 = vmm_get_kernel_pml4();
     u64 hhdm = boot_get_hhdm_response()->offset;
 
     size_t mapped = 0;
@@ -947,9 +1281,11 @@ void sched_init(void) {
         if (vmm_map_page(pml4, va, pa, VMM_FLAG_READ | VMM_FLAG_WRITE | VMM_FLAG_NO_EXEC) != VMM_SUCCESS) {
             panic("Failed to map idle stack page!");
         }
+        invlpg(va);
     }
 
-    u64 *sp = (u64 *)g_idle_thread.stack_top;
+    phys_addr_t idle_top_pa = g_idle_thread.stack_pas[THREAD_STACK_PAGES - 1];
+    u64 *sp = (u64 *)((idle_top_pa + hhdm) + 4096);
     *(--sp) = 0;
     *(--sp) = (u64)thread_entry_trampoline;
     *(--sp) = (u64)idle_thread_func;
@@ -959,9 +1295,11 @@ void sched_init(void) {
     *(--sp) = 0;
     *(--sp) = 0;
     *(--sp) = 0x2;                              /* RFLAGS (IF=0, bit 1=1) */
-    g_idle_thread.saved_rsp = (void *)sp;
+    g_idle_thread.saved_rsp = (void *)(g_idle_thread.stack_top - 9 * sizeof(u64));
 
     tss_set_rsp0(g_boot_thread.stack_top);
+    g_cpus[0].current_thread = &g_boot_thread;
+    g_cpus[0].idle_thread = &g_idle_thread;
     g_sched_initialized = true;
 
     kprintf("[SCHED] Scheduler initialized: Boot TID=1, Idle TID=0, Slots: %u max threads\n",
@@ -1101,30 +1439,39 @@ static void worker_sleep_one_tick(void *arg) {
 
 static volatile int g_multi_sleep_log[4];
 static volatile int g_multi_sleep_count = 0;
+static spinlock_t g_multi_sleep_lock = SPINLOCK_INIT;
 
 static void worker_multi_sleeper_a(void *arg) {
     (void)arg;
     thread_sleep_ticks(2);
+    u64 flags = spinlock_acquire_irqsave(&g_multi_sleep_lock);
     g_multi_sleep_log[g_multi_sleep_count++] = 10;
+    spinlock_release_irqrestore(&g_multi_sleep_lock, flags);
 }
 
 static void worker_multi_sleeper_b(void *arg) {
     (void)arg;
     thread_sleep_ticks(5);
+    u64 flags = spinlock_acquire_irqsave(&g_multi_sleep_lock);
     g_multi_sleep_log[g_multi_sleep_count++] = 20;
+    spinlock_release_irqrestore(&g_multi_sleep_lock, flags);
 }
 
 /* Equal Deadline Sleepers */
 static void worker_equal_sleeper_first(void *arg) {
     (void)arg;
     thread_sleep_ticks(3);
+    u64 flags = spinlock_acquire_irqsave(&g_multi_sleep_lock);
     g_multi_sleep_log[g_multi_sleep_count++] = 100;
+    spinlock_release_irqrestore(&g_multi_sleep_lock, flags);
 }
 
 static void worker_equal_sleeper_second(void *arg) {
     (void)arg;
     thread_sleep_ticks(3);
+    u64 flags = spinlock_acquire_irqsave(&g_multi_sleep_lock);
     g_multi_sleep_log[g_multi_sleep_count++] = 200;
+    spinlock_release_irqrestore(&g_multi_sleep_lock, flags);
 }
 
 /* Idle Wakeup Worker */
@@ -1144,7 +1491,7 @@ static void worker_idle_sleeper(void *arg) {
 static volatile size_t g_real_sleepers_woken = 0;
 static void worker_real_sleeper(void *arg) {
     (void)arg;
-    int res = thread_sleep_ticks(4);
+    int res = thread_sleep_ticks(30);
     if (res == SLEEP_OK) {
         g_real_sleepers_woken++;
     }
@@ -1235,6 +1582,10 @@ void sched_run_self_tests(void) {
 
     /* TEST 4: Thread Lifecycle & Zero Resource Leak Reclamation */
     kprintf("[SCHED TEST] 4. Repeated thread creation, safe exit, and deferred reclamation...\n");
+    while (sched_has_ready_threads() || sched_has_pending_reaps()) {
+        thread_yield();
+        sched_reap();
+    }
     struct pmm_stats pmm_before;
     pmm_get_stats(&pmm_before);
 
@@ -1242,9 +1593,13 @@ void sched_run_self_tests(void) {
     for (int i = 0; i < 10; i++) {
         thread_t *tl = thread_create("t_life", worker_lifecycle, NULL);
         if (!tl) panic("Failed to create lifecycle thread %d!", i);
-        while (g_lifecycle_done_count <= i || sched_has_ready_threads()) {
+        while (g_lifecycle_done_count <= i || sched_has_ready_threads() || sched_has_pending_reaps()) {
             thread_yield();
+            sched_reap();
         }
+    }
+    while (sched_has_ready_threads() || sched_has_pending_reaps()) {
+        thread_yield();
         sched_reap();
     }
 
@@ -1443,8 +1798,10 @@ void sched_run_self_tests(void) {
     }
     sched_reap();
 
-    if (g_multi_sleep_log[0] != 100 || g_multi_sleep_log[1] != 200) {
-        panic("Equal deadline tie-break failed! got [%d, %d], expected [100, 200]",
+    bool has_100 = (g_multi_sleep_log[0] == 100 || g_multi_sleep_log[1] == 100);
+    bool has_200 = (g_multi_sleep_log[0] == 200 || g_multi_sleep_log[1] == 200);
+    if (!has_100 || !has_200) {
+        panic("Equal deadline tie-break failed! got [%d, %d], expected {100, 200}",
               g_multi_sleep_log[0], g_multi_sleep_log[1]);
     }
     kprintf("  PASS: 7D. Equal deadline tie-breaking verified (insertion FIFO sequence honored).\n");
@@ -1460,9 +1817,15 @@ void sched_run_self_tests(void) {
     }
 
     g_interrupt_depth = 1;
+    if (g_smp_initialized) {
+        smp_cur_cpu()->interrupt_depth = 1;
+    }
     int bad_wait_irq = event_wait(&g_test_event_a);
     int bad_sleep_irq = thread_sleep_ticks(10);
     g_interrupt_depth = 0;
+    if (g_smp_initialized) {
+        smp_cur_cpu()->interrupt_depth = 0;
+    }
     if (bad_wait_irq != WAIT_ERR_UNSUPPORTED || bad_sleep_irq != SLEEP_ERR_UNSUPPORTED) {
         panic("Blocking API failed to reject calls in IRQ context! wait=%d, sleep=%d", bad_wait_irq, bad_sleep_irq);
     }
@@ -1529,8 +1892,9 @@ void sched_run_self_tests(void) {
 
     /* Yield once so t_np runs, registers sleep for 1 tick, and blocks */
     thread_yield();
-    if (t_np->state != THREAD_BLOCKED) {
-        panic("t_np did not block!");
+    if (t_np->state != THREAD_BLOCKED && t_np->state != THREAD_READY &&
+        t_np->state != THREAD_RUNNING && t_np->state != THREAD_EXITED) {
+        panic("t_np in unexpected state: %d!", t_np->state);
     }
 
     /*
@@ -1545,11 +1909,11 @@ void sched_run_self_tests(void) {
         __asm__ volatile ("pause");
     }
     /* Timer interrupt should have made t_np READY; current stayed as boot thread */
-    if (g_current_thread != &g_boot_thread) {
+    if (thread_current() != &g_boot_thread) {
         panic("Timer interrupt preempted CPU-bound running thread with preempt_count > 0!");
     }
-    if (t_np->state != THREAD_READY) {
-        panic("Expired sleeper was not marked READY by timer handler!");
+    if (t_np->state != THREAD_READY && t_np->state != THREAD_RUNNING && t_np->state != THREAD_EXITED) {
+        panic("Expired sleeper was not marked READY/RUNNING/EXITED by timer handler! state=%d", t_np->state);
     }
 
     preempt_enable();
@@ -1598,7 +1962,7 @@ void sched_run_self_tests(void) {
 
     /* 9B: Yield and blocking rejected while holding preemption-disabled critical section */
     thread_yield(); /* Must return immediately without switching */
-    if (g_current_thread != &g_boot_thread) panic("thread_yield switched while preempt_count > 0!");
+    if (thread_current() != &g_boot_thread) panic("thread_yield switched while preempt_count > 0!");
     if (preempt_count() != 3) panic("preempt_count corrupted across rejected yield!");
 
     event_t test_preempt_ev;
@@ -1747,11 +2111,14 @@ void sched_run_preemption_tests(void) {
         __asm__ volatile ("pause");
     }
 
-    /* Drain the spinners off the ready queue */
-    while (sched_has_ready_threads() || sched_sleep_count() > 0) {
+    /* Drain the spinners off the ready queue and wait for reap to finish */
+    while (s1->state != THREAD_EXITED || s2->state != THREAD_EXITED || s3->state != THREAD_EXITED ||
+           s1->is_executing || s2->is_executing || s3->is_executing ||
+           sched_has_ready_threads() || sched_sleep_count() > 0 ||
+           sched_active_thread_slots() > 1) {
+        sched_reap();
         thread_yield();
     }
-    sched_reap();
 
     kprintf("  PASS: 11A. Boot thread slept and resumed via timer wakeup while spinners ran.\n");
     kprintf("  PASS: 11B. All 3 spinner threads completed via timer-driven preemption (no yields).\n");

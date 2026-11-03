@@ -48,7 +48,7 @@ static u16 e1000_read_eeprom(u8 addr) {
     u32 val = 0;
     int timeout = 20000;
     while (!((val = e1000_read_reg(E1000_REG_EERD)) & (1 << 4)) && --timeout) {
-        io_wait();
+        cpu_pause();
     }
     return (u16)((val >> 16) & 0xFFFF);
 }

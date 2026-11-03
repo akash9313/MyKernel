@@ -5,6 +5,9 @@
 #include <kernel/sched.h>
 #include <kernel/vmm.h>
 #include <kernel/arch/x86_64/idt.h>
+#include <kernel/spinlock.h>
+
+extern spinlock_t g_proc_lock;
 
 #define PROCESS_MAX_PROCESSES 16
 
@@ -17,20 +20,20 @@
 #define USER_MMAP_BASE_VA      0x0000000040000000ULL
 #define USER_MMAP_MAX_VA       0x0000000080000000ULL
 
-typedef u32 pid_t;
-
 typedef enum process_state {
     PROCESS_UNUSED = 0,
     PROCESS_READY,
     PROCESS_RUNNING,
     PROCESS_BLOCKED,
+    PROCESS_DYING,
     PROCESS_ZOMBIE,
     PROCESS_DEAD
 } process_state_t;
 
 typedef struct process {
     pid_t pid;
-    process_state_t state;
+    pid_t parent_pid;
+    volatile process_state_t state;
     char name[32];
 
     /* Address Space (CR3 Root) */
@@ -56,6 +59,9 @@ typedef struct process {
     /* Dynamic User MMAP Bump VA */
     virt_addr_t mmap_curr_va;
 
+    /* SMP active core tracking */
+    volatile u32 active_cpu_mask;
+
     /* Main Kernel Thread for Execution Context */
     thread_t *thread;
 
@@ -65,6 +71,9 @@ typedef struct process {
     u64 fault_vector;
     u64 fault_cr2;
     u64 fault_rip;
+
+    /* Child Exit Event for Blocking Waitpid */
+    event_t child_exit_ev;
 
     /* Deferred Reclamation Linkage */
     struct process *reap_next;
@@ -78,6 +87,8 @@ process_t *process_create_elf_reader(const char *name, struct elf_reader *reader
 process_t *process_create_elf(const char *name, const void *elf_bytes, size_t elf_size);
 process_t *process_create_elf_file(const char *name, const char *vfs_path);
 process_t *process_current(void);
+process_t *process_find_by_pid(pid_t pid);
+pid_t process_waitpid(pid_t pid, int *status, int options);
 void process_exit(int exit_code) __attribute__((noreturn));
 void process_exit_from_fault(struct interrupt_frame *frame);
 void process_reap_zombies(void);
@@ -87,6 +98,21 @@ void user_jump_to_ring3(virt_addr_t entry, virt_addr_t user_rsp) __attribute__((
 
 /* In-kernel Process and User-Mode Test Suites */
 void process_run_tests(void);
+void process_ak_run_tests(void);
+void process_al_run_tests(void);
+void process_am_run_tests(void);
+void process_an_run_tests(void);
+void process_ao_run_tests(void);
+void process_ap_run_tests(void);
+void process_aq_run_tests(void);
+void process_ar_run_tests(void);
+void process_as_run_tests(void);
+void process_at_run_tests(void);
+void process_au_run_tests(void);
+void process_av_run_tests(void);
+void process_aw_run_tests(void);
+void process_ax_run_tests(void);
+void process_ay_run_tests(void);
 void process_gui_run_tests(void);
 void process_browser_run_tests(void);
 

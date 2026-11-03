@@ -43,11 +43,23 @@ static volatile struct limine_module_request module_request = {
     .revision = 0
 };
 
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_smp_request smp_request = {
+    .id = LIMINE_SMP_REQUEST,
+    .revision = 0,
+    .response = NULL,
+    .flags = 0
+};
+
 __attribute__((used, section(".limine_requests_end")))
 static volatile LIMINE_REQUESTS_END_MARKER;
 
 struct limine_framebuffer_response *boot_get_framebuffer_response(void) {
     return framebuffer_request.response;
+}
+
+struct limine_smp_response *boot_get_smp_response(void) {
+    return smp_request.response;
 }
 
 struct limine_memmap_response *boot_get_memmap_response(void) {

@@ -117,6 +117,8 @@ IRQ_STUB 44
 IRQ_STUB 45
 IRQ_STUB 46
 IRQ_STUB 47
+IRQ_STUB 250
+IRQ_STUB 251
 IRQ_STUB 255
 
 irq_common_stub:
@@ -241,7 +243,7 @@ user_jump_to_ring3:
     movw %ax, %ds
     movw %ax, %es
     movw %ax, %fs
-    movw %ax, %gs
+    /* Note: %gs is preserved for per-CPU state (IA32_GS_BASE) */
 
     /* Push iretq stack frame */
     pushq $0x1B                 /* SS: User Data Segment with RPL=3 */

@@ -3,6 +3,7 @@
 #include <kernel/arch/x86_64/cpu.h>
 #include <kernel/vmm.h>
 #include <kernel/panic.h>
+#include <kernel/smp.h>
 
 #define APIC_REG_ID         0x0020
 #define APIC_REG_VERSION    0x0030
@@ -17,6 +18,8 @@
 #define APIC_REG_TIMER_INIT 0x0380
 #define APIC_REG_TIMER_CURR 0x0390
 #define APIC_REG_TIMER_DIV  0x03E0
+#define APIC_REG_ICR_LOW    0x0300
+#define APIC_REG_ICR_HIGH   0x0310
 
 static volatile u64 g_apic_ticks = 0;
 
@@ -28,6 +31,27 @@ static inline u32 apic_read(u32 reg) {
     return *(volatile u32 *)(APIC_VIRT_BASE + reg);
 }
 
+void apic_send_ipi(u32 lapic_id, u8 vector) {
+    u64 timeout = 100000ULL;
+    while ((apic_read(APIC_REG_ICR_LOW) & (1 << 12)) && timeout > 0) {
+        cpu_pause();
+        timeout--;
+    }
+    apic_write(APIC_REG_ICR_HIGH, (lapic_id & 0xFF) << 24);
+    apic_write(APIC_REG_ICR_LOW, (1 << 14) | (u32)vector);
+}
+
+void apic_send_ipi_all_ex_self(u8 vector) {
+    u64 timeout = 100000ULL;
+    while ((apic_read(APIC_REG_ICR_LOW) & (1 << 12)) && timeout > 0) {
+        cpu_pause();
+        timeout--;
+    }
+    apic_write(APIC_REG_ICR_HIGH, 0);
+    /* Destination shorthand 11b = All Excluding Self (bits 18..19), Assert (bit 14) */
+    apic_write(APIC_REG_ICR_LOW, (3 << 18) | (1 << 14) | (u32)vector);
+}
+
 #include <kernel/sched.h>
 
 void apic_eoi(void) {
@@ -35,9 +59,24 @@ void apic_eoi(void) {
 }
 
 void apic_timer_handler(void) {
-    g_apic_ticks++;
-    if (sched_is_initialized()) {
-        sched_timer_tick(g_apic_ticks);
+    if (g_smp_initialized) {
+        u32 cpu_id = smp_cur_cpu_id();
+        g_cpus[cpu_id].timer_ticks++;
+        if (cpu_id == 0) {
+            g_apic_ticks++;
+            if (sched_is_initialized()) {
+                sched_timer_tick(g_apic_ticks);
+            }
+        } else {
+            if (sched_is_initialized() && thread_current() && sched_has_ready_threads()) {
+                set_need_resched();
+            }
+        }
+    } else {
+        g_apic_ticks++;
+        if (sched_is_initialized()) {
+            sched_timer_tick(g_apic_ticks);
+        }
     }
     apic_eoi();
 }

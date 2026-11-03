@@ -168,4 +168,54 @@ user_prog4_mmap_fault_start:
 
 user_prog4_mmap_fault_end:
 
+.global user_prog5_write_supervisor_start
+.global user_prog5_write_supervisor_end
+user_prog5_write_supervisor_start:
+    /*
+     * User Program 5: Adversarial Supervisor Write Test
+     * Attempts to write to supervisor memory (0xffffffff80400000).
+     * Must trigger #PF Vector 14 with Write=1, User=1.
+     */
+    movabsq $0xffffffff80400000, %rax
+    movabsq $0xDEADBEEF, %rbx
+    movq %rbx, (%rax)
+    /* If not trapped, exit with failure */
+    movq $4, %rax
+    movq $75, %rdi
+    int $0x80
+user_prog5_write_supervisor_end:
+
+.global user_prog6_nx_stack_fault_start
+.global user_prog6_nx_stack_fault_end
+user_prog6_nx_stack_fault_start:
+    /*
+     * User Program 6: Adversarial NX (No-Execute) Execution Test
+     * Attempts to execute instructions on the user stack (marked NO_EXEC).
+     * Must trigger #PF Vector 14 with Fetch=1.
+     */
+    movb $0xC3, (%rsp)          /* Write 'ret' (0xC3) to stack */
+    jmp *%rsp                   /* Jump to stack -> Hardware #PF Fetch=1 */
+    /* If not trapped, exit with failure */
+    movq $4, %rax
+    movq $76, %rdi
+    int $0x80
+user_prog6_nx_stack_fault_end:
+
+.global user_prog7_stack_guard_fault_start
+.global user_prog7_stack_guard_fault_end
+user_prog7_stack_guard_fault_start:
+    /*
+     * User Program 7: Stack Guard Page Violation Test
+     * Attempts to access unmapped guard page directly below stack (0x00006ffffff00000).
+     * Must trigger #PF Vector 14 with Present=0.
+     */
+    movabsq $0x00006ffffff00000, %rax
+    movq (%rax), %rbx           /* Access unmapped guard -> #PF Present=0 */
+    /* If not trapped, exit with failure */
+    movq $4, %rax
+    movq $77, %rdi
+    int $0x80
+user_prog7_stack_guard_fault_end:
+
+
 

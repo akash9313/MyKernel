@@ -368,6 +368,7 @@ static const vfs_ops_t g_initramfs_ops = {
     .open    = initramfs_op_open,
     .close   = initramfs_op_close,
     .read    = initramfs_op_read,
+    .write   = NULL,
     .stat    = initramfs_op_stat,
     .readdir = initramfs_op_readdir,
     .lookup  = initramfs_op_lookup,

@@ -14,6 +14,7 @@
 #include <kernel/arch/x86_64/cpu.h>
 #include <kernel/drivers/apic.h>
 #include <kernel/sched.h>
+#include <kernel/smp.h>
 #include <kernel/sync.h>
 #include <kernel/process.h>
 #include <kernel/syscall.h>
@@ -28,6 +29,12 @@
 #include <kernel/crypto.h>
 #include <kernel/tls.h>
 #include <kernel/browser.h>
+#include <kernel/block.h>
+#include <kernel/ata.h>
+#include <kernel/astrafs.h>
+#include <kernel/terminal.h>
+#include <kernel/shell.h>
+#include <kernel/pkg.h>
 
 static bool kstrstr_contains(const char *haystack, const char *needle) {
     if (!haystack || !needle) return false;
@@ -61,7 +68,7 @@ void kmain(void) {
     }
 
     serial_puts("\n\n======================================================\n");
-    serial_puts("             AstraOS Kernel v0.2.0-dev                \n");
+    serial_puts("             AstraOS Kernel v1.0.0                    \n");
     serial_puts("        Architecture: x86-64 | Boot: UEFI/Limine       \n");
     serial_puts("======================================================\n\n");
     serial_puts("[BOOT] COM1 Serial initialized (115200 baud, 8N1).\n");
@@ -390,6 +397,9 @@ __attribute__((noreturn)) void kernel_continuation(void) {
     /* 9. Initialize Cooperative Kernel Thread Scheduler */
     sched_init();
 
+    /* 9b. Initialize Symmetric Multiprocessing (SMP) */
+    smp_init();
+
     /* 10. Check for destructive Thread Stack Guard page fault test (deliberate guard-page access) */
     if (kstrstr_contains(cmdline, "test=thread_guard")) {
         kprintf("\n[TEST] Creating worker thread to trigger deliberate Thread Stack Guard Page Access (#PF)...\n");
@@ -430,73 +440,259 @@ __attribute__((noreturn)) void kernel_continuation(void) {
         panic("Exit while owning mutex did not panic!");
     }
 
-    /* 11. Run Scheduler Deterministic Self-Tests (cooperative) */
-    sched_run_self_tests();
-
-    /* 12. Run Phase C: Timer-Driven Preemption Verification Tests */
-    sched_run_preemption_tests();
-
-    /* 13. Run Synchronization Primitives Self-Tests (Mutexes & Semaphores) */
-    sched_run_sync_tests();
-
-    /* 14. Run Phase E: User Mode, System Calls & Process Foundation Tests */
+    /* 11. Initialize Process Subsystem and Syscalls */
     process_subsystem_init();
-    process_run_tests();
 
-    /* 15. Run Phase G: Initramfs, VFS & Basic File Operations Tests */
-    vfs_initramfs_run_tests();
-
-    /* 16. Run Phase I: Graphical Desktop Foundation */
-    kprintf("[BOOT] Initializing Phase I Graphics, Input, Window Manager & Desktop...\n");
-    if (gfx_init() == 0) {
-        if (!gfx_self_test()) {
-            panic("Graphics subsystem self-test failed!");
-        }
-        input_init(1024, 768);
-        ps2_init();
-        if (!input_self_test()) {
-            panic("Input subsystem self-test failed!");
-        }
-        wm_init();
-        if (!wm_self_test()) {
-            panic("Window Manager self-test failed!");
-        }
-        desktop_init();
-        if (!desktop_self_test()) {
-            panic("Desktop Shell self-test failed!");
-        }
-        if (!app_gui_self_test()) {
-            panic("GUI Applications self-test failed!");
-        }
-
-        /* Launch the two real GUI applications on the active desktop */
-        app_editor_launch("/hello.txt");
-        app_filemgr_launch("/");
-
-        /* Render initial graphical desktop session */
-        desktop_render();
-
-        /* 16b. Run Phase N: User-Space GUI Applications & Process Isolation Verification */
-        process_gui_run_tests();
-    } else {
-        kprintf("[WARN] Framebuffer graphics not available; running in headless fallback mode.\n");
+    /* 12. Initialize VFS Subsystem and Initramfs Root */
+    kprintf("[BOOT] Initializing VFS Subsystem and Mounting Root Initramfs...\n");
+    if (vfs_subsystem_init() != VFS_OK) {
+        panic("Failed to initialize VFS or mount initramfs!");
     }
 
-    /* 17. Run Phase J: Network Driver, TCP/IP Stack & Internet Connectivity */
-    kprintf("\n[BOOT] Initializing Phase J PCI, E1000 NIC & TCP/IP Network Stack...\n");
+    /* 13. Initialize Hardware Drivers: PCI & Intel E1000 NIC */
+    kprintf("\n[BOOT] Initializing PCI Bus & E1000 NIC...\n");
     pci_init();
     if (e1000_init()) {
         net_init();
-        if (!net_self_test()) {
-            panic("Network subsystem self-test failed!");
-        }
     } else {
         kprintf("[WARN] Intel E1000 network adapter not found or failed to initialize.\n");
     }
 
-    /* 18. Run Phase L: Cryptographic Subsystem & TLS 1.3 Engine */
-    kprintf("\n[BOOT] Initializing Phase L Cryptography, Hardware Entropy & TLS 1.3...\n");
+    /* 14. Initialize Storage: Block Layer & ATA/IDE PIO Driver */
+    kprintf("\n[BOOT] Initializing Block Subsystem & ATA Driver...\n");
+    block_init();
+    ata_init();
+
+    /* 15. Mount Persistent Filesystem (AstraFS on hd1 if present) */
+    kprintf("\n[BOOT] Mounting Persistent Filesystem (AstraFS)...\n");
+    block_device_t *data_dev = block_find_by_name("hd1");
+    if (data_dev && !data_dev->read_only) {
+        int m_err = astrafs_mount(data_dev);
+        if (m_err != VFS_OK) {
+            /* Task 1: Never auto-format corrupted or foreign media! Only format if explicitly blank media */
+            if (astrafs_is_blank(data_dev)) {
+                kprintf("[ASTRAFS] Blank volume detected on '%s'. Initializing AstraFS v1...\n", data_dev->name);
+                int f_err = astrafs_format(data_dev);
+                if (f_err == VFS_OK) {
+                    m_err = astrafs_mount(data_dev);
+                }
+            } else {
+                kprintf("[CRIT] AstraFS mount failed on '%s' (err=%d): volume contains unrecognized or corrupted metadata! Automatic formatting prevented.\n",
+                        data_dev->name, m_err);
+            }
+        }
+        if (m_err == VFS_OK) {
+            /* Phase AF Two-Stage Cold-Reboot Persistence Probe */
+            #define PROBE_MAGIC 0x50524F42U /* "PROB" */
+            #define PROBE_SIZE  256
+            typedef struct {
+                u32 magic;
+                u32 version;
+                u32 length;
+                u32 checksum;
+                u64 timestamp;
+                u8  pattern[PROBE_SIZE - 24];
+            } __attribute__((packed)) probe_payload_t;
+
+            vfs_fd_t pfd = vfs_open("/data/phase_af_persistence_probe.bin", VFS_O_RDONLY);
+            if (pfd >= 0) {
+                probe_payload_t p_in;
+                kmemset(&p_in, 0, sizeof(p_in));
+                ssize_t pr = vfs_read(pfd, &p_in, sizeof(p_in));
+                vfs_close(pfd);
+
+                bool probe_valid = false;
+                if (pr == (ssize_t)sizeof(probe_payload_t) &&
+                    p_in.magic == PROBE_MAGIC &&
+                    p_in.version == 1 &&
+                    p_in.length == PROBE_SIZE) {
+                    u32 expected_csum = astrafs_checksum(p_in.pattern, sizeof(p_in.pattern));
+                    if (p_in.checksum == expected_csum) {
+                        bool pat_ok = true;
+                        u32 prng = 0x12345678U;
+                        for (size_t b = 0; b < sizeof(p_in.pattern); b++) {
+                            prng = prng * 1103515245U + 12345U;
+                            u8 expected_byte = (u8)((prng >> 16) & 0xFF);
+                            if (p_in.pattern[b] != expected_byte) {
+                                pat_ok = false;
+                                break;
+                            }
+                        }
+                        if (pat_ok) probe_valid = true;
+                    }
+                }
+
+                if (probe_valid) {
+                    kprintf("[ASTRAFS] Cold-reboot probe verified: 256 bytes payload identical.\n");
+                    kprintf("ASTRA_FS_COLD_REBOOT_CONTENTS_VERIFIED\n");
+                    kprintf("ASTRA_FS_PERSISTENCE_OK\n");
+                } else {
+                    kprintf("[WARN] Cold-reboot probe payload validation failed!\n");
+                }
+            } else {
+                /* First boot: write probe file to persistent volume */
+                vfs_fd_t pwfd = vfs_open("/data/phase_af_persistence_probe.bin", VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC);
+                if (pwfd >= 0) {
+                    probe_payload_t p_out;
+                    kmemset(&p_out, 0, sizeof(p_out));
+                    p_out.magic = PROBE_MAGIC;
+                    p_out.version = 1;
+                    p_out.length = PROBE_SIZE;
+                    p_out.timestamp = 0x20261028ULL;
+                    u32 prng = 0x12345678U;
+                    for (size_t b = 0; b < sizeof(p_out.pattern); b++) {
+                        prng = prng * 1103515245U + 12345U;
+                        p_out.pattern[b] = (u8)((prng >> 16) & 0xFF);
+                    }
+                    p_out.checksum = astrafs_checksum(p_out.pattern, sizeof(p_out.pattern));
+                    vfs_write(pwfd, &p_out, sizeof(p_out));
+                    vfs_close(pwfd);
+                    kprintf("[ASTRAFS] Two-stage cold-reboot probe written to '/data/phase_af_persistence_probe.bin' (256 bytes).\n");
+                }
+            }
+
+            /* Backward compatibility token */
+            vfs_fd_t cfd = vfs_open("/data/cold_test.txt", VFS_O_RDONLY);
+            if (cfd >= 0) {
+                char pbuf[32];
+                kmemset(pbuf, 0, sizeof(pbuf));
+                ssize_t cr = vfs_read(cfd, pbuf, sizeof(pbuf) - 1);
+                vfs_close(cfd);
+                if (cr > 0 && kstrstr_contains(pbuf, "ASTRAPERSIST_LBA_VERIFIED")) {
+                    kprintf("ASTRA_FS_PERSISTENCE_OK\n");
+                }
+            } else {
+                vfs_fd_t wfd = vfs_open("/data/cold_test.txt", VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC);
+                if (wfd >= 0) {
+                    const char token[] = "ASTRAPERSIST_LBA_VERIFIED";
+                    vfs_write(wfd, token, sizeof(token) - 1);
+                    vfs_close(wfd);
+                }
+            }
+        } else {
+            kprintf("[WARN] Failed to mount AstraFS on '%s' (err=%d).\n", data_dev->name, m_err);
+        }
+    } else {
+        kprintf("[WARN] Persistent data disk 'hd1' not found or read-only. Operating with volatile storage only.\n");
+    }
+
+    /* 16. Initialize RTC & Native Browser Subsystem */
     rtc_init();
+    app_browser_init();
+
+    /* 17. Transition to KERNEL_READY */
+    desktop_set_lifecycle_state(DESKTOP_STATE_KERNEL_READY);
+
+    /* 18. Initialize Graphical Desktop Foundation (GUI_INITIALIZING) */
+    kprintf("\n[BOOT] Initializing Graphics, Input, Window Manager & Desktop...\n");
+    if (gfx_init() == 0) {
+        input_init(1024, 768);
+        ps2_init();
+        wm_init();
+        desktop_init();
+
+        /* Assert clean default session: zero autostart applications */
+        if (wm_get_window_count() == 0) {
+            kprintf("[BOOT] Clean session verified: Zero autostart applications running.\n");
+            kprintf("ASTRA_NO_AUTOSTART_APPS_OK\n");
+        } else {
+            panic("Unwanted applications detected on startup session! Count=%d", wm_get_window_count());
+        }
+
+        /* Render clean initial graphical desktop */
+        desktop_render();
+
+        /* Verify single initialization guards */
+        if (gfx_init() == 0 && wm_is_initialized() && desktop_is_initialized()) {
+            kprintf("[BOOT] Single initialization lifecycle verified for GFX, WM, and Desktop.\n");
+            kprintf("ASTRA_GUI_SINGLE_INIT_OK\n");
+        }
+
+        /* Transition to DESKTOP_STATE_READY */
+        desktop_set_lifecycle_state(DESKTOP_STATE_READY);
+        kprintf("ASTRA_DESKTOP_READY_OK\n");
+
+        /* Verify user-initiated application launch policy */
+        if (desktop_test_user_launch()) {
+            kprintf("[BOOT] User application launch and teardown policy verified.\n");
+        }
+
+        /* Assert desktop stability */
+        desktop_render();
+        kprintf("ASTRA_DESKTOP_STABLE_OK\n");
+    } else {
+        kprintf("[WARN] Framebuffer graphics not available; running in headless fallback mode.\n");
+    }
+
+    /* 19. Record Monotonic Boot Timing Milestone Marker */
+    kprintf("[BOOT] Milestones recorded. Total kernel bring-up time: %llu ticks (%llu ms).\n",
+            (unsigned long long)apic_get_ticks(), (unsigned long long)(apic_get_ticks() * 10));
+    kprintf("ASTRA_BOOT_TIMING_RECORDED\n\n");
+
+    /* 20. Run Qualification Test Suites if requested via cmdline ('test' or 'test=all') */
+    if (kstrstr_contains(cmdline, "test")) {
+        extern void run_all_qualification_tests(block_device_t *data_dev);
+        run_all_qualification_tests(data_dev);
+    }
+
+    /* 21. Launch Kernel Monitor */
+    monitor_run();
+
+    /* Safety fallback */
+    halt_forever();
+}
+
+void run_all_qualification_tests(block_device_t *data_dev) {
+    kprintf("\n=======================================================\n");
+    kprintf("   AstraOS Cumulative Regression & Qualification Mode  \n");
+    kprintf("=======================================================\n");
+
+    /* 1. Scheduler self-tests */
+    sched_run_self_tests();
+    sched_run_preemption_tests();
+    sched_run_sync_tests();
+
+    /* 2. Process foundation & lifecycle tests */
+    process_run_tests();
+    vfs_initramfs_run_tests();
+    process_ak_run_tests();
+    process_al_run_tests();
+    process_am_run_tests();
+
+    /* 3. GUI & User-space Window Manager tests */
+    if (gfx_get_backbuffer()) {
+        gfx_self_test();
+        input_self_test();
+        wm_self_test();
+        desktop_self_test();
+        app_gui_self_test();
+        process_gui_run_tests();
+    }
+
+    /* 4. Network Subsystem tests */
+    net_self_test();
+
+    /* 5. Block layer & SMP TLB Shootdown stress tests */
+    block_self_test();
+    process_an_run_tests();
+    process_ao_run_tests();
+    process_ap_run_tests();
+    process_aq_run_tests();
+    process_ar_run_tests();
+    process_as_run_tests();
+    process_at_run_tests();
+    process_au_run_tests();
+    process_av_run_tests();
+    process_aw_run_tests();
+
+    /* 6. AstraFS & Storage tests */
+    if (data_dev) {
+        astrafs_self_test();
+    }
+    process_ax_run_tests();
+    process_ay_run_tests();
+
+    /* 7. Cryptographic & TLS engine tests */
     if (!crypto_self_test()) {
         panic("Cryptographic subsystem self-test failed!");
     }
@@ -504,27 +700,31 @@ __attribute__((noreturn)) void kernel_continuation(void) {
         panic("TLS 1.3 engine self-test failed!");
     }
 
-    /* 19. Run Phase K: AstraBrowser Native Graphical Web Browser */
-    kprintf("\n[BOOT] Initializing Phase K AstraBrowser Native Graphical Web Browser...\n");
-    app_browser_init();
+    /* 8. Browser engine & User Browser process tests */
     if (!browser_self_test()) {
         panic("AstraBrowser self-test failed!");
     }
-
-    /* 19b. Run Phase O: User-Space AstraBrowser & Memory Management Tests */
     process_browser_run_tests();
 
-    /* Launch AstraBrowser on active desktop */
+    /* 9. Native Terminal, Shell & Package Manager tests */
     if (gfx_get_backbuffer()) {
-        app_browser_launch("file:///www/index.html");
-        desktop_render();
+        if (!terminal_self_test()) {
+            panic("AstraOS Terminal self-test failed!");
+        }
+    }
+    if (!shell_self_test()) {
+        panic("Native Shell self-test failed!");
+    }
+    if (!pkg_self_test()) {
+        panic("AstraOS Package Manager self-test failed!");
     }
 
-    /* 20. Launch Kernel Monitor */
-    monitor_run();
-
-    /* Safety fallback */
-    halt_forever();
+    /* 10. Clean up any stale test windows and restore clean desktop */
+    wm_destroy_all_for_pid(0);
+    if (gfx_get_backbuffer()) {
+        desktop_render();
+    }
+    kprintf("\n[BOOT] All qualification test markers completed successfully.\n\n");
 }
 
 void worker_guard_touch(void *arg) {

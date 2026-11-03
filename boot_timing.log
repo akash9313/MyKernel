@@ -1,0 +1,1880 @@
+=================================================================
+             AstraOS Boot Timing Log (Baseline)                  
+=================================================================
+
+Milestone Breakdown:
+-----------------------------------------------------------------
+1. VM start                                | Elapsed:       0.0 ms | Delta:       0.0 ms
+2. Bootloader entry                        | Elapsed:   18068.8 ms | Delta:   18068.8 ms
+3. Kernel entry                            | Elapsed:   18068.8 ms | Delta:       0.0 ms
+4. Physical memory initialization          | Elapsed:   22729.3 ms | Delta:    4660.5 ms
+5. Virtual memory initialization           | Elapsed:   26683.6 ms | Delta:    3954.3 ms
+6. ACPI and hardware discovery             | Elapsed:   18068.8 ms | Delta:   -8614.8 ms
+7. Interrupt and timer initialization      | Elapsed:   30419.9 ms | Delta:   12351.1 ms
+8. SMP initialization                      | Elapsed:   31328.4 ms | Delta:     908.5 ms
+9. Scheduler ready                         | Elapsed:   33247.1 ms | Delta:    1918.7 ms
+10. Storage initialization                 | Elapsed:  244249.1 ms | Delta:  211002.0 ms
+11. VFS mount completion                   | Elapsed:   64416.0 ms | Delta: -179833.1 ms
+12. Network initialization                 | Elapsed:  174867.5 ms | Delta:  110451.5 ms
+13. GUI subsystem initialization           | Elapsed:  151175.6 ms | Delta:  -23691.9 ms
+14. Window manager ready                   | Elapsed:  157026.7 ms | Delta:    5851.1 ms
+15. Desktop creation                       | Elapsed:  158147.4 ms | Delta:    1120.6 ms
+16. Desktop fully interactive              | Elapsed:  418159.7 ms | Delta:  260012.3 ms
+
+Detailed Chronological Trace:
+-----------------------------------------------------------------
+[ 12412.5 ms] [2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H
+[ 15242.4 ms] [2J[01;01H[=3h[2J[01;01H
+[ 16857.2 ms] [2J[01;01H[01;01H
+[ 17160.6 ms] W[01;02HA[01;03HR[01;04HN[01;05HI[01;06HN[01;07HG[01;08H:[01;09H [01;10HC[01;11Ho[01;12Hu[01;13Hl[01;14Hd[01;15H [01;16Hn[01;17Ho[01;18Ht[01;19H [01;20Hm[01;21He[01;22Ha[01;23Hn[01;24Hi[01;25Hn[01;26Hg[01;27Hf[01;28Hu[01;29Hl[01;30Hl[01;31Hy[0
+[ 17261.7 ms] 1;32H [01;33Hm[01;34Ha[01;35Ht[01;36Hc[01;37Hh[01;38H [01;39Ht[01;40Hh[01;41He[01;42H [01;43Hb[01;44Ho[01;45Ho[01;46Ht[01;47H [01;48Hd[01;49He[01;50Hv[01;51Hi[01;52Hc[01;53He[01;54H [01;55Hh[01;56Ha[01;57Hn[01;58Hd[01;59Hl[01;60He[01;61H [01;62Hw[01;63Hi[01;64Ht[01;65Hh[01;66H [01;67Ha[01;68H [01;69Hv[01;70Ho[01;71Hl[01;72Hu[01;73Hm[01;74He[01;75H.[01;76H[02;01H [02;02H [02;03H [02;04H [02;05H [02;06H [02;07H [02;08H [02;09H [02;10HU[02;11Hs[02;12Hi[02;13Hn[02;14Hg[02;15H [02;16Ht[02;17Hh[02;18He
+[ 17362.7 ms] [02;19H [02;20Hf[02;21Hi[02;22Hr[02;23Hs[02;24Ht[02;25H [02;26Hv[02;27Ho[02;28Hl[02;29Hu[02;30Hm[02;31He[02;32H [02;33Hc[02;34Ho[02;35Hn[02;36Ht[02;37Ha[02;38Hi[02;39Hn[02;40Hi[02;41Hn[02;42Hg[02;43H [02;44Ha[02;45H [02;46HL[02;47Hi[02;48Hm[02;49Hi[02;50Hn[02;51He[02;52H [02;53Hc[02;54Ho[02;55Hn[02;56Hf[02;57Hi[02;58Hg[02;59Hu[02;60Hr[02;61Ha[02;62Ht[02;63Hi[02;64Ho[02;65Hn[02;66H![02;67H[03;01H
+[ 17463.5 ms] [2J[01;01H[01;01H
+[ 18068.8 ms] 
+[ 18068.8 ms] 
+[ 18068.8 ms] ======================================================
+[ 18068.8 ms]              AstraOS Kernel v1.0.0                    
+[ 18068.8 ms]         Architecture: x86-64 | Boot: UEFI/Limine       
+[ 18068.8 ms] ======================================================
+[ 18068.8 ms] 
+[ 18068.8 ms] [BOOT] COM1 Serial initialized (115200 baud, 8N1).
+[ 18068.8 ms] [BOOT] Initializing Global Descriptor Table (GDT)...
+[ 18068.8 ms] [BOOT] GDT reloaded (Kernel & user descriptors staged; CPU in Ring 0).
+[ 18068.8 ms] [BOOT] Initializing Interrupt Descriptor Table (IDT)...
+[ 18068.8 ms] [SYSCALL] Syscall entry point initialized at IDT vector 128 (0x80, DPL=3).
+[ 18068.8 ms] [IDT] 256-entry IDT loaded (Exceptions 0..31 with IST1 #DF, IRQs 32..47, Spurious 255)
+[ 18068.8 ms] ASTRA_IDT_OK
+[ 18068.8 ms] 
+[ 18068.8 ms] [BOOT] IDT loaded (CPU exception gates 0..31 registered).
+[ 18068.8 ms] [BOOT] Kernel cmdline: ''
+[ 18068.8 ms] [BOOT] Framebuffer console initialized: 1024x768 (32bpp, pitch 4096 bytes).
+[ 18068.8 ms] [BOOT] Memory map received: 32 entries.
+[ 18068.8 ms] 
+[ 18068.8 ms] ======================= Physical Memory Ma
+[ 18169.8 ms] p =======================
+[ 18169.8 ms]   Idx   Physical Start      .. Physical End           Size (KiB)  Type
+[ 18169.8 ms] -------------------------------------------------------------------
+[ 18169.8 ms]   [00] 0x0000000000000000 .. 0x000000000009ffff  (     640 KiB)  Usable RAM
+[ 18169.8 ms]   [01] 0x0000000000100000 .. 0x0000000018a5afff  (  402796 KiB)  Usable RAM
+[ 18169.8 ms]   [02] 0x0000000018a5b000 .. 0x0000000018c30fff  (    1880 KiB)  Kernel / Modules
+[ 18169.8 ms]   [03] 0x0000000018c31000 .. 0x0000000018db4fff  (    1552 KiB)  Bootloader Reclaim
+[ 18169.8 ms]   [04] 0x0000000018db5000 .. 0x000000001c088fff  (   52048 KiB)  Usable RAM
+[ 18169.8 ms]   [05] 0x000000001c089000 .. 0x000000001c0d2fff  (     296 KiB)  Kernel / Modules
+[ 18169.8 ms]   [06] 0x000000
+[ 18271.0 ms] 001c0d3000 .. 0x000000001cec2fff  (   14272 KiB)  Usable RAM
+[ 18271.0 ms]   [07] 0x000000001cec3000 .. 0x000000001cec7fff  (      20 KiB)  Reserved
+[ 18271.0 ms]   [08] 0x000000001cec8000 .. 0x000000001ced2fff  (      44 KiB)  Usable RAM
+[ 18271.0 ms]   [09] 0x000000001ced3000 .. 0x000000001cf0ffff  (     244 KiB)  Bootloader Reclaim
+[ 18271.0 ms]   [10] 0x000000001cf10000 .. 0x000000001cf3afff  (     172 KiB)  Usable RAM
+[ 18271.0 ms]   [11] 0x000000001cf3b000 .. 0x000000001cf42fff  (      32 KiB)  Bootloader Reclaim
+[ 18271.0 ms]   [12] 0x000000001cf43000 .. 0x000000001cf4dfff  (      44 KiB)  Reserved
+[ 18271.0 ms]   [13] 0x000000001cf4e000 .. 0x000000001dea2fff  (   15700 KiB)  Usable RAM
+[ 18271.0 ms]   [14] 0x000000001dea3000 .. 0x000000001dfb6fff  (    1104
+[ 18372.4 ms]  KiB)  Reserved
+[ 18372.4 ms]   [15] 0x000000001dfb7000 .. 0x000000001eaecfff  (   11480 KiB)  Usable RAM
+[ 18372.4 ms]   [16] 0x000000001eaed000 .. 0x000000001ebecfff  (    1024 KiB)  Reserved
+[ 18372.4 ms]   [17] 0x000000001ebed000 .. 0x000000001ececfff  (    1024 KiB)  Reserved
+[ 18372.4 ms]   [18] 0x000000001eced000 .. 0x000000001ed6cfff  (     512 KiB)  Reserved
+[ 18372.4 ms]   [19] 0x000000001ed6d000 .. 0x000000001ed7efff  (      72 KiB)  ACPI Reclaimable
+[ 18372.4 ms]   [20] 0x000000001ed7f000 .. 0x000000001edfefff  (     512 KiB)  ACPI NVS
+[ 18372.4 ms]   [21] 0x000000001edff000 .. 0x000000001effffff  (    2052 KiB)  Usable RAM
+[ 18372.4 ms]   [22] 0x000000001f000000 .. 0x000000001f0d7fff  (     864 KiB)  Bootloader Reclaim
+[ 18473.7 ms]   [23] 0x000000001f0d8000 .. 0x000000001f134fff  (     372 KiB)  Usable RAM
+[ 18473.7 ms]   [24] 0x000000001f135000 .. 0x000000001f138fff  (      16 KiB)  Reserved
+[ 18473.7 ms]   [25] 0x000000001f139000 .. 0x000000001f13afff  (       8 KiB)  ACPI NVS
+[ 18473.7 ms]   [26] 0x000000001f13b000 .. 0x000000001f16dfff  (     204 KiB)  Usable RAM
+[ 18473.7 ms]   [27] 0x000000001f16e000 .. 0x000000001ffedfff  (   14848 KiB)  Reserved
+[ 18473.7 ms]   [28] 0x000000001ffee000 .. 0x000000001ffeefff  (       4 KiB)  Reserved
+[ 18473.7 ms]   [29] 0x000000001ffef000 .. 0x000000001ffeffff  (       4 KiB)  Reserved
+[ 18473.7 ms]   [30] 0x0000000080000000 .. 0x00000000802fffff  (    3072 KiB)  Framebuffer
+[ 18473.7 ms]   [31] 0x00000000ffc00000 .. 0x00000000ffffffff  (    409
+[ 18575.2 ms] 6 KiB)  Reserved
+[ 18575.2 ms] -------------------------------------------------------------------
+[ 18575.2 ms] Reported System Memory (Boot Descriptors): 496 MiB (508312 KiB)
+[ 18575.2 ms]   - Usable Physical RAM: 488 MiB (499780 KiB)
+[ 18575.2 ms]   - Bootloader/Kernel:4868 KiB
+[ 18575.2 ms]   - ACPI / NVS:       592 KiB
+[ 18575.2 ms]   - Framebuffer:      3072 KiB
+[ 18575.2 ms] Reserved/MMIO Space:  22 MiB (22696 KiB)
+[ 18575.2 ms] ===================================================================
+[ 18575.2 ms] 
+[ 18575.2 ms] [BOOT] HHDM offset: 0xffff800000000000
+[ 18675.9 ms] [BOOT] Core bootstrap completed.
+[ 18878.1 ms] ASTRA_BOOT_OK
+[ 18991.5 ms] 
+[ 19193.7 ms] [BOOT] Initializing Physical Page Manager (PMM)...
+[ 19295.0 ms] [BOOT] PMM initialized successfully.
+[ 19396.3 ms] 
+[ 19497.5 ms] =================== Physical Page Allocator Stats ===================
+[ 19699.1 ms] Managed Regions:   11
+[ 19800.3 ms] Total Managed:     124944 pages (488 MiB)
+[ 20002.4 ms] Allocated Pages:   4 pages (16 KiB)
+[ 20103.6 ms] Free Pages:        124940 pages (488 MiB)
+[ 20204.3 ms] Metadata Overhead: 4 pages (16 KiB)
+[ 20406.3 ms] Metadata Range:    0x0000000000001000 .. 0x0000000000005000
+[ 20507.0 ms] ---------------------------------------------------------------------
+[ 20607.8 ms]   Region [00]: 0x0000000000001000 .. 0x00000000000a0000 |      155 /      159 free
+[ 20709.0 ms]   Region [01]: 0x0000000000100000 .. 0x0000000018a5b000
+[ 20810.2 ms]  |   100699 /   100699 free
+[ 20911.6 ms]   Region [02]: 0x0000000018db5000 .. 0x000000001c089000 |    13012 /    13012 free
+[ 21012.4 ms]   Region [03]: 0x000000001c0d3000 .. 0x000000001cec3000 |     3568 /     3568 free
+[ 21113.6 ms]   Region [04]: 0x000000001cec8000 .. 0x000000001ced3000 |       11 /       11 free
+[ 21214.4 ms]   Region [05]: 0x000000001cf10000 .. 0x000000001cf3b000 |       43 /       43 
+[ 21315.5 ms] free
+[ 21416.5 ms]   Region [06]: 0x000000001cf4e000 .. 0x000000001dea3000 |     3925 /     3925 free
+[ 21517.6 ms]   Region [07]: 0x000000001dfb7000 .. 0x000000001eaed000 |     2870 /     2870 free
+[ 21618.4 ms]   Region [08]: 0x000000001edff000 .. 0x000000001f000000 |      513 /      513 free
+[ 21719.2 ms]   Region [09]: 0x000000001f0d8000 .. 0x000000001f135000 |       93 /       93 free
+[ 21920.8 ms]   Region [10]: 0x000000001f13b000 .. 0x000000001f16e000 |       51 /       51 free
+[ 22022.1 ms] =====================================================================
+[ 22123.1 ms] 
+[ 22224.1 ms] [PMM] Starting Physical Memory Allocator Self-Test...
+[ 22324.8 ms] [PMM] Running Isolated Synthetic C Alloca
+[ 22426.3 ms] tor Tests in QEMU...
+[ 22527.4 ms] [PMM] Isolated synthetic C allocator tests passed: all edge cases verified safely.
+[ 22628.7 ms] [PMM] Self-test passed: 8 pages cycled, error traps verified, accounting intact.
+[ 22729.3 ms] ASTRA_PMM_OK
+[ 22830.4 ms] 
+[ 22931.3 ms] [BOOT] Initializing Virtual Memory Manager (VMM)...
+[ 23032.3 ms] [VMM] Paging Architecture: 4-Level Paging (x86-64)
+[ 23133.5 ms] [VMM] Address Widths:      39-bit physical, 48-bit virtual
+[ 23234.5 ms] [VMM] Execute-Disable:     Supported (EFER.NXE Enabled)
+[ 23335.6 ms] [BOOT] VMM initialized successfully.
+[ 23436.7 ms] [VMM] Starting Virtual Memory Manager Self-Test
+[ 23537.7 ms] ...
+[ 23638.8 ms] [VMM] Active Kernel Code:  0xffffffff802076a0 -> PA 0x0000000018a626a0 (4 KiB, NX=0)
+[ 23739.9 ms] [VMM] Active Kernel Stack: 0xffff80001f05ee30 -> PA 0x000000001f05ee30 (4 KiB, RW=1)
+[ 23840.6 ms] [VMM] Active HHDM Page:    0xffff800000005000 -> PA 0x0000000000005000 (4 KiB)
+[ 23941.5 ms] [VMM] Self-test passed: Inactive table creation, boundary mapping, rollback, and cleanup verified.
+[ 24042.3 ms] ASTRA_VMM_TABLES_OK
+[ 24143.6 ms] 
+[ 24345.6 ms] [BOOT] Constructing kernel-owned address space...
+[ 24446.8 ms] [VMM] Mapping Kernel ELF image:
+[ 24547.8 ms]   .text:   0xffffffff80200000 .. 0xffffffff80254000 -> PA 0x0000000018a5b000 (R-X)
+[ 24663.6 ms]   .rodata: 0xffffffff80254000 .. 0xffffffff8027b000 -> PA 0x0000000018aaf000 (R--)
+[ 24865.5 ms]   .data:   0xffffffff8027b000 .. 0xffffffff803d6000 -> PA 0x0000000018ad6000 (RW-)
+[ 24966.4 ms] [VMM] Mapping Dedicated Kernel Stack:
+[ 25067.2 ms]   Guard Page: 0xffffffff80400000 (Unmapped)
+[ 25168.2 ms]   Stack Body: 0xffffffff80401000 .. 0xffffffff80405000 (16 KiB, RW-)
+[ 25269.5 ms] [VMM] Mapping Double-Fault IST1 Stack:
+[ 25471.4 ms]   Guard Page: 0xffffffff80410000 (Unmapped)
+[ 25572.3 ms]   Stack Body: 0xffffffff80411000 .. 0xffffffff80413000 (8 KiB, RW-)
+[ 25673.3 ms] [VMM] Building HHDM mappings for required physical regions...
+[ 25875.2 ms] [VMM] Kernel-owned address space built successfully. PML4 root PA: 0x0000000000005000
+[ 25976.3 ms] [BOOT] CR0.WP is ACTIVE (CR0: 0x0000000080010011).
+[ 26077.3 ms] [BOOT] CPU Paging Features: CR4.PGE=INACTIVE, CR4.PCIDE=INACTIVE (CR4: 0x0000000000000020).
+[ 26178.6 ms] [VMM] Activating kernel-owned address space (PML4: 0x0000000000005000, Stack: 0xffffffff80405000)...
+[ 26380.4 ms] [VMM] Kernel-owned address space successfully activated.
+[ 26481.6 ms] [VMM] Active CR3: 0x0000000000005000 (Owned Root)
+[ 26582.5 ms] [VMM] Dedicated Kernel Stack: RSP=0xffffffff80404e50 (Top=0xffffffff80405000, Guard=0xffffffff80400000)
+[ 26683.6 ms] ASTRA_OWN_PAGING_OK
+[ 26784.4 ms] 
+[ 26885.2 ms] [TSS] Task S
+[ 26986.5 ms] tate Segment active (TR: 0x0028, IST1: 0xffffffff80413000)
+[ 27087.3 ms] ASTRA_TSS_OK
+[ 27188.5 ms] 
+[ 27289.7 ms] [POST-SWITCH] Verifying PMM allocation in owned address space...
+[ 27390.4 ms] [POST-SWITCH] PMM operations verified.
+[ 27491.2 ms] [HEAP] Initializing transactional kernel heap...
+[ 27692.9 ms] [HEAP] Kernel heap initialized: 64 KiB arena at [0xffffffff80601000 .. 0xffffffff80611000]
+[ 27794.0 ms] [HEAP] Boundary guard pages: Lower=0xffffffff80600000, Upper=0xffffffff80611000 (Unmapped)
+[ 27895.3 ms] [HEAP] PMM frames used for fixed arena: 16 pages (expected 16 pages)
+[ 27996.0 ms] [HEAP] Starting Kernel Heap Self-Test Suite...
+[ 28096.8 ms] [HEAP] Self-test passe
+[ 28197.8 ms] d: zero/null checks, alignment, calloc, realloc, bidirectional coalescing, and recovery verified.
+[ 28298.6 ms] ASTRA_HEAP_OK
+[ 28399.5 ms] 
+[ 28500.5 ms] ======================= Kernel Heap Stats =======================
+[ 28601.4 ms] Arena Range:       0xffffffff80601000 .. 0xffffffff80611000 (Size: 64 KiB)
+[ 28803.5 ms] Lower Guard Page:  0xffffffff80600000 (Unmapped)
+[ 28904.7 ms] Upper Guard Page:  0xffffffff80611000 (Unmapped)
+[ 29005.5 ms] Total Capacity:    65472 bytes (63 KiB)
+[ 29106.8 ms] Allocated Bytes:   0 bytes (Live Allocs: 0)
+[ 29308.8 ms] Free Bytes:        65472 bytes (Free Blocks: 1)
+[ 29409.7 ms] Total Blocks:      1 blocks
+[ 29511.0 ms] =================================================================
+[ 29611.8 ms] [APIC] Initializing Local APIC and Timer...
+[ 29712.6 ms] [APIC] Local APIC initialized: ID=0, Version=0x14, Vector=32 (
+[ 29813.7 ms] Periodic)
+[ 29914.6 ms] [APIC] Enabling interrupts (sti) to verify repeated APIC timer ticks...
+[ 30217.3 ms] [APIC] Repeated timer delivery verified: 21 ticks successfully
+[ 30318.7 ms]  delivered and acknowledged!
+[ 30419.9 ms] ASTRA_APIC_TIMER_OK
+[ 30521.0 ms] 
+[ 30622.1 ms] [SCHED] Initializing cooperative kernel thread scheduler...
+[ 30722.8 ms] [SCHED] Scheduler initialized: Boot TID=1, Idle TID=0, Slots: 32 max threads
+[ 30924.5 ms] 
+[ 31025.7 ms] [SMP] Initializing Symmetric Multiprocessing (SMP)...
+[ 31126.6 ms] [SMP] Discovered 1 CPUs from Limine bootloader (BSP LAPIC ID: 0)
+[ 31227.5 ms] [SMP] CPU 0 (BSP) online (LAPIC ID 0)
+[ 31328.4 ms] ASTRA_SMP_BSP_READY
+[ 31429.5 ms] [SMP] Si
+[ 31530.5 ms] ngle CPU system; AP startup not required.
+[ 31631.6 ms] ASTRA_SMP_ALL_CPUS_READY
+[ 31732.4 ms] 
+[ 31833.7 ms] 
+[ 31934.6 ms] =================== [ SCHEDULER SELF-TESTS ] ===================
+[ 32035.6 ms] [SCHED TEST] 1. First-run entry argument, alignment, and safe exit
+[ 32136.7 ms] ...
+[ 32237.9 ms]   PASS: First entry received exact argument, valid stack alignment, and returned safely.
+[ 32338.6 ms] [SCHED TEST] 2. Callee-saved register preservation across repeated switches...
+[ 32439.7 ms]   PASS: Callee-saved registers (RBX, RBP, R12..R15) preserved across 10 switches.
+[ 32540.6 ms] A
+[ 32641.6 ms] STRA_CONTEXT_SWITCH_OK
+[ 32742.5 ms] 
+[ 32843.3 ms] [SCHED TEST] 3. Cooperative scheduling: all threads run to completion, timer coexists...
+[ 32944.4 ms] [SCHED TEST] Note: timer ticks advanced (51 -> 51)
+[ 33045.3 ms]   PASS: All 3 threads logged exactly 3 entries each (total 9), timer coexisted cleanly.
+[ 33247.1 ms] ASTRA_COOP_SCHED_OK
+[ 33348.0 ms] 
+[ 33448.8 ms] [SCHED TEST] 4. Repeated thread creation, safe exit, and deferred reclamation...
+[ 33549.8 ms]   PASS: 10 threads created, executed, exited, and reaped with zero PMM/VMM leak.
+[ 33650.8 ms] ASTRA_THREAD_LIFECYCLE_OK
+[ 33852.7 ms] 
+[ 33953.9 ms] [SCHED TEST] 5. FIFO Wait Queue enqueue, dequeue, and removal...
+[ 34055.1 ms]   PASS: FIFO wait queue enqueue, middle-element removal, and ordered dequeue verified.
+[ 34156.5 ms] ASTRA_WAIT_QUEUE_OK
+[ 34257.5 ms] 
+[ 34459.5 ms] [SCHED TEST] 6. Persistent Auto-Reset Event semantics (signal/wait/coalesce/FIFO/no-theft)...
+[ 34560.7 ms]   PASS: 6A. Signal-before-wait consumed immediately without blocking.
+[ 34661.6 ms]   PASS: 6B. Repeated early signals coalesce into single persistent pending signal.
+[ 34762.6 ms]   PASS: 6C-E. Wait-before-signal, exact 1-waiter-per-signal, and FIFO ordering verified.
+[ 34964.8 ms]   PASS: 6F. Assigned wakeup directly assigned to queued waiter and cannot be stolen.
+[ 35065.6 ms] ASTRA_EVENT_OK
+[ 35166.7 ms] 
+[ 35368.4 ms] [SCHED TEST] 7. Tick-based sleep (0-tick, 1-tick, multi-sleeper, tie-breaking, exhaustion, no-preempt)...
+[ 35469.2 ms]   PASS: 7A. Zero-duration sleep yielded cooperatively and returned SLEEP_OK.
+[ 35570.3 ms]   PASS: 7B. 1-tick sleep 
+[ 35671.4 ms] observed tick advance (82 -> 83) and completed safely.
+[ 35772.2 ms]   PASS: 7C. Multi-sleeper sorted deadline orderi
+[ 35873.0 ms] ng verified (2 ticks before 5 ticks).
+[ 35973.8 ms]   PASS: 7D. Equal deadline tie-breaking verified (insertion FIFO sequence honored).
+[ 36074.9 ms]   PASS: 7E. Public blocking calls cleanly reject forbidden contexts (IF=0, IRQ depth > 0).
+[ 36277.1 ms]   PASS: 7F. Out-of-range sleep duration (> MAX_SLEEP_TICKS) cleanly rejected.
+[ 36781.2 ms]   PASS: 7G. Actual sleeper capacity exhaustion (16 real workers), recovery, and completion verified.
+[ 36982.8 ms]   PASS: 7H. Timer interrupt wakes sleeper to READY without preempting non-preemptible thread.
+[ 37083.6 ms] ASTRA_SLEEP_OK
+[ 37184.7 ms] 
+[ 37285.8 ms] [SCHED TEST] 8. Idle check-and-halt race-safe timer wakeup...
+[ 37487.9 ms]   PASS: All ordinary threads blocked; Idle halted via sti;hlt and safely scheduled expired sleeper.
+[ 37588.7 ms] ASTRA_IDLE_WAKE_OK
+[ 37689.6 ms] 
+[ 37790.9 ms] [SCHED TEST] 9. Preemption Guard nesting, yield rejection, and deferred rescheduling...
+[ 37891.9 ms]   PASS: 9A-B. Preemption nesting, yield rejection, and bl
+[ 37992.8 ms] ocking rejection verified.
+[ 38093.6 ms]   PASS: 9C. Pending reschedule survives nested critical section and services at outermost boundary.
+[ 38194.8 ms]   PASS: 9D. Rescheduling safely deferred while interrupts disabled (IF=0).
+[ 38396.5 ms]   PASS: 9E. APIC timer IRQs deliver and advance ticks while preemption is disabled.
+[ 38497.6 ms] ASTRA_PREEMPT_GUARD_OK
+[ 38598.8 ms] 
+[ 38699.7 ms] [SCHED TEST] 10. Subsystem protection balance across PMM, Heap, and Console...
+[ 38800.5 ms]   PASS: 10. Allocator and memory operations maintain balanced preemption counts and zero leaks.
+[ 39002.1 ms] ASTRA_CRITICAL_SECTION_OK
+[ 39102.9 ms] 
+[ 39203.9 ms] [SCHED TEST] Resource accounting verified: 0 PMM frames leaked, 0 Heap bytes leaked.
+[ 39304.9 ms] ================================================================
+[ 39405.6 ms] 
+[ 39506.3 ms] [SCHED TEST] 11. Timer-driven kernel-thread preemption...
+[ 39809.2 ms]   PASS: 11A. Boot thread slept and resumed via timer wakeup while spinners ran.
+[ 39910.0 ms]   PASS: 11B. All 3 spinner threads completed via timer-driven preemption (no yields).
+[ 40010.8 ms] ASTRA_PREEMPT_OK
+[ 40212.7 ms] 
+[ 40313.9 ms] ================= [ SYNCHRONIZATION SELF-TESTS ] =================
+[ 40415.0 ms] [SYNC TEST] 1. Mutex uncontended lock/unlock, try-lock, and preemption exclusion...
+[ 40516.0 ms]   PASS: 1. Mutex uncontended operations, try-lock, and 4-way preemption exclusion verified.
+[ 40717.7 ms] ASTRA_MUTEX_OK
+[ 40818.8 ms] 
+[ 40919.9 ms] [SYNC TEST] 2. Mutex FIFO direct handoff and anti-barging...
+[ 41021.3 ms]   PASS: 2. Direct ownership handoff, FIFO ordering, and anti-barging verified.
+[ 41122.4 ms] ASTRA_MUTEX_HANDOFF_OK
+[ 41324.6 ms] 
+[ 41425.5 ms] [SYNC TEST] 3. Counting Semaphore permit accounting, overflow, and FIFO handoff...
+[ 41526.4 ms]   PASS: 3. Semaphore permit accounting, overflow rejection, and FIFO anti-barging verified.
+[ 41627.5 ms] ASTRA_SEMAPHORE_OK
+[ 41728.4 ms] 
+[ 41930.0 ms] [SYNC TEST] 4. Semaphore maskable IRQ-to-thread signaling...
+[ 42031.2 ms]   PASS: 4. Semaphore signaled safely from hardware IRQ and awakened blocked thread.
+[ 42132.1 ms] ASTRA_SEMAPHORE_IRQ_OK
+[ 42334.5 ms] 
+[ 42452.9 ms] [SYNC TEST] 5. Producer-Consumer bounded buffer stress test (2000 items + preemption)...
+[ 49193.7 ms]   PASS: 5. 2000 items transferred across bounded buffer under preemption; 0 deadlocks, 0 leaks.
+[ 49504.4 ms] ASTRA_SYNC_STRESS_OK
+[ 49825.8 ms] 
+[ 49927.4 ms] ==========================================================
+[ 50029.8 ms] ========
+[ 50235.0 ms] 
+[ 50442.3 ms] [PROCESS] Process subsystem initialized (max 16 processes).
+[ 50649.4 ms] 
+[ 50752.2 ms] =========
+[ 50864.5 ms] ==============================================
+[ 51076.1 ms]        AstraOS Phase E & F: Process & ELF Tests         
+[ 51287.2 ms] ===============
+[ 51390.3 ms] ========================================
+[ 51496.1 ms] [TEST 1] Creating minimal Ring 3 user process...
+[ 51811.2 ms] [TEST 1] Process created: PID 1. Yielding CPU to let Ring 3 run...
+[ 52014.8 ms] [PROCESS] Process 'user_demo' (PID 1) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 52221.2 ms] Hello from AstraOS Ring 3!
+[ 52323.2 ms] [PROCESS] Process 'user_demo' (PID 1) termi
+[ 52427.8 ms] nated with exit code 0
+[ 52529.4 ms] [TEST 1] Process 1 terminated. Verifying execution state...
+[ 52734.6 ms] [TEST 1] PASS: Ring 3 execution, all 4 syscalls (getpid, write, yield, exit) verified!
+[ 52839.3 ms] ASTRA_USERMODE_OK
+[ 53045.3 ms] ASTRA_SYSCALL_OK
+[ 53260.5 ms] ASTRA_PROCESS_EXIT_OK
+[ 53364.4 ms] 
+[ 53570.2 ms] [TEST 2] Testing user-mode memory isolation and hardware fault trapping...
+[ 53675.0 ms] [TEST 2] Process 2 attempting unauthorized access to supervisor address 0xffffffff80400000...
+[ 53878.0 ms] [PROCESS] Process 'user_fault_test' (PID 2) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 54087.5 ms] 
+[ 54190.0 ms] =================== [ CPU EXCEPTION ] ===================
+[ 54392.8 ms] Vector:     14 (Page Fault)
+[ 54599.3 ms] Error Code: 0x0000000000000004
+[ 54701.6 ms] RIP:        0x000000000040000a  CS:     0x0023
+[ 54907.3 ms] RFLAGS:     0x0000000000010282  RSP:    0x0000700000004000  SS: 0x001b
+[ 55111.4 ms] RAX: 0xffffffff80400000  RBX: 0x0000000000000000  RCX: 0x0000000000000000
+[ 55317.9 ms] RDX: 0x0000000000000000  RSI: 0x0000000000000000  RDI: 0x0000000000000000
+[ 55421.8 ms] RBP: 0x00
+[ 55524.5 ms] 00000000000000  R8:  0x0000000000000000  R9:  0x0000000000000000
+[ 55625.7 ms] R10: 0x0000000000000000  R11: 0x0000000000000000  R12: 0x0000000
+[ 55727.8 ms] 000000000
+[ 55832.5 ms] CR2 (Fault Addr): 0xffffffff80400000
+[ 56039.2 ms] PF Flags:         Present=0, Write=0, User=1, Rsvd=0, Fetch=0
+[ 56148.4 ms] 
+[ 56355.7 ms] [PROCESS] User process 'user_fault_test' (PID 2) fault caught at RIP=0x000000000040000a, Vector=14, CR2=0xffffffff80400000
+[ 56572.2 ms] [PROCESS] Process 'user_fault_test' (PID 2) terminated with exit code -11
+[ 56880.8 ms] [TEST 2] PASS: CPU Vector 14 (#PF) caught cleanly! Process terminated without corrupting kernel.
+[ 57091.8 ms] ASTRA_USER_MEMORY_PROTECTION_OK
+[ 57296.2 ms] 
+[ 57397.8 ms] [TEST 3] Testing allocation and validation rollback on invalid process creation...
+[ 57603.4 ms] [TEST 3] PASS: Invalid process parameters rejected cleanly with zero leaks.
+[ 57807.1 ms] 
+[ 58013.0 ms] [TEST 4] Testing ELF64 Validation and Malformed Input Rejection...
+[ 58115.9 ms] [TEST 4A] PASS: Native ELF header and segments validated successfully.
+[ 58319.5 ms] ASTRA_ELF_HEADER_OK
+[ 58523.0 ms] ASTRA_ELF_SEGMENTS_OK
+[ 58627.1 ms] [TEST 4] PASS: All malformed and unsupported ELF variants safely rejected with defined error codes.
+[ 58832.3 ms] ASTRA_ELF_INVALID_INPUT_OK
+[ 59036.4 ms] 
+[ 59138.0 ms] [TEST 5] Testing transactional rollback during ELF process creation...
+[ 59344.3 ms] [ELF] Validation failed for 'bad_elf': Entry point not within an executable PT_LOAD segment (-12)
+[ 59553.4 ms] [TEST 5] PASS: Aborted ELF creation cleanly rolled back all page tables and frames.
+[ 59655.9 ms] ASTRA_ELF_ROLLBACK_OK
+[ 59860.5 ms] 
+[ 60070.4 ms] [TEST 6] Loading and launching native user program 'user_app' via ELF64 loader...
+[ 60173.6 ms] [TEST 6] Process 'user_app' created (PID 3, entry 0x0000000000400000). Yielding CPU...
+[ 60378.1 ms] [PROCESS] Process 
+[ 60479.9 ms] 'user_app' (PID 3) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 60587.3 ms] AstraOS Native ELF: Executing in Ring 3 CPL=3!
+[ 61011.5 ms] AstraOS Native ELF: .bss zero-initialization verified!
+[ 61435.9 ms] AstraOS Native ELF: Syscall
+[ 61537.6 ms] s verified, calling exit(0)...
+[ 61641.1 ms] [PROCESS] Process 'user_app' (PID 
+[ 61744.3 ms] 3) terminated with exit code 0
+[ 61847.0 ms] [TEST 6] Process 3 finished execution with status 0 (fault=0)
+[ 62056.3 ms] [TEST 6] PASS: Native ELF user process successfully executed in Ring 3 and verified .bss zeroing & syscalls!
+[ 62263.4 ms] ASTRA_ELF_USER_EXEC_OK
+[ 62365.5 ms] 
+[ 62570.7 ms] [TEST] Phase E & F Tests Completed Successfully!
+[ 62672.3 ms] 
+[ 62876.0 ms] 
+[ 62977.7 ms] =======================================================
+[ 63079.2 ms]        AstraOS Phase G: Initramfs & VFS Tests          
+[ 63182.4 ms] =============================
+[ 63286.9 ms] ==========================
+[ 63390.0 ms] [TEST 1] Initializing VFS subsystem...
+[ 63597.7 ms] [TEST 1] Initramfs module loaded at 0xffff80001c089000, size: 301008 bytes, path: '/initramfs.bin'
+[ 63700.8 ms] [TEST 1] PASS: Initramfs verified and mounted at VFS root successfully.
+[ 63904.2 ms] ASTRA_INITRAMFS_OK
+[ 64007.4 ms] 
+[ 64108.8 ms] [TEST 2] Testing VFS path lookup and traversal defense...
+[ 64211.1 ms] [TEST 2] PASS: Path resolution and traversal defense verified.
+[ 64416.0 ms] ASTRA_VFS_LOOKUP_OK
+[ 64519.2 ms] 
+[ 64724.7 ms] [TEST 3] Testing VFS file operations (open, read, pread, stat, readdir)...
+[ 64927.1 ms] [TEST 3] PASS: File operations, chunked read, pread, EOF, fstat, and readdir verified.
+[ 65029.6 ms] ASTRA_VFS_READ_OK
+[ 65131.1 ms] 
+[ 65233.6 ms] [TEST 4] Testing parser resilience against corrupted & malfor
+[ 65335.0 ms] med initramfs archives...
+[ 65437.3 ms] [TEST 4] PASS: All malformed, corrupted, and adversarial archives safely rejected.
+[ 65539.1 ms] ASTRA_VFS_INVALID_ARCHIVE_OK
+[ 65640.5 ms] 
+[ 65844.1 ms] [TEST 5] Testing VFS-based native ELF execution...
+[ 65945.8 ms] [ELF] Validation failed for 'bad_elf': Invalid ELF magic signature (-3)
+[ 66047.4 ms] [TEST 5] Negative test passed: /bin/bad_elf.elf rejected cleanly.
+[ 66149.4 ms] [TEST 5] Process 'vfs_user_app' created via VFS (PID 4). Yielding to run user code...
+[ 66352.7 ms] [PROCESS] Process 'vfs_user_app' (PID 4) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 66455.2 ms] AstraOS Native ELF: Executing in Ring 3 CPL=3!
+[ 66557.5 ms] AstraOS Native ELF: .bss zero-initialization verified!
+[ 66762.0 ms] AstraOS Native ELF: Syscalls verified, calling exit(0)...
+[ 66864.9 ms] [PROCESS] Process 'vfs_user_app' (PID 4) terminated with exit code 0
+[ 66967.0 ms] [TEST 5] VFS user process finished with exit code 0 (fault=0)
+[ 67068.4 ms] [TEST 5] PASS: Native user-space ELF loaded through VFS and executed successfully in Ring 3!
+[ 67169.9 ms] 
+[ 67272.7 ms] ASTRA_VFS_ELF_EXEC_OK
+[ 67374.2 ms] 
+[ 67477.0 ms] 
+[ 67578.9 ms] =======================================================
+[ 67783.7 ms]   AstraOS Phase AK: Process, ELF & Isolation Tests     
+[ 67885.4 ms] =======================================================
+[ 67987.1 ms] [PHASE AK TEST 1] Verifying Ring 3 supervisor write protection...
+[ 68191.2 ms] [PROCESS] Process 'adv_write_sup' (PID 5) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 68292.7 ms] 
+[ 68394.2 ms] =================== [ CPU EXCEPTION ] =============
+[ 68497.2 ms] ======
+[ 68598.4 ms] Vector:     14 (Page Fault)
+[ 68699.9 ms] Error Code: 0x0000000000000006
+[ 68801.3 ms] RIP:        0x0000000000400014  CS:     0x0023
+[ 68902.7 ms] RFLAGS:     0x0000000000010282  RSP:    0x0000700000004000  SS: 0x001b
+[ 69106.3 ms] RAX: 0xffffffff80400000  RBX: 0x00000000deadbeef  RCX: 0x0000000000000000
+[ 69207.9 ms] RDX: 0x0000000000000000  RSI: 0x0000000000000000  RDI: 0x0000000000000000
+[ 69311.2 ms] RBP: 0x00000000
+[ 69413.6 ms] 00000000  R8:  0x0000000000000000  R9:  0x0000000000000000
+[ 69515.4 ms] R10: 0x0000000000000000  R11: 0x0000000000000000  R12: 0x0000000000000000
+[ 69617.5 ms] CR2 (Fault Addr): 0xffffffff80400000
+[ 69719.6 ms] PF Flags:         Present=0, Write=1, User=1, Rsvd=0, Fetch=0
+[ 69922.2 ms] 
+[ 70024.5 ms] [PROCESS] User process 'adv_write_sup' (PID 5) fault caught at RIP=0x0000000000400014, Vector=14, CR2=0xffffffff80400000
+[ 70127.1 ms] [PROCESS] Process 'adv_write_sup' (PID 5) terminated with exit code -11
+[ 70228.4 ms] [PHASE AK TEST 1] PASS: Write to supervisor space (0xffffffff8040000
+[ 70331.2 ms] 0) trapped (#PF Vector 14) and process terminated cleanly.
+[ 70432.3 ms] ASTRA_USER_WRITE_PROTECTION_OK
+[ 70533.9 ms] 
+[ 70635.9 ms] [PHASE AK TEST 2] Verifying Ring 3 NX (No-Execute) stack protection...
+[ 70738.0 ms] [PROCESS] Process 'adv_nx_stack' (PID 6) entering Ring 3 at RIP=0x00
+[ 70839.9 ms] 00000000400000, RSP=0x0000700000004000
+[ 70941.5 ms] 
+[ 71043.7 ms] =================== [ CPU EXCEPTION ] ===================
+[ 71146.8 ms] Vector:     14 (Page Fault)
+[ 71479.7 ms] Error Code: 0x0000000000000006
+[ 71907.5 ms] RIP:        0x0000000000400000  CS:     0x0023
+[ 72008.9 ms] RFLAGS:     0x0000
+[ 72111.3 ms] 000000010282  RSP:    0x0000700000004000  SS: 0x001b
+[ 72214.3 ms] RAX: 0x0000000000000000  RBX: 0x0000000000000000  RCX: 0x0000000000000000
+[ 72316.8 ms] RDX: 0x0000000000000000  RSI: 0x0000000000000000  RDI: 0x0000000000000000
+[ 72519.9 ms] RBP: 0x0000000000000000  R8:  0x0000000000000000  R9:  0x0000000000000000
+[ 72621.9 ms] R10: 0x0000000000000000  R11: 0x0000000000000000  R12: 0x0000000000000000
+[ 72827.8 ms] CR2 (Fault Addr): 0x0000700000004000
+[ 72929.7 ms] PF Flags:         Present=0, Write=1, User=1, Rsv
+[ 73031.3 ms] d=0, Fetch=0
+[ 73135.3 ms] 
+[ 73237.9 ms] [PROCESS] User process 'adv_nx_stack' (PID 6) fault caught at RIP=0x0000000000400000, Vector=14, CR2=0x0000700000004000
+[ 73441.0 ms] [PROCESS] Process 'adv_nx_stack' (PID 6) terminated with exit code -11
+[ 73542.4 ms] [PHASE AK TEST 2] PASS: Execution attempt on user stack (NX bit) trapped (#PF Vector 14) and contained.
+[ 73643.9 ms] ASTRA_USER_NX_PROTECTION_OK
+[ 73860.5 ms] 
+[ 74068.6 ms] [PHASE AK TEST 3] Verifying user s
+[ 74170.9 ms] tack unmapped guard page...
+[ 74272.4 ms] [PROCESS] Process 'adv_guard_page' (PID 7) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 74375.1 ms] 
+[ 74690.5 ms] =================== [ CPU EXCEPTION ] ===================
+[ 74792.6 ms] Vector:     14 (Page Fault)
+[ 74894.5 ms] Error Code: 0x0000000000000004
+[ 75099.4 ms] RIP:        0x000000000040000a  CS:     0x0023
+[ 75201.1 ms] RFLAGS:     0x0000000000010282  RSP:    0x0000700000004000  SS: 0x001b
+[ 75303.4 ms] RAX: 0x00006ffffff00000  RBX: 0x0000000000000000  RCX: 0x0000000000000000
+[ 75405.2 ms] RDX: 0x0
+[ 75507.5 ms] 000000000000000  RSI: 0x0000000000000000  RDI: 0x0000000000000000
+[ 75608.8 ms] RBP: 0x0000000000000000  R8:  0x0000000000000000  R9:  0x0000000000000000
+[ 75710.1 ms] R10: 0x0000000000000000  R11: 0x0000000000000000  R12: 0x0000000000000000
+[ 75811.7 ms] CR2 (Fault Addr): 0x00006ffffff00000
+[ 76016.0 ms] PF Flags:         Present=0, Write=0, User=1, Rsvd=0, Fetch=0
+[ 76118.7 ms] 
+[ 76220.4 ms] [PROCESS] User process 'adv_guard_page' (PID 7) fault caught at RIP=0x000000000040000a, Vector=14, CR2=0x00006ffffff00000
+[ 76323.7 ms] [PROCESS] Process 'adv_guard_page' (PID 7) terminated w
+[ 76425.8 ms] ith exit code -11
+[ 76527.4 ms] [PHASE AK TEST 3] PASS: Access to unmapped stack guard page (0x00006ffffff00000) trapped (#PF Vector 14).
+[ 76629.4 ms] ASTRA_USER_GUARD_PAGE_OK
+[ 76730.8 ms] 
+[ 76934.9 ms] [PHASE AK TEST 4] Verifying syscall pointer validation and boundary enforcement...
+[ 77036.7 ms] [PHASE AK TEST 4] PASS: All invalid syscall pointers, bounds overflows, and invalid lengths safely rejected.
+[ 77138.8 ms] ASTRA_SYSCALL_SECURITY_OK
+[ 77240.5 ms] 
+[ 77444.7 ms] [PHASE AK TEST 5] Verifying file descriptor ownership isolation & exit reclamation...
+[ 77546.1 ms] [PHASE AK TEST 5] PASS: Cross-process descriptor access blocked (-EBADF) and exit cleanup verified.
+[ 77647.3 ms] ASTRA_FD_OWNERSHIP_OK
+[ 77850.7 ms] 
+[ 77958.0 ms] [PHASE AK TEST 6] Verifying process_waitpid and exit status propagation...
+[ 78175.4 ms] [PROCESS] Process 'p_wait_test' (PID 8) entering Ring 3 at RIP=0x0000000000400000, 
+[ 78288.6 ms] RSP=0x0000700000004000
+[ 78499.3 ms] Hello from AstraOS Ring 3!
+[ 78702.1 ms] [PROCESS] Process 'p_wait_test' (PID 8) terminated with exit code 0
+[ 78804.3 ms] [PHASE AK TEST 6] PASS: process_waitpid correctly handled WNOHANG, blocked for child, retrieved exit status 0, and reaped resour
+[ 78905.7 ms] ces.
+[ 79006.9 ms] ASTRA_PROCESS_WAITPID_OK
+[ 79210.7 ms] 
+[ 79312.1 ms] [PHASE AK TEST 7] Launching 3 independent Ring 3 ELF executables...
+[ 79413.6 ms] [PHASE AK TEST 7] Concurrently executing:
+[ 79515.1 ms]   1. 'normal_app'   (PID 9, CR3 0x184000)
+[ 79616.6 ms]   2. 'faulting_app' (PID 10, CR3 0x1ad000)
+[ 79718.2 ms] 
+[ 79819.7 ms]   3. 'worker_app'   (PID 11, CR3 0x1be000)
+[ 79921.1 ms] [PROCESS] Process 'normal_app' (PID 9) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 80023.5 ms] [PROCESS] Process 'worker_app' (PID 11) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 80124.9 ms] [NORMAL APP[PROCESS] Process 'faulting_app' (PID 10) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 80329.0 ms] ] Started s[FAULT APP] S[WORKER APP] uccessfully! tarting deliStarted backPID=9
+[ 80329.0 ms] bg
+[ 80635.0 ms] erate superrou
+[ 80736.5 ms] visor memond worker l[NORMAL APP] Cry accesoop. PID=1
+[ 80736.5 ms] s
+[ 81041.1 ms] ...
+[ 81143.5 ms] omputation verified: sum(1..100) = 5050
+[ 81246.0 ms] 
+[ 81347.4 ms] =================== [ CPU EXCEPTION ] ===================
+[ 81551.1 ms] Vector:     14 (Page Fault)
+[ 81653.5 ms] Error Code: 0x0000000000000004
+[ 81754.8 ms] RIP:        0x00000000004001d8  CS:     0x0023
+[ 81857.0 ms] RFLAGS:     0x0000000000010206  RSP:    0x0000700000003ff0  SS: 0x001b
+[ 82061.2 ms] RAX: 0x000000000000003c  RBX: 0x0000000000000000  RCX: 0x0000000000000000
+[ 82162.5 ms] RDX: 0x000000000000003c  RSI: 0x0000000000401035  RDI: 0x0000000000000001
+[ 82263.8 ms] RBP: 0x0000700000003ff0  R8:  0x0000000000000000  R9:  0x0000000000000000
+[ 82367.1 ms] R10: 0x0000000000000000  R11: 0x00000000000
+[ 82469.1 ms] 00000  R12: 0x0000000000000000
+[ 82571.0 ms] CR2 (Fault Addr): 0xffffffff80400000
+[ 82673.1 ms] PF Flags:         Present=0, Write=0, User=1, Rsvd=0, Fetch=0
+[ 82881.6 ms] 
+[ 83088.2 ms] [PROCESS] User process 'faulting_app' (PID 10) fault caught at RIP=0x00000000004001d8, Vector=14, CR2=0xffffffff80400000
+[ 83190.2 ms] [PROCESS] Process 'faulting_app' (PID 10) terminated with exit code -11
+[ 83393.5 ms] [NORMAL APP] Exiting with status 0.
+[ 83596.6 ms] [PROCESS] Process 'normal_app' (PID 9) terminated with exit code 0
+[ 83698.5 ms] [WORKER APP] Completed 50 interleaved work cycles with status 0.
+[ 83800.0 ms] [PROCESS] Process 'worker_app' (PID 11) terminated with exit code 0
+[ 83903.1 ms] [PHASE AK TEST 7] PASS: All 3 applications executed with hardware iso
+[ 84005.6 ms] lation: normal_app cleanly exited (0), faulting_app was tra
+[ 84107.1 ms] pped without kernel panic (vec 14), and worker_app completed all interleaved cycles (0).
+[ 84209.0 ms] ASTRA_MULTI_APP_ISOLATION_OK
+[ 84412.3 ms] 
+[ 84514.9 ms] [PHASE AK TEST 8] Stress testing repeated process creation/destruction (10 iterations)...
+[ 84616.9 ms] [PROCESS] Process 'stress_app' (PID 12) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 84821.2 ms] [NORMAL APP] Started successfully! PID=12
+[ 84922.9 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[ 85024.5 ms] [NORMAL APP] Exiting with status 0.
+[ 85126.0 ms] [PROCESS] Process 'stress_app' (PID 12) terminated with exit code 0
+[ 85330.1 ms] [PROCESS] Process 'stress_app' (PID 13) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 85431.5 ms] [NORMAL APP] Started successfully! PID=13
+[ 85634.8 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[ 85736.1 ms] [NORMAL APP] Exiting with status 0.
+[ 85838.7 ms] [PROCESS] Process 'stress_app' (PID 13) terminated with exit code 0
+[ 86042.2 ms] [PROCESS] Process 'stress_app' (PID 14) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 86144.3 ms] [NORMAL APP] Started successfully! PID=14
+[ 86247.4 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[ 86350.3 ms] [NORMAL APP] Exiting with
+[ 86452.0 ms]  status 0.
+[ 86554.5 ms] [PROCESS] Process 'stress_app' (PID 14) terminated with exit code 0
+[ 86657.1 ms] [PROCESS] Process 'stress_app' (PID 15) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 86863.4 ms] [NORMAL APP] Started successfully! PID=15
+[ 87067.3 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[ 87168.9 ms] [NORMAL APP] Exiting with status 0.
+[ 87270.9 ms] [PROCESS] Process 'stress_app' (PID 15) terminated with exit code 0
+[ 87474.5 ms] [PROCESS] Process 'stress_app' (PID 16) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 87577.2 ms] [NORMAL APP] Started successfully! PID=16
+[ 87679.3 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[ 87780.9 ms] [NORMA
+[ 87893.7 ms] L APP] Exiting with status 0.
+[ 88223.2 ms] [PROCESS] Process 'stress_app' (PID 16) terminate
+[ 88328.7 ms] d with exit code 0
+[ 88534.1 ms] [PROCESS] Process 'stress_app' (PID 17) entering Ring 3 at RIP=0x0000000000400000, RSP=0x00007000000040
+[ 88636.4 ms] 00
+[ 88738.1 ms] [NORMAL APP] Started successfully! PID=17
+[ 88840.1 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[ 88942.8 ms] [NORMAL APP] Exiting with status 0.
+[ 89145.5 ms] [PROCESS] Process 'stress_app' (PID 17) terminated with exit code 0
+[ 89248.7 ms] [PROCESS] Process 'stress_app' (PID 18) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 89351.0 ms] [NORMAL APP] Started successfully! PID=18
+[ 89453.0 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[ 89656.1 ms] [NORMAL APP] Exiting with status 0.
+[ 89758.1 ms] [PROCESS] Process 'stress_app' (PID 18) terminated with exit code 0
+[ 89860.0 ms] [PROCESS] Process 'stress_app' (PID 19) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 89961.9 ms] [NORMAL APP] Started successfully! PID=19
+[ 90165.8 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[ 90268.5 ms] [NORMAL APP] Exiting with status 0.
+[ 90371.8 ms] [PROCESS] Process 'stress_app' (PID 19) terminated with exit code 0
+[ 90474.1 ms] [PROCESS] Process 'stress_app' (PID 20) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 90577.0 ms] [NORMAL APP
+[ 90680.3 ms] ] Started successfully! PID=20
+[ 90783.5 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[ 90887.7 ms] [NORMAL APP] Exiting with status 0.
+[ 90989.3 ms] [PROCESS] Process 'stress_app' (PID 20) terminated with exit code 0
+[ 91091.0 ms] [PROCESS] Process 'stress_app' (PID 2
+[ 91192.6 ms] 1) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 91293.9 ms] [NORMAL APP] Started successfully! PID=21
+[ 91395.3 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[ 91496.7 ms] [NORMAL APP] Exiting with status 0.
+[ 91701.2 ms] [PROCESS] Process 'stress_app' (PID 21) terminated with exit code 0
+[ 91804.4 ms] [PHASE AK TEST 8] PMM accounting: free frames before=124653, free frames after=124653
+[ 91905.9 ms] [PHASE AK TEST 8] PASS: 10 repeated lifecycle cycles completed with zero leaked physical frames.
+[ 92009.7 ms] ASTRA_PROCESS_LIFECYCLE_STRESS_OK
+[ 92213.7 ms] 
+[ 92315.6 ms] [PHASE AK] ALL PROCESS MANAGEMENT, ELF LOADER & ISOLATION TESTS PASSED!
+[ 92416.9 ms] 
+[ 92518.2 ms] 
+[ 92620.6 ms] =======================================================
+[ 92823.7 ms]   AstraOS Phase AL: Preemption, Lifecycle & Scheduler  
+[ 92925.4 ms] =======================================================
+[ 93028.6 ms] [PHASE AL TEST 1] Verifying timer-driven preemption on non-yielding Ring 3 app...
+[ 93130.6 ms] [PROCESS] Process 'cpu_worker' (PID 22) entering Ring 3 at RIP
+[ 93233.2 ms] =0x0000000000400000, RSP=0x0000700000004000
+[ 93334.6 ms] [CPU WORKE[PROCESS] Process 'heartbeat' (PID 23) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 93436.2 ms] R] Start[HEARTBEAT]ed busy loop w Progress monitorithout sys_yie started on CPld()...
+[ 93436.2 ms] U
+[ 93740.0 ms]  0 (PID 23)...
+[ 93942.8 ms] [HEARTBEAT] Progress ti[CPU WORKERck 1 on CPU 0
+[ 93942.8 ms] ] Completed C
+[ 94147.8 ms] PU-[HEARTBEAT] Pbound workloadrogress tick 2 without coope on CPU 0
+[ 94249.6 ms] r
+[ 94453.3 ms] [HEARTBEAT] ative yieldinProgress tickg.
+[ 94656.5 ms]  3 on CPU 0
+[ 94656.5 ms] [PROCESS] Process 'cpu_worker' (PID 22) terminated with exit code 0
+[ 94860.9 ms] [HEARTBEAT] Progress tick 4 on CPU 0
+[ 95065.4 ms] [HEARTBEAT] Progress tick 5 on CPU 0
+[ 95167.0 ms] [HEARTBEAT] Progress tick 6 on CPU 0
+[ 95268.5 ms] [HEARTBEAT] Progress tick 7 on CPU 0
+[ 95369.9 ms] [HEARTBEAT] Progress tick 8 on CPU 0
+[ 95572.9 ms] [HEARTBEAT] Progress tick 9 on CPU 0
+[ 95676.1 ms] [HEARTBEAT] Progress tick 0 on CPU 0
+[ 95882.0 ms] [HEARTBEAT] Finished 10 heartbeat progress ticks.
+[ 96196.3 ms] [PROCESS] Process 'heartbeat' (PID 23) terminated with exit code 0
+[ 96636.2 ms] [PHASE AL TEST 1] PASS: Heartbeat completed alongside CPU-bound worker without cooperative yields (253 ticks elapsed).
+[ 96737.8 ms] ASTRA_PREEMPT_RING3_OK
+[ 96841.7 ms] 
+[ 97044.9 ms] [PHASE AL TEST 2] Concurrently running 5 independent Ring 3 applications...
+[ 97148.2 ms] [PROCESS] Process 'cpu_worker' (PID 24) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 97249.8 ms] [PROCESS] Process 'blocking_worker' (PID 26) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 97452.9 ms] [PROCESS] Process 'normal_app' (PID 28) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 97554.2 ms] [CPU WORKER[PROCESS] Process 'heartbeat' (PID 25) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 97657.1 ms] [PROCESS] Process 'faulting_app' (PID 27) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[ 97861.7 ms] [NORMAL A] Started bus[HEARTBEAT] P[BLOCKING WOR[FAULT APP] Started sy loorogress mKER] Started oPP] Starting uccessfully! p withod
+[ 98369.5 ms] nitor startePID=28
+[ 98470.7 ms] dn CPU 0 eliberate supout sys_y
+[ 98574.3 ms] (PID 26);ervisor meield()... enteringmory access..
+[ 98574.3 ms]  
+[ 98878.9 ms] [N on CPU 0 (
+[ 98982.7 ms] ORMAL APPPID 25).] Computat..
+[ 99085.2 ms] i
+[ 99186.5 ms] .
+[ 99289.5 ms] blocking sl
+[ 99390.6 ms] eep for 40ms...
+[ 99594.0 ms] on verifie[HEARTBEd: sum(
+[ 99696.0 ms] AT] Progre1..100) = ss tick 
+[ 99797.6 ms] =================== [ CPU EXCEPTION ] ===================
+[100002.3 ms] Vector:     14 (Page Fault)
+[100103.7 ms] Error Code: 0x0000000000000004
+[100206.0 ms] RIP:        0x00000000004001d8  CS:     0x0023
+[100308.9 ms] RFLAGS:     0x0000000000010206  RSP:    0x00007000000
+[100411.5 ms] 03ff0  SS: 0x001b
+[100513.3 ms] RAX: 0x000000000000003c  RBX: 0x0000000000000000  RCX: 0x0000000000000000
+[100616.3 ms] RDX: 0x000000000000003c  RSI: 0x0000000000401035  RDI: 0x0000000000000001
+[100717.7 ms] RBP: 0x0000700000003ff0  R8:  0x0000000000000000  R9:  0x0000000000000000
+[100922.4 ms] R10: 0x0000000000000000  R11: 0x0000000000000000  R12: 0x0000000000000000
+[101025.2 ms] CR2 (Fault Addr): 0xffffffff80400000
+[101127.1 ms] PF Flags:         Present=0, Write=0, User=1, Rsvd=0, Fetch=0
+[101231.0 ms] 
+[101332.9 ms] [PROCESS] User process 'fa
+[101435.7 ms] ulting_app' (PID 27) fault caught at RIP=0x00000000004001d8, Vector=14, CR2=0xffffffff80400000
+[101537.7 ms] [PROCESS] Process 'faulting_app' (PID 27) terminated with exit code -11
+[101639.7 ms] 1 on CPU
+[101741.1 ms] [CPU WORKER] 0
+[101741.1 ms] 5[
+[102362.4 ms] 0BLOCKI50
+[102362.4 ms] N
+[102464.3 ms]  [
+[102870.5 ms] [NG WORKComplHEARTBEAT] ORMAL APP]ER] Awakenedeted CPU-bounProgress tic Exiting with from sleep od workload wk 2 on CPU 0
+[102870.5 ms] i
+[103380.5 ms] [HEARTBEAT status 0.
+[103380.5 ms] thout cooperat] Progress nt
+[103892.7 ms]  CPU 0; eive yi[PROCESS] Process 'normal_app' (PID 28) terminated with exit code 0
+[103993.9 ms] xitielding.
+[103993.9 ms] i
+[104297.7 ms] [PROCESS] Process 'cpu_worker' (PID 24) terminated with exit co
+[104400.3 ms] de 0
+[104502.0 ms] ck 3 on CPU 0
+[104502.0 ms] n
+[104706.3 ms] g with 0.
+[104706.3 ms] [
+[104909.0 ms] [PROCESS] Process 'blocking_worker
+[105011.5 ms] ' (PID 26) terminated with exit code 0
+[105123.4 ms] HEARTBEAT] Progress tick 4 on CPU 0
+[105554.2 ms] [HEARTBEAT] Progress tick 5 on CPU 0
+[105756.6 ms] [HEARTBEAT] Progress tick 6 on CPU 0
+[105858.6 ms] [HEARTBEAT] Progress tick 7 on CPU 0
+[105961.6 ms] [HEARTBEAT] Progress tick 8 on CPU 0
+[106165.6 ms] [HEARTBEAT] Progress tick 9 on CPU 0
+[106267.1 ms] [HEARTBEAT] Progress tick 0 on CPU 0
+[106369.4 ms] [HEARTBEAT] Finished 10 heartbeat progress ticks.
+[106572.3 ms] [PROCESS] Process 'heartbeat' (PID 25) terminated with exit code 0
+[106673.9 ms] [PHASE AL TEST 2] PASS: 5 independent processes executed concurrently; fault contained, memory isolated.
+[106776.2 ms] ASTRA_MULTI_PROCESS_OK
+[106877.8 ms] 
+[106979.6 ms] [PHASE AL TE
+[107085.9 ms] ST 3] Verifying RUNNING -> BLOCKED -> READY -> RUNNING state transitions...
+[107187.7 ms] [PROCESS] Process 'block_test' (PID 29) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[107289.5 ms] [BLOCKING WORKER] Started on CPU 0 (PID 29); entering blocking sleep for 40ms...
+[107491.9 ms] [BLOCKING WORKER] Awakened from sleep on CPU 0; exiting with 0.
+[107594.5 ms] [PROCESS] Process 'block_test' (PID 29) terminated with exit code 0
+[107696.3 ms] [PHASE AL TEST 3] PASS: Verified RUNNING -> BLOCKED -> READY -> RUNNING cycle with zero lost wakeups.
+[107797.9 ms] ASTRA_BLOCK_WAKEUP_OK
+[107899.6 ms] 
+[108001.5 ms] [PHASE AL TEST 4] Auditing 
+[108103.0 ms] waitpid() parent-child authorization and reaping semantics...
+[108205.4 ms] [PROCESS] Process 'child_app' (PID 30) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[108307.2 ms] [NORMAL APP] Started successfully! PID=30
+[108513.7 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[108717.4 ms] [NORMAL APP] Exiting with status 0.
+[108821.6 ms] [PROCESS] Pro
+[108924.1 ms] cess 'child_app' (PID 30) terminated with exit code 0
+[109026.7 ms] [PHASE AL TEST 4] PASS: waitpid() authorization, non-blocking check, zombie reaping, and repeated-wait semantics verified.
+[109231.8 ms] ASTRA_WAITPID_LIFECYCLE_OK
+[109438.6 ms] 
+[109644.2 ms] [PHASE AL TEST 5] Stressing process creation/destruction under preemptive scheduling (10 iterations)...
+[109746.8 ms] [PROCESS] Process 'stress_app' (PID 31) entering Ring 3 at RIP
+[109849.6 ms] =0x0000000000400000, RSP=0x0000700000004000
+[109952.2 ms] [NORMAL APP] Started successfully! PID=31
+[110266.7 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[110580.5 ms] [NORMAL APP] Exiting with status 0.
+[110789.2 ms] [PROCESS] Process 'stress_app' (PID 31) terminated with exit
+[110893.7 ms]  code 0
+[110997.5 ms] [PROCESS] Process 'stress_app' (PID 32) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[111201.0 ms] [NORMAL APP] Started successfully! PID=32
+[111304.1 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[111739.1 ms] [NORMAL APP] Exiting with stat
+[111840.9 ms] us 0.
+[111942.7 ms] [PROCESS] Process 'stress_app' (PID 32) terminated with exit code 0
+[112044.7 ms] [PROCESS] Process 'stress_app' (PID 33) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[112249.2 ms] [NORMAL APP] Started successfully! PID=33
+[112351.0 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[112453.7 ms] [NORMAL APP] Exiting with status 0.
+[112555.1 ms] [PROCESS] Proces
+[112656.7 ms] s 'stress_app' (PID 33) terminated with exit code 0
+[112758.4 ms] [PROCESS] Process 'stress_app' (PID 34) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[112860.7 ms] [NORMAL APP] Started successfully! PID=34
+[112962.5 ms] [NORMAL APP] Computation verified: sum(1..100) =
+[113063.9 ms]  5050
+[113165.9 ms] [NORMAL APP] Exiting with status 0.
+[113268.6 ms] [PROCESS] Process 'stress_app' (PID 34) terminated with exit code 0
+[113371.5 ms] [PROCESS] Process 'stress_app' (PID 35) entering 
+[113473.0 ms] Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[113574.4 ms] [NORMAL APP] Started successfully! PID=35
+[113676.1 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[113778.3 ms] [NORMAL APP] Exiting 
+[113881.1 ms] with status 0.
+[113984.7 ms] [PROCESS] Process 'stress_app' (PID 35) terminated with exit code 0
+[114086.9 ms] [PROCESS] Process 'stress_app' (PID 36) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[114189.0 ms] [NORMAL APP] Started successfully! PID=36
+[114393.1 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[114494.2 ms] [NORMAL APP] Exiting with status 0.
+[114596.9 ms] [PROCESS] Process 'stress_app' (PID 36) terminated with exit code 0
+[114800.5 ms] [PROCESS] Process 'stress_app' (PID 37) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[114903.8 ms] [NORMAL APP] Started successfully! PID=37
+[115006.7 ms] [NORMAL APP] Computation verified: sum(1..100) = 
+[115109.6 ms] 5050
+[115211.5 ms] [NORMAL APP] Exiting with status 0.
+[115414.2 ms] [PROCESS] Process 'stress_app' (PID 37) terminated with exit code 0
+[115515.9 ms] [PROCESS] Process 'stress_app' (PID 38) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[115722.3 ms] [NORMAL APP] Started successfully! PID=38
+[115824.7 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[115926.3 ms] [NORMAL APP] Exiting with status 0.
+[116129.1 ms] [PROCESS] Process 'stress_app' (PID 38) terminated with exit code 0
+[116231.6 ms] [PROCESS] Process 'stress_app' (PID 39) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[116435.3 ms] [NORMAL APP] Started successfully! PID=39
+[116537.2 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[116638.9 ms] [NORMAL APP] Exiting with status 0.
+[116741.4 ms] [PROCESS] Process 'stress_app' (PID 39) terminated with exit
+[116842.6 ms]  code 0
+[116944.4 ms] [PROCESS] Process 'stress_app' (PID 40) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[117047.0 ms] [NORMAL APP] Started successfully! PID=40
+[117150.7 ms] [NOR
+[117252.7 ms] MAL APP] Computation verified: sum(1..100) = 5050
+[117354.1 ms] [NORMAL APP] Exiting with status 0.
+[117456.8 ms] [PROCESS] Process 'stress_app' (PID 40) terminated with exit code 0
+[117558.3 ms] [PHASE AL TEST 5] PMM f
+[117660.5 ms] rame accounting: free before=124653, free after=124653
+[117761.9 ms] [PHASE AL TEST 5] PASS: 10 repeated lifecycle iterations completed with zero leaked physical memory frames.
+[117865.2 ms] ASTRA_PROCESS_CLEANUP_OK
+[117966.7 ms] 
+[118172.3 ms] [PHASE AL TEST 6] Evaluating scheduler stability under mixed concurrent workload...
+[118274.3 ms] [PROCESS] Process 'mix_cpu' (PID 41) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[118377.3 ms] [PROCESS] Process 'mix_block' (PID 43) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[118584.0 ms] [CPU WOR[PROCESS] Process 'mix_hb' (PID 42) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[118695.6 ms] [PROCESS] Process 'mix_norm' (PID 44) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[118796.9 ms] KER] Sta[HEARTB[BLOCKING WO[NORMAL APP]rted busy looEAT
+[118899.0 ms] ] ProgRKER] Starte Startep withouress monitod on CPU d successfullt sys_yiry
+[119409.1 ms] eld()...
+[119409.1 ms]  starte0 (PID 43); ! PID=44
+[119409.1 ms] e
+[119816.2 ms] d on CPU 
+[119918.2 ms] 0 (PIntering blD 42)...
+[119918.2 ms] [
+[120426.4 ms] NORMAL AP[HEARTBEAT]ocking sleep fP] Computati Progressor 40ms...
+[120426.4 ms] o
+[120527.8 ms] [
+[120935.7 ms] n verified: [sum(1.BLOCKING 
+[121037.4 ms] .100) =WORKER] Awak tick 1 o 5050
+[121037.4 ms] Cn
+[121545.4 ms] [NORMAL A CPP] Exitinened froPU WORKER] CoPU 0
+[121545.4 ms] mm
+[121950.9 ms]  sleep opleted g with statn CPU 0; exiCPU-bound wor[HEARTBE
+[122053.7 ms] us 0.
+[122053.7 ms] A
+[122459.6 ms] [PROCESS] Process 'mix_norm' (PID 44) terminated with exit code 0
+[122561.0 ms] ting withkload without 0.
+[122561.0 ms]  
+[122663.0 ms] T
+[122970.5 ms] c] Progress [PROCESS] Process 'mix_block' (PID 43) terminated with exit code 0
+[123072.4 ms] ootick 2 on Cperative yiPU 0
+[123277.2 ms] [HEARTBEAT] Progreseldins tick 3 on g.
+[123379.7 ms] C
+[123481.2 ms] [PROCESS] Process 'mix_cpu' (PID 41) terminated with
+[123584.0 ms]  exit code 0
+[123685.5 ms] PU 0
+[123787.1 ms] [HEARTBEAT] Progress tick 4 on CPU 0
+[123890.9 ms] [HEARTBEAT] Progress tick 5 on CPU 0
+[123994.4 ms] [HEARTBEAT] Progress tick 6
+[124095.9 ms]  on CPU 0
+[124197.7 ms] [HEARTBEAT] Progress tick 7 on CPU 0
+[124299.3 ms] [HEARTBEAT] Progress tick 8 on CPU 0
+[124401.8 ms] [HEARTBEAT] Progress tick 9 on CPU 0
+[124604.6 ms] [HEARTBEAT] Progress tick 0 on CPU 0
+[124706.5 ms] [HEARTBEAT] Finished 10 heartbeat progress ticks.
+[124808.7 ms] [PROCESS] Process 'mix_hb' (PID 42) terminated with exit code 0
+[125017.5 ms] [PHASE AL TEST 6] PASS: Mixed workload (CPU-bound, periodic, blocking, standard) completed in 526 ticks without starvation.
+[125222.1 ms] ASTRA_SCHED_FAIRNESS_OK
+[125324.4 ms] 
+[125527.1 ms] [PHASE AL TEST 7] Auditing SMP hardware capability and boot state...
+[125628.7 ms] [PHASE AL TEST 7] CPUID Report: 1 logical cores visible on host package.
+[125731.5 ms] [PHASE AL TEST 7] Bootloader State: Limine base protocol running on Bootstrap Processor (BSP, CPU 0).
+[125833.8 ms] [PHASE AL TEST 7] Kernel Scheduler: Single-core global runqueue; secondary AP cores remain quiescent.
+[126039.0 ms] [PHASE AL TEST 7] Formal Status: AstraOS executes strictly on 1 CPU. Multi-core SMP scheduling is NOT IMPLEMENTED.
+[126140.2 ms] ASTRA_SMP_AUDIT_OK
+[126343.1 ms] 
+[126445.4 ms] [PHASE AL] ALL PREEMPTIVE MULTITASKING & SCHEDULER QUALIFICATION TESTS PASSED!
+[126547.7 ms] 
+[126648.8 ms] 
+[126852.2 ms] =======================================================
+[126954.1 ms]   AstraOS Phase AM: SMP Bring-Up & Multi-Core Safety  
+[127056.4 ms] =======================================================
+[127260.0 ms] [PHASE AM] Total CPUs discovered and active: 1
+[127361.6 ms] [PHASE AM TEST 1] Auditing per-CPU structures, GDT, TSS, and APIC timer delivery...
+[127463.9 ms] [PHASE AM TEST 1] CPU 0: LAPIC ID=0, Online=1, Active=1, Timer Ticks=3627
+[127566.4 ms] [PHASE AM TEST 1] PASS
+[127667.9 ms] : All 1 CPU(s) initialized with independent GDT, TSS, IST1, and Local APIC timers.
+[127769.9 ms] 
+[127872.4 ms] [PHASE AM TEST 2] Spawning Ring 3 concurrent workload (cpu_worker_a, cpu_worker_b, heartbeat, blocking_worker)...
+[127976.1 ms] [PROCESS] Process 'cpu_worker_a' (PID 45) entering Ring 3 at RIP=0x0000000000400000
+[128078.4 ms] , RSP=0x0000700000004000
+[128181.6 ms] [PROCESS] Process 'heartbeat' (PID 47) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[128283.7 ms] [CPU WORKE[PROCESS] Process 'cpu_worker_b' (PID 46) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[128385.8 ms] [HE[PROCESS] Process 
+[128488.9 ms] 'blocking_worker' (PID 48) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[128590.4 ms] R A] Star[CPU WORKERARTBEAT] P[BLOCKING WOted on CPU 0  B] Started rogress monitRKER] Starte(PID 45)...
+[128590.4 ms] o
+[129101.6 ms] n CPU 0 (PID 46)...
+[129101.6 ms] or startd on CPU 0 (PI[CPU WeO
+[129612.8 ms] D 48); enterid on Cng blRKER A] IPU 0 (PID 4ocking sleep teration 5M [CPU WORK7)...
+[129715.0 ms] foE
+[130122.5 ms] [HEARTBEor 40msAT] Progres...
+[130122.5 ms] nR
+[130631.4 ms] [BLOCKING  CPU 0
+[130631.4 ms] W s
+[131137.8 ms]  tick 1 B] on CPU 0
+[131137.8 ms] OI[
+[131646.7 ms] teration 5[HEARTBEAT] PCPU WORKER A] M on CPU 0rogress tItRKER] Awakened
+[131646.7 ms] ie
+[132157.3 ms] ck 2 on ration 10M  from [CPU WORKER CPU 0
+[133107.9 ms] o
+[133208.8 ms] n CPU B] Iteratio[HE0
+[133208.8 ms] s
+[133713.8 ms] n 10M oARTBEAT] Prn CPU 0
+[133713.8 ms] oleep on C
+[133814.6 ms] PU 0; exiti[CPU WORng with KER 
+[133915.7 ms] A] I0.
+[133915.7 ms] t
+[134117.5 ms] gress tick[CPU WORKER 3 on CPU 0
+[134218.5 ms]  B] Itera
+[134319.4 ms] [PROCESS] Process 'blocking_worker' (PID 48) terminated with exit code 0
+[134521.2 ms] eration 15M on CPU 0
+[134622.2 ms] [HEARTBEAT] Progress
+[134723.2 ms] tion 15M  tick 4 on on CPU 0
+[134723.2 ms] CPU 0
+[134924.7 ms] [CPU WORKER A] Iterat
+[135025.9 ms] ion 20M on CP[HEARTBEU 0
+[135025.9 ms] A
+[135430.1 ms] [CPU WORKT] ProgreER A] Complss tick eted CPU-bo
+[135531.7 ms] [C5 on CPU 0
+[135531.7 ms] und worklPU WORKER B] Io
+[135834.8 ms] ad successf[HEARTBEAT]ully.
+[135834.8 ms]  Progress teration 20tick 6 on CP
+[135936.0 ms] M on CPU 0
+[135936.0 ms] U 0
+[136137.5 ms] [PROCESS] Process 'cpu_worker_a' (PID 45) terminated with exit code 0
+[136339.4 ms] [HEARTBEAT] Progress tic
+[136441.4 ms] k 7 on CPU 0
+[136654.5 ms] [CPU WORKER B] Completed CPU-bo
+[136763.6 ms] und workload successfully.
+[136865.8 ms] [HEARTBEAT] Prog
+[136967.3 ms] ress tick 8 on CPU 0
+[137070.9 ms] [PROCESS] Process 'cpu_worker_b' (PID 46) terminated with exit code 0
+[137386.8 ms] [HEARTBEAT] Progress tick 9 on CPU 0
+[137595.4 ms] [HEARTBEAT] Progress tick 0 on CPU 0
+[137798.4 ms] [HEARTBEAT] Finished 10 heartbeat progress ticks.
+[137901.2 ms] [PROCESS] Process 'heartbeat' (PID 47) terminated with exit code 0
+[138106.3 ms] [PHASE AM TEST 2] Single CPU system: Workloads executed sequentially without starvation.
+[138208.2 ms] ASTRA_SMP_SINGLE_CPU_OK
+[138416.5 ms] 
+[138621.8 ms] [PHASE AM TEST 3] Stressing process creation, waitpid, and zombie cleanup under SMP (10 iterations)...
+[138831.9 ms] [PROCESS] Process 'smp_stress' (PID 49) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[139378.5 ms] [NORMAL APP] Started successfully! PID=49
+[139594.8 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[139809.2 ms] [NORMAL APP] Exiting with status 0.
+[140117.5 ms] [PROCESS] Process 'smp_stress' (PID 49) terminated with exit code 0
+[140219.0 ms] [PROCESS] Process 'smp_stress' (PID 50) entering Ring 3 at RIP=0
+[140322.2 ms] x0000000000400000, RSP=0x0000700000004000
+[140425.3 ms] [NORMAL APP] Started successfully! PID=50
+[140630.7 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[140936.7 ms] [NORMAL APP] Exiting with status 0.
+[141038.1 ms] [PROCESS] Process 'smp_stress' (PID 50) terminated w
+[141140.1 ms] ith exit code 0
+[141242.2 ms] [PROCESS] Process 'smp_stress' (PID 51) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[141345.2 ms] [NORMAL APP] Started successfully! PID=51
+[141547.6 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[141650.2 ms] [NORMAL APP] Exiting with status 0.
+[141752.6 ms] [PROCESS] Process 'smp_stress' (PID 51) terminated with exit code 0
+[141956.0 ms] [PROCESS] Process 'smp_stress' (PID 52) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[142057.5 ms] [NORMAL APP] Started successfully! PID=52
+[142158.8 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[142262.0 ms] [NORMAL APP]
+[142363.2 ms]  Exiting with status 0.
+[142465.8 ms] [PROCESS] Process 'smp_stress' (PID 52) terminated with exit code 0
+[142567.8 ms] [PROCESS] Process 'smp_stress' (PID 53) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[142771.8 ms] [NORMAL APP] Started successfully! PID=53
+[142873.6 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[142975.1 ms] [NORMAL APP] Exiting with status 0.
+[143178.9 ms] [PROCESS] Process 'smp_stress' (PID 53) terminated with exit code 0
+[143280.5 ms] [PROCESS] Process 'smp_stress' (PID 54) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[143384.2 ms] [NORMAL APP] Started successfully! PID=54
+[143588.0 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[143690.7 ms] [NORMAL APP] Exiting with status 0.
+[143792.8 ms] [PROCESS] Process 'smp_stress' (PID 54) terminated with exit code 0
+[144000.1 ms] [PROCESS] Process 'smp_stress' (PID 55) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[144209.8 ms] [NORMAL APP] Started successfully! PID=55
+[144415.7 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[144517.3 ms] [NORMAL APP] Exiting with status 0.
+[144721.1 ms] [PROCESS] Process 'smp_stress' (PID 55) terminated with exit code 0
+[144822.7 ms] [PROCESS] Process 'smp_stress' (PID 56) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[144924.9 ms] [NORMAL APP] Started successfully! PID=56
+[145130.1 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[145336.7 ms] [NORMAL APP] Exiting with status 0.
+[145439.2 ms] [PROCESS] Process 'smp_stress' (PID 56) terminated with exit code 0
+[145540.7 ms] [PROCESS] Process 'smp_stress' (PID 57) entering Ring 3 at RIP=0x0000000000400000, RSP=0x00007000000040
+[145643.1 ms] 00
+[145744.6 ms] [NORMAL APP] Started successfully! PID=57
+[145846.7 ms] [NORMA
+[145949.7 ms] L APP] Computation verified: sum(1..100) = 5050
+[146051.8 ms] [NORMAL APP] Exiting with status 0.
+[146155.8 ms] [PROCESS] Process 'smp_stress' (PID 57) terminated with exit code 0
+[146257.3 ms] [PRO
+[146359.1 ms] CESS] Process 'smp_stress' (PID 58) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[146460.9 ms] [NORMAL APP] Started successfully! PID=58
+[146562.8 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[146765.6 ms] [NORMAL APP] Exiting with status 0.
+[146869.0 ms] [PROCESS] Process 'smp_stress' (PID 58) terminated wit
+[146970.6 ms] h exit code 0
+[147072.7 ms] [PHASE AM TEST 3] PASS: 10 repeated lifecycle iterations verified race-free across active CPU cores.
+[147174.0 ms] ASTRA_SMP_LIFECYCLE_OK
+[147275.9 ms] 
+[147500.0 ms] [PHASE AM] ALL SMP BRING-UP 
+[147615.6 ms] & MULTI-CORE SCHEDULER TESTS PASSED!
+[147927.6 ms] 
+[148131.1 ms] [BOOT] Initializing Phase I Graphics, Input, Window Manager & Desktop...
+[148233.2 ms] [GFX] Framebuffer initialized successfully:
+[148572.3 ms]   Dimensions: 1024x768 @ 32bpp (Pitch: 4096 bytes / 1024 pixels)
+[148885.3 ms]   Hardware FB VA:  0xffff800080000000
+[148993.3 ms]   Backbuffer PA:   0x0000000000184000 (768 pages, 3072 KiB)
+[149196.8 ms]   Backbuffer VA:   0xffff800000184000
+[149299.2 ms] 
+[149400.7 ms] [GFX TEST] Starting Graphics Subsystem Self-Test...
+[149503.2 ms] [GFX TEST] 1. Verifying out-of-bounds pixel writes & clipping...
+[149708.9 ms]   PASS: Clipping and out-of-bounds protections verified.
+[149916.1 ms] [GFX TEST] 2. Verifying drawing primitives (fill, border, line, font)...
+[150462.8 ms]   PASS: Drawing primitives and font rendering verified.
+[150564.9 ms] [GFX TEST] 3. Verifying double buffer presentation flip...
+[150768.3 ms]   PASS: Double-buffer presentation completed cleanly.
+[150869.4 ms] [GFX TEST] All Graphics tests passed successfully!
+[150970.7 ms] ASTRA_FRAMEBUFFER_OK
+[151175.6 ms] ASTRA_GRAPHICS_OK
+[151277.0 ms] 
+[151378.6 ms] [PS/2] Initializing PS/2 Keyboard and Mouse controller...
+[153414.6 ms] [PS/2] Keyboard and Mouse enabled (IRQ1=33, IRQ12=44, streaming active).
+[153516.6 ms] 
+[153619.6 ms] [INPUT TEST] Starting Input Event Subsystem Self-Test...
+[153823.6 ms]   PASS: Single event push and pop verified.
+[153926.2 ms]   PASS: FIFO sequencing of multiple events verified.
+[154136.0 ms]   PASS: Queue capacity bounds and 
+[154238.7 ms] overflow defense verified.
+[154443.2 ms]   PASS: Mouse position tracking and clamping verified.
+[154545.2 ms] [INPUT TEST] All Input subsystem tests passed successfully!
+[154646.7 ms] ASTRA_INPUT_OK
+[154749.4 ms] 
+[154851.1 ms] 
+[155054.5 ms] [WM TEST] Starting Window Manager Subsystem Self-Test...
+[155156.7 ms] [WM TEST] 1. Creating windows and verifying properties...
+[155258.4 ms]   PASS: Multiple window creation and initial focus verified.
+[155360.4 ms] [WM TEST] 2. Testing Z-order elevation (bring to front)...
+[155565.0 ms]   PASS: Z-order elevation and active focus switching verified.
+[155666.9 ms] [WM TEST] 3. Testing window coordinate hit testing...
+[155768.3 ms]   PASS: Window spatial hit-testing verified.
+[156083.2 ms] [WM TEST] 4. Testing window titlebar drag operations...
+[156185.2 ms]   PASS: Titlebar window dragging and coordinate translation verified.
+[156393.1 ms] [WM TEST] 5. Testing window destruction and resource cleanup...
+[156596.1 ms]   PASS: Window destruction and resource cleanup verified.
+[156697.6 ms] [WM TEST] All Window Manager tests passed successfully!
+[157026.7 ms] ASTRA_WINDOW_MANAGER_OK
+[157333.6 ms] 
+[157435.3 ms] 
+[157538.1 ms] [DESKTOP TEST] Starting Desktop Shell Subsystem Self-Test...
+[157639.4 ms]   PASS: Desktop geometry verified (1024x768).
+[157741.1 ms]   PASS: Application launcher toggle and dispatch verified.
+[157943.9 ms]   PASS: Full composite rendering pass completed cleanly.
+[158045.4 ms] [DESKTOP TEST] All Desktop Shell tests passed successfully!
+[158147.4 ms] ASTRA_DESKTOP_OK
+[158249.0 ms] 
+[158350.8 ms] 
+[158453.6 ms] [GUI APPS TEST] Starting GUI Applications Subsystem Self-Test...
+[158656.9 ms] [GUI APPS TEST] 1. Launching Text Editor and loading VFS file '/hello.txt'...
+[158758.6 ms]   PASS: Text Editor launched and populated from VFS.
+[158860.8 ms] [GUI APPS TEST] 2. Simulating keyboard input into Text Editor...
+[158962.0 ms]   PASS: Text Editor received and processed keyboard input.
+[159063.6 ms] [GUI APPS TE
+[159165.9 ms] ST] 3. Launching File Manager on root directory '/'...
+[159267.3 ms]   PASS: File Manager enumerated 5 entries from VFS.
+[159368.6 ms]   PASS: 'hello.txt' verified in VFS directory listing.
+[159470.1 ms] [GUI APPS TEST] All GUI Applications tests passed successfully!
+[159571.5 ms] ASTRA_GUI_APPS_OK
+[159776.8 ms] 
+[159883.8 ms] 
+[159985.7 ms] =======================================================
+[160087.4 ms]   AstraOS Phase N: User-Space GUI & Process Isolation  
+[160190.5 ms] ===
+[160291.8 ms] ====================================================
+[160393.9 ms] [TEST 1] Loading and launching native user GUI application '/bin/hello_gui.elf'...
+[160506.2 ms] [TEST 1] Process 'hello_gui' (PID 59) created. Entering Ring 3 scheduler loop...
+[160824.0 ms] [PROCESS] Process 'hello_gui' (PID 59) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[160927.2 ms] [USER GUI 1] hello_gui starting in Ring 3 CPL=3...
+[161133.6 ms] [USER GUI 1] Window created successfully at CPL 3. Rendering interface...
+[161339.9 ms] [USER GUI 1] Window close event received. Exiting...
+[161441.3 ms] [
+[161544.4 ms] USER GUI 1] Exiting cleanly with status 0.
+[161646.9 ms] [PROCESS] Process 'hello_gui' (PID 59) terminated with exit code 0
+[161848.6 ms] [TEST 1] PASS: First user GUI application executed in Ring 3 CPL=3, drew window, received events, and exited cleanly!
+[161949.6 ms] ASTRA_USER_GUI_OK
+[162151.3 ms] 
+[162252.3 ms] [TEST 2] Launching two simultaneous independent user GUI processes...
+[162353.2 ms] [TEST 2] Concurrent processes active: PID 60 (CR3 0x57a000) and PID 61 (CR3 0x58f000)
+[162454.1 ms] [PROCESS] Process 'hello_gui_multi' (PID 60) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[162656.3 ms] [USER GUI [PROCESS] Process 'counter_gui' (PID 61) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[162757.1 ms] 1] hello_g[USER GUI 2ui starting i] counter_n Ring 3 CPL=3gui starting ...
+[162757.1 ms] i
+[162958.8 ms] [USER GUI n concurren1] Window cret Ring 3 prated success
+[163060.1 ms] focess...
+[163060.1 ms] ully at CPL 3
+[163261.6 ms] . Ren[USER GUI 2] dering interfWindow createdace...
+[163261.6 ms]  
+[163463.2 ms] successfully at CPL 3. Entering event loop...
+[166084.0 ms] [USER GUI 1] Exiting cleanly with status 0.
+[166185.2 ms] [PROCESS] Process 'hello_gui_multi' (PID 60) terminated with exit code 0
+[167698.8 ms] [USER GUI 2] Exiting cleanly with status 0.
+[167799.8 ms] [PROCESS] Process 'counter_gui' (PID 61) terminated with exit code 0
+[167900.9 ms] [TEST 2] PASS: Multiple independent GUI processes scheduled, isolated, and cleanly terminated!
+[168001.6 ms] ASTRA_MULTI_PROCESS_GUI_OK
+[168204.0 ms] 
+[168305.3 ms] [TEST 3] Testing user fault isolation, non-owner window rejection, and cleanup...
+[168406.5 ms] [PROCESS] Process 'gui_fault_proc' (PID 62) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[168608.2 ms] 
+[168709.0 ms] =================== [ CPU EXCEPTION ] ===================
+[168810.3 ms] Vector:     14 (Page Fault)
+[168911.3 ms] Error Code: 0x0000000000000004
+[169012.0 ms] RIP:        0x0000000000400032  CS:     0x0023
+[169113.2 ms] RFLAGS:     0x0000000000010246  R
+[169214.1 ms] SP:    0x0000700000004000  SS: 0x001b
+[169315.0 ms] RAX: 0xffffffff80400000  RBX: 0x0000000000000000  RCX: 0x0000000000000000
+[169415.9 ms] RDX: 0x0000000000000064  RSI: 0x0000000000000064  RDI: 0x0000000000000000
+[169517.1 ms] RBP: 0x0000000000000000  R8:  0x0000000000000096  R9:  0x0000000000000000
+[169617.7 ms] R10: 0x00000000000000c8  R11: 
+[169718.8 ms] 0x0000000000000000  R12: 0x0000000000000000
+[169819.7 ms] CR2 (Fault Addr): 0xffffffff80400000
+[169920.8 ms] PF Flags:         Present=0, Write=0, User=1, Rsvd=0, Fetch=0
+[170122.3 ms] 
+[170223.2 ms] [PROCESS] User process 'gui_fault_proc' (PID 62) fault caught at RIP=0x0000000000400032, Vector=14, CR2=0xffffffff80400000
+[170324.0 ms] [PROCESS] Process 'gui_fault_proc' (PID 62) terminated with exit code -11
+[170525.5 ms] [TEST 3] PASS: Syscall validation, non-owner protection, and hardware fault isolation verified!
+[170626.6 ms] ASTRA_GUI_ISOLATION_OK
+[170727.4 ms] 
+[170828.4 ms] 
+[170929.1 ms] [BOOT] Initializin
+[171030.1 ms] g Phase J PCI, E1000 NIC & TCP/IP Network Stack...
+[171131.2 ms] [PCI] Enumerating PCI configuration space...
+[171232.4 ms] [PCI] 00:00.0 - Vendor: 8086 Device: 1237 Class: 06.00 (BAR0: 0x00000000, IRQ: 255)
+[171333.0 ms] [PCI] 00:01.0 - Vendor: 8086 Device: 7000 Class: 06.01 (BAR0: 0x00000000, IRQ: 255)
+[171534.8 ms] [PCI] 00:02.0 - Vendor: 80ee Device: beef Class: 03.00 (BAR0: 0x80000000, IRQ: 10)
+[171635.6 ms] [PCI] 00:03
+[171736.9 ms] .0 - Vendor: 8086 Device: 100e Class: 02.00 (BAR0: 0x81400000, IRQ: 11)
+[171838.1 ms] [PCI] 00:04.0 - Vendor: 80ee Device: cafe Class: 08.80 (BAR0: 0x0000c140, IRQ: 11)
+[171939.3 ms] [PCI] 00:05.0 - Vendor: 8086 Device: 2415 Class: 04.01 (BAR0: 0x0000c000, IRQ: 10)
+[172040.1 ms] [PCI] 00:07.0 - Vendor: 8086 Device: 7113 Class: 06.80 
+[172141.6 ms] (BAR0: 0x00000000, IRQ: 9)
+[172242.4 ms] [PCI] 00:0d.0 - Vendor: 8086 Device: 2829 Class: 01.06 (BAR0: 0x0000c178, IRQ: 10)
+[172444.1 ms] [PCI] Discovered 8 PCI devices.
+[172545.0 ms] [E1000] Scanning PCI bus for Intel Gigabit Ethernet controller...
+[172645.7 ms] [E1000] Found Intel E1000 Adapter (8086:100e) a
+[172746.7 ms] t PCI 00:03.0
+[172847.9 ms]   MMIO Physical: 0x81400000 (Size: 128 KiB)
+[172949.2 ms]   MMIO Virtual:  0xffff800081400000
+[173050.3 ms]   MAC Address:   08:00:27:77:3f:6a
+[173353.3 ms] [E1000] Initialized successfully. Link Status: DOWN (STATUS: 0x00000081)
+[173454.1 ms] [NET] Initializing AstraOS N
+[173555.2 ms] etwork Subsystem...
+[173656.2 ms] [NET] Interface configured with MAC: 08:00:27:77:3f:6a (Default IP: 10.0.2.15)
+[173757.3 ms] 
+[173858.4 ms] ========================================
+[173959.6 ms] ===============
+[174060.3 ms]         AstraOS Phase J: Networking Subsystem Tests    
+[174161.3 ms] =======================================================
+[174262.2 ms] 
+[174363.1 ms] [E1000 TEST] Starting Network Controller Self-Test...
+[174564.8 ms]   PASS: PCI Device 8086:100e discovered and MMIO mapped.
+[174665.7 ms] ASTRA_PCI_NET_DEVICE_OK
+[174766.6 ms]   PASS: E1000 TX/RX descriptor rings armed; Link: DOWN (Virtual/Disconnected)
+[174867.5 ms] ASTRA_NET_DRIVER_OK
+[174968.7 ms] 
+[175170.7 ms] [NET TEST] 2. Testing ARP packet parsing and cache lookup...
+[175271.5 ms]   PASS: ARP request/reply parsing and cache lookup verified.
+[175372.8 ms] ASTRA_ARP_OK
+[175473.8 ms] 
+[175574.7 ms] [NET TEST] 3. Testing IPv4 header checksum & validati
+[175675.9 ms] on...
+[175776.7 ms]   PASS: IPv4 header checksum calculation and verification verified.
+[175878.0 ms] ASTRA_IPV4_OK
+[175979.0 ms] 
+[176080.1 ms] [NET TEST] 4. Testing DHCP client negotiation...
+[176282.3 ms] [DHCP] Starting DHCP Discovery...
+[178198.2 ms] [DHCP] Received DHCPOFFER for IP: 10.0.2.15
+[178298.9 ms] [DHCP] Lease Acquired Successfully:
+[178400.1 ms]   IP Address:  10.0.2.15
+[178601.8 ms]   Subnet Mask: 255.255.255.0
+[178702.8 ms]   Gateway:     10.0.2.2
+[178803.6 ms]   DNS Server:  192.168.1.1
+[178930.4 ms]   PASS: DHCP state machine & timeout recovery verified.
+[179031.5 ms] ASTRA_DHCP_OK
+[179132.8 ms] 
+[179334.9 ms] [NET TEST] 5. Testing DNS client query assembly and response parsing...
+[203471.3 ms] [DNS WARN] Hostname resolution timed out for 'gateway'.
+[203572.3 ms]   PASS: DNS query encoding, compression decoding, and resp
+[203673.6 ms] onse parsing verified.
+[203774.5 ms] ASTRA_DNS_OK
+[203875.8 ms] 
+[203977.0 ms] [NET TEST] 6. Testing TCP state machine, checksumming & buffering...
+[204078.1 ms]   PASS: TCP socket allocation, checksum calculation, and lifecycle verified.
+[204280.0 ms] ASTRA_TCP_OK
+[204381.1 ms] 
+[204482.1 ms] [NET TEST] 7. Testing HTTP client parser hardening & adversarial recovery...
+[204583.4 ms] [HTTP] Connecting to 10.0.2.2 (Port 80)...
+[242026.8 ms] [HTTP ERROR] TCP connection to 10.0.2.2:80 failed
+[242127.8 ms]   PASS: HTTP GET request formatting, connection management, and status parsing verified.
+[242228.7 ms] ASTRA_HTTP_CLIENT_OK
+[242430.3 ms] 
+[242531.1 ms]   PASS: HTTP response hardening, chunked decoding, truncation & smuggling checks verified.
+[242632.1 ms] ASTRA_HTTP_HARDENING_OK
+[242733.3 ms] 
+[242834.6 ms] [NET TEST] All Networking tests passed successfully!
+[242935.6 ms] 
+[243137.6 ms] [BOOT] Initializing Phase AD Block Subsystem & ATA Driver...
+[243238.9 ms] [ATA] Initializing ATA/IDE PIO Storage Driver...
+[243339.9 ms] [ATA] Discovered 0 ATA block device(s).
+[243542.2 ms] =======================================================
+[243643.5 ms]      AstraOS Phase AD: Block Device Subsystem Tests    
+[243744.3 ms] =======================================================
+[243845.7 ms] [BLOCK TEST] 1. Testing Parameter Validation & Guard Boundaries...
+[243946.4 ms] [BLOCK] Note: No secondary writable data disk attache
+[244047.3 ms] d.
+[244148.3 ms] [BLOCK TEST] All block device subsystem tests passed successfully!
+[244249.1 ms] ASTRA_BLOCK_DEVICE_OK
+[244350.4 ms] 
+[244451.3 ms] 
+[244552.5 ms] =======================================================
+[244754.5 ms]   AstraOS Phase AN: SMP Memory Safety & TLB Shootdown  
+[244855.5 ms] =======================================================
+[244956.4 ms] [PHASE AN TEST 1] Verifying Cross-CPU TLB shootdown via Local APIC IPI 251...
+[245057.2 ms] [PHASE AN TEST 1] PASS: Cross-CPU TLB shootdown invalidation and IPI broadcast verified.
+[245259.2 ms] ASTRA_SMP_TLB_SHOOTDOWN_OK
+[245360.2 ms] 
+[245461.4 ms] [PHASE AN TEST 2] Testing process teardown and active_cpu_mask quiescence under SMP...
+[245562.1 ms] [PROCESS] Process 'teardown_app' (PID 63) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[245663.0 ms] [NORMAL APP] Started successfully! PID=63
+[245864.6 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[245965.6 ms] [NORMAL APP] Exiting with status 0.
+[246066.7 ms] [PROCESS] Process 'teardown_app' (PID 63) terminated with exit code 0
+[246167.6 ms] [PROCESS] Process 'teardown_app' (PID 64) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[246369.6 ms] [NORMAL APP] Started successfully! PID=64
+[246470.7 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[246571.7 ms] [NORMAL APP] Exiting with status 0.
+[246672.7 ms] [PROCESS] Process 'teardown_app' (PID 64) terminated with exit code 0
+[246773.8 ms] [PROCESS] Process 'teardown_app' (PID 65) enterin
+[246874.9 ms] g Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[246975.8 ms] [NORMAL APP] Started successfully! PID=65
+[247077.7 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[247179.0 ms] [NORMAL APP] Exiting with status 0.
+[247381.0 ms] [PROCESS] Process 'teardown_app' (PID 65) terminated with exit code 0
+[247482.2 ms] [PROCESS] Process 'teardown_app
+[247583.5 ms] ' (PID 66) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[247684.3 ms] [NORMAL APP] Started successfully! PID=66
+[247788.9 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[247990.8 ms] [NORMAL APP] Exiting with status 0.
+[248091.9 ms] [PROCESS] Process 'teardown_app' (PID 66) terminated with exit code 0
+[248192.8 ms] [PROCESS] Process 'teardown_app' (PID 67) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[248293.7 ms] [NORMAL APP] Started successfully! PID=67
+[248495.7 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[248596.8 ms] [NORMAL APP] Exiting with status 0.
+[248697.7 ms] [PROCESS] Process 'teardown_app' (PID 67) terminated with exit code 0
+[248798.7 ms] [PHASE AN TEST 2] PASS: Process teardown, active_cpu_mask quiescence, and address space reclamation verified.
+[249000.6 ms] ASTRA_SMP_PROCESS_TEARDOWN_OK
+[249101.8 ms] 
+[249202.8 ms] [PHASE AN TEST 3] Stressing PMM, Heap, and VMM across multi-core environment...
+[249405.0 ms]   PMM start: 123604 free pages, 1340 allocated pages
+[249506.2 ms]   PMM end:   123604 free pages, 1340 allocated pages
+[249607.0 ms] [PHASE AN TEST 3] PASS: Multi-core memory stress passed with zero leaks and int
+[249708.1 ms] act heap structures.
+[249808.9 ms] ASTRA_SMP_MEMORY_STRESS_OK
+[249909.6 ms] 
+[250010.5 ms] [PHASE AN TEST 4] Stressing scheduler synchronization across 1 CPU cores...
+[250111.6 ms]   Stress counter result: 800 / 800 expected
+[250212.7 ms] [PHASE AN TEST 4] PASS: Multi-cor
+[250314.0 ms] e synchronization and thread execution exclusivity verified.
+[250414.8 ms] ASTRA_SMP_SCHEDULER_STRESS_OK
+[250515.7 ms] 
+[250616.5 ms] [PHASE AN TEST 5] Qualifying ATA storage serialization under multi-core load...
+[250818.2 ms]   No ATA drive present; serialization spinlock verified intact.
+[250918.9 ms] [PHASE AN TEST 5] PASS: Storage concurrency and ATA hardware port serialization verified.
+[251020.3 ms] ASTRA_SMP_STORAGE_STRESS_O
+[251121.5 ms] K
+[251222.5 ms] 
+[251324.3 ms] [PHASE AN] ALL SMP MEMORY SAFETY & CONCURRENCY TESTS PASSED!
+[251425.5 ms] 
+[251526.7 ms] 
+[251627.6 ms] ==========================================================
+[251829.1 ms]  [PHASE AO] SMP CORRECTNESS PROOF, ADVERSARIAL & RECOVERY
+[251930.0 ms] ==========================================================
+[252030.8 ms] [PHASE AO TEST 1] Verifying active_cpu_mask ordering and intra-process stability...
+[252131.6 ms] [PROCESS] Process 'mask_app' (PID 68) entering Ring 3 at RIP=0x000000000040000
+[252232.6 ms] 0, RSP=0x0000700000004000
+[252333.7 ms] [NORMAL APP] Started successfully! PID=68
+[252434.8 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[252535.9 ms] [NORMAL APP] Exiting with status 0.
+[252737.9 ms] [PROCESS] Process 'mask_app' (PID 68) terminated with exit code 0
+[252838.8 ms] [PHASE AO TEST 1] PASS: Address-space activation ordering and active_cpu_mask invariants verified.
+[252939.9 ms] ASTRA_SMP_ASPACE_ACTIVATION_RACE_OK
+[253041.0 ms] 
+[253242.3 ms] [PHASE AO TEST 2] Verifying monotonic sequence TLB shootdown engine across 1 CPUs...
+[253343.5 ms]   Single CPU mode: verifying local invalidation semantics.
+[253444.4 ms] [PHASE AO TEST 2] PASS: Monotonic sequence shootdown synchronization verified.
+[253545.4 ms] ASTRA_SMP_CONCURRENT_TLB_OK
+[253747.1 ms] 
+[253848.1 ms] [PHASE AO TEST 3] Verifying stale TLB reuse prevention across CPUs...
+[253949.4 ms] [PHASE AO TEST 3] PASS: Physical frame unmapping and remap TLB coherence verified.
+[254050.3 ms] ASTRA_SMP_STALE_TLB_REUSE_OK
+[254151.3 ms] 
+[254353.2 ms] [PHASE AO TEST 4] Verifying thread dislinking and deferred reclamation safety...
+[254454.2 ms] [PROCESS] Process 'reclaim_app' (PID 69) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[254658.0 ms] [NORMAL APP] Started successfully! PID=69
+[254759.4 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[254860.5 ms] [NORMAL APP] Exiting with status 0.
+[254961.6 ms] [PROCESS] Process 'reclaim_app' (PID 69) terminated with exit code 0
+[255163.2 ms] [PROCESS] Process 'reclaim_app' (PID 70) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[255264.3 ms] [NORMAL APP] Started successfully! PID=70
+[255365.4 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[255466.4 ms] [NORMAL APP] Exiting with status 0.
+[255667.9 ms] [PROCESS] Process 'reclaim_app' (PID 70) terminated with exit code 0
+[255768.8 ms] [PROCESS] Process 'reclaim_app' (PID 71) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[255869.9 ms] [NORMAL APP] Started successfully! PID=71
+[255970.9 ms] [NORMAL APP] Computation verified
+[256072.0 ms] : sum(1..100) = 5050
+[256172.9 ms] [NORMAL APP] Exiting with status 0.
+[256273.7 ms] [PROCESS] Process 'reclaim_app' (PID 71) terminated with exit code 0
+[256374.5 ms] [PROCESS] Process 'reclaim_app' (PID 72) entering Ring 3 at RIP=0x0000000000400000, RSP=0x000070000
+[256475.4 ms] 0004000
+[256576.2 ms] [NORMAL APP] Started successfully! PID=72
+[256677.1 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[256778.2 ms] [NORMAL APP]
+[256891.3 ms]  Exiting with status 0.
+[256992.3 ms] [PROCESS] Process 'reclaim_app' (PID 72) terminated with exit code 0
+[257093.0 ms] [PROCESS] Process 'reclaim_app' (PID 73)
+[257194.1 ms]  entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[257295.1 ms] [NORMAL APP] Started successfully! PID=73
+[257395.9 ms] [NORMAL APP] Computation verified: sum(1..100) = 5050
+[257496.7 ms] [NORMAL APP] Exiting with status 0.
+[257698.2 ms] [PROCESS] Process 'reclaim_app' (PID 73) terminated with exit code 0
+[257799.2 ms] [PHASE AO TEST 4] PASS: Deferred thread reclamation, process dislinking, and zero-leak verified.
+[257900.0 ms] ASTRA_SMP_DEFERRED_RECLAIM_OK
+[258102.1 ms] 
+[258203.1 ms] [PHASE AO TEST 5] Auditing and verifying strict lock ordering hierarchy...
+[258304.3 ms] [PHASE AO TEST 5] PASS: Lock hierarchy graph verified; no cycle or inversion detected.
+[258405.5 ms] ASTRA_SMP_LOCK_ORDER_OK
+[258506.6 ms] 
+[258708.5 ms] [PHASE AO TEST 6] Verifying per-CPU data isolation and GS_BASE MSR 0xC0000101...
+[258809.4 ms] [PHASE AO TEST 6] PASS: Per-CPU structures and hardware GS_BASE base registers verified.
+[258910.5 ms] ASTRA_SMP_PERCPU_ISOLATION_OK
+[259011.3 ms] 
+[259112.4 ms] [PHASE AO TEST 7] Executing allocator & storage fault
+[259213.3 ms]  injection recovery tests...
+[259314.5 ms]   Allocator fault injection handled gracefully: returned -4 with zero corruption.
+[259415.2 ms] ASTRA_SMP_ALLOCATOR_FAULT_TEST_OK
+[259516.2 ms]   No ATA drive present; storage fault handler assertions satisfied.
+[259617.3 ms] ASTRA_SMP_STORAGE_FAULT_TEST_OK
+[259819.1 ms] 
+[259920.3 ms] [PHASE AO] ALL SMP CORRECTNESS & ADVERSARIAL TESTS PASSED!
+[260021.4 ms] 
+[260122.6 ms] ====================================================================
+[260223.8 ms]  [PHASE AP] INDEPENDENT SMP QUALIFICATION & TEST INTEGRITY AUDIT
+[260425.6 ms] ====================================================================
+[260526.7 ms] 
+[260627.4 ms] [PHASE AP TEST 1] Verifying PROCESS_DYING single-winner teardown protocol...
+[260728.7 ms] [PHASE AP TEST 1] PASS: PROCESS_DYING single-winner teardown and activation refusal verified.
+[260829.8 ms] ASTRA_AP_ASPACE_PROTOCOL_OK
+[261031.4 ms] 
+[261132.7 ms] [PHASE AP TEST 2] Verifying cross-CPU TLB invalidation protocol invariants...
+[261334.5 ms] [PHASE AP TEST 2] PASS: TLB shootdown protocol invariants and monotonic sequence verified (seq 0 -> 0).
+[261435.3 ms] ASTRA_AP_TLB_PROTOCOL_AUDIT_OK
+[261536.2 ms] 
+[261738.2 ms] [PHASE AP TEST 3] Verifying exact 0-leak physical frame reclamation accounting...
+[261839.4 ms] [PHASE AP TEST 3] PASS: Exact 0-leak physical frame reclamation verified (free frames: 123604 == 123604).
+[261940.3 ms] ASTRA_AP_FRAME_RECLAMATION_OK
+[262141.8 ms] 
+[262242.6 ms] [PHASE AP TEST 4] Verifying complete kernel lock ordering hierarchy...
+[262343.7 ms] [PHASE AP TEST 4] PASS: Multi-tier lock hierarchy verified; zero inversions and zero deadlocks.
+[262444.8 ms] ASTRA_AP_LO
+[262545.9 ms] CK_HIERARCHY_OK
+[262646.9 ms] 
+[262747.8 ms] [PHASE AP TEST 5] Auditing test harness execution mode and online CPU topology...
+[262848.9 ms]   Execution Mode: Single-Core Mode (1 CPU online)
+[262949.9 ms] [PHASE AP TEST 5] PASS: Test harness CPU topology and execution mode truthfully verified.
+[263152.0 ms] ASTRA_AP_TEST_HARNESS_INTEGRITY_OK
+[263253.0 ms] 
+[263354.0 ms] [PHASE AP TEST 6] Verifying defensive API validation and negative error injection...
+[263454.9 ms] [PHASE AP TEST 6] PASS: All negative tests safely rejected with expected error codes.
+[263555.7 ms] ASTRA_AP_NEGAT
+[263656.7 ms] IVE_TESTS_OK
+[263757.9 ms] 
+[263858.9 ms] [PHASE AP] ALL INDEPENDENT SMP QUALIFICATION & AUDIT TESTS PASSED!
+[263959.8 ms] 
+[264060.6 ms] ====================================================================
+[264262.7 ms]  [PHASE AQ] ADVERSARIAL SMP CONCURRENCY & TLB SHOOTDOWN VERIFICATION
+[264363.5 ms] ====================================================================
+[264464.6 ms] 
+[264565.5 ms] [PHASE AQ TEST 1] Verifying concurrent TLB shootdowns & monotonic sequence progression...
+[264666.4 ms] [PHASE AQ TEST 1] PASS: Monotonic sequence progression 
+[264767.4 ms] verified (seq 0 -> 0) across 5 back-to-back shootdowns.
+[264868.4 ms] ASTRA_AQ_CONCURRENT_SHOOTDOWN_OK
+[264969.6 ms] 
+[265070.4 ms] [PHASE AQ TEST 2] Executing TLB shootdown fault injection suite (delay, duplicate, offline AP, timeout)...
+[265171.3 ms]   Subtest 2A: Delayed remote ACK skipped (sing
+[265272.6 ms] le-core mode).
+[265373.7 ms]   Subtest 2B: Duplicate / stale IPI invocation safely handled without state corruption.
+[265474.6 ms]   Subtest 2C: Missing ACK fault injection skipped (single-core mode).
+[265575.4 ms] [PHASE AQ TEST 2] PASS: All TLB shootdown fault injection vectors qualified.
+[265676.5 ms] ASTRA_AQ_TLB_FAULT_INJECTION_OK
+[265878.4 ms] 
+[265979.4 ms] [PHASE AQ TEST 3] Verifying Unmap -> Shootdown -> ACK -> Free -> Reuse ordering invariant...
+[266080.4 ms] [PHASE AQ TEST 3] PASS: Complete Unmap -> Shootdown -> ACK -> Free -> Reuse ordering verified.
+[266181.5 ms] ASTRA_AQ_FRAME_REUSE_ORDERING_OK
+[266383.8 ms] 
+[266484.7 ms] [PHASE AQ TEST 4] Verifying adversarial address-space switch & dying state double-check...
+[266585.7 ms] [PHASE AQ TEST 4] PASS: Adversarial address space teardown and scheduler double-check verified.
+[266686.8 ms] ASTRA_AQ_ASPACE_ADVERSARIAL_OK
+[266787.9 ms] 
+[266989.8 ms] [PHASE AQ TEST 5] Auditing high-concurrency lock hierarchy across 100 interleaved iterations...
+[267090.9 ms] [PHASE AQ TEST 5] PASS: 100 interleaved multi-tier lock acquisitions completed with zero deadlocks.
+[267191.9 ms] ASTRA_AQ_LOCK_DEADLOCK_AUDIT_OK
+[267401.8 ms] 
+[267502.7 ms] [PHASE AQ TEST 6] Verifying test harness CPU classification & topology integrity...
+[267603.9 ms]   Topology Classification: 1 / 1 online cores verified.
+[267805.6 ms]   BSP LAPIC ID: 0, Current CPU: 0
+[267906.8 ms] [PHASE AQ TEST 6] PASS: Test harness classification verified with 100% online CPU integrity.
+[268007.7 ms] ASTRA_AQ_HARNESS_CLASSIFICATION_OK
+[268108.5 ms] 
+[268209.7 ms] [PHASE AQ] ALL ADVERSARIAL SMP CONCURRENCY & TLB SHOOTDOWN TESTS 
+[268310.7 ms] PASSED!
+[268411.9 ms] 
+[268512.7 ms] 
+[268613.9 ms] ======================================================
+[268715.2 ms]   PHASE AR: INDEPENDENT TLB PROTOCOL & SMP PROOF
+[268816.3 ms] ======================================================
+[268917.5 ms] 
+[269119.3 ms] [PHASE AR TEST 1] Verifying independent per-CPU request queues & concurrent initiators...
+[269220.3 ms]   Current CPU 0 using queue slot head=0
+[269321.5 ms]   Verified: 2 distinct shootdown requests allocated independent slots and completed (gen 0 -> 0).
+[269422.3 ms] [PHASE AR T
+[269523.3 ms] EST 1] PASS: Concurrent initiator queue isolation verified.
+[269624.2 ms] ASTRA_AR_CONCURRENT_INITIATORS_OK
+[269725.2 ms] 
+[269826.4 ms] [PHASE AR TEST 2] Verifying delayed old IPI request lifetime safety...
+[269927.2 ms]   Single-core mode: Delayed IPI lifetime verified by definition.
+[270129.1 ms] [PHASE AR TEST 2] PASS: Delayed old IPI request lifetime safety verified.
+[270230.2 ms] ASTRA_AR_DELAYED_IPI_LIFETIME_OK
+[270331.0 ms] 
+[270431.7 ms] [PHASE AR TEST 3] Verifying stale and duplicate ACK rejection...
+[270532.5 ms]   Verified: 5 duplicate IPI invocations safely ignored with zero spurious ACKs.
+[270734.8 ms] [PHASE AR TEST 3] PASS: Stale and duplicate ACK rejection verified.
+[270835.8 ms] ASTRA_AR_STALE_ACK_REJECTION_OK
+[270936.9 ms] 
+[271037.7 ms] [PHASE AR TEST 4] Verifying physical frame retention on shootdown timeout...
+[271239.5 ms] [PHASE AR TEST 4] PASS: Physical frame retention on shootdown timeout qualified.
+[271340.5 ms] ASTRA_AR_TIMEOUT_FRAME_RETENTION_OK
+[271441.1 ms] 
+[271542.2 ms] [PHASE AR TEST 5] Verifying caller error handling and defensive rejection...
+[271743.7 ms]   Verified: Defensive checks properly reject bad inputs without corruption.
+[271845.0 ms] [PHASE AR TEST 5] PASS: All caller error handling vectors verified.
+[271945.8 ms] ASTRA_AR_UNMAP_CALLER_SAFETY_OK
+[272046.7 ms] 
+[272147.5 ms] [PHASE AR TEST 
+[272248.4 ms] 6] Verifying end-to-end memory reclamation lifecycle across 5 cycles...
+[272349.0 ms]   Verified: 5 cycles completed with exact 0 physical frame delta (free_pages=123604).
+[272450.0 ms] [PHASE AR TEST 6] PASS: End-to-end memory reclamation proof complete.
+[272550.8 ms] ASTRA_AR_END_TO_END_PROOF_OK
+[272651.9 ms] 
+[272853.6 ms] [PHASE AR] ALL INDEPENDENT TLB PROTOCOL & SMP PROOF TESTS QUALIFIED!
+[272954.6 ms] 
+[273055.7 ms] 
+[273156.8 ms] ==================================================
+[273257.6 ms]  [PHASE AS] TLB Queue Lifecycle & Failure Recovery
+[273358.4 ms] ==================================================
+[273459.3 ms] 
+[273660.9 ms] [PHASE AS TEST 1] Verifying per-CPU queue lifecycle, wraparound and full detection...
+[273761.8 ms]   Verified: Queue-full detected without slot corruption.
+[273862.7 ms]   Verified: Retired slot 2 successfully reclaimed by allocator.
+[273963.7 ms]   Verified: Head pointer modular wraparound preserves index integrity (head=2).
+[274064.9 ms] [PHASE AS TEST 1] PASS: Per-CPU queue lifecycle and wraparound qualified.
+[274166.0 ms] ASTRA_AS_
+[274267.9 ms] QUEUE_LIFECYCLE_OK
+[274369.0 ms] 
+[274469.9 ms] [PHASE AS TEST 2] Verifying generation identity and ACK atomicity...
+[274570.9 ms]   Single-core mode: simulated generation identity verification.
+[274672.0 ms]   Verified: Monotonic 64-bit sequence counter verified (seq=0 -> 1).
+[274773.1 ms] [PHASE AS TEST 2] PASS: Generation and ACK atomicity qualified.
+[274974.7 ms] ASTRA_AS_GENERATION_ACK_ATOMICS_OK
+[275075.9 ms] 
+[275176.6 ms] [PHASE AS TEST 3] Verifying timed-out slot retention, delayed drainage and reclamation...
+[275277.4 ms]   Single-core mode: simulated timeout drainage verification.
+[275479.1 ms] [PHASE AS TEST 3] PASS: Timed-out slot lifecycle and delayed drainage qualified.
+[275580.1 ms] ASTRA_AS_TIMEDOUT_SLOT_DRAIN_OK
+[275681.5 ms] 
+[275782.5 ms] [PHASE AS TEST 4] Verifying re-entrant lock-free request servicing during sender wait...
+[275984.3 ms]   Verified: In-flight request servicing executed safely while holding queue lock (zero deadlocks).
+[276085.2 ms] [PHASE AS TEST 4] PASS: Re-entrant request servicing verified deadlock-free.
+[276186.2 ms] ASTRA_AS_REENTRANT_SERVICING_OK
+[276287.4 ms] 
+[276489.4 ms] [PHASE AS TEST 5] Verifying PTE_TRANSITION protection and rollback vs concurrent modification...
+[276590.4 ms] [PHASE AS TEST 5] PASS: Leaf PTE rollback and concurrent modification immunity qualified.
+[276691.5 ms] ASTRA_AS_PTE_ROLLBACK_CONCURRENCY_OK
+[276792.7 ms] 
+[276893.7 ms] [PHASE AS TEST 6] Verifying end-to-end fa
+[276994.4 ms] ilure injection, frame retention and recovery across 3 cycles...
+[277095.2 ms]   Verified: 3 failure injection cycles completed with exact zero physical frame delta (free_pages=123604).
+[277196.0 ms] [PHASE AS TEST 6] PASS: End-to-end failure injection qualification complete.
+[277296.8 ms] ASTRA_AS_END_TO_END_FAILURE_QUAL_OK
+[277498.6 ms] 
+[277599.6 ms] [PHASE AS] ALL TLB QUEUE LIFECYCLE & FAILURE RECOVERY TESTS QUALIFIED!
+[277801.8 ms] 
+[277902.8 ms] 
+[278003.9 ms] ==================================================
+[278105.1 ms]  [PHASE AT] SMP Memory Model & Handler Lifetime
+[278206.0 ms] ==================================================
+[278307.2 ms] 
+[278509.0 ms] [PHASE AT TEST 1] Verifying shared memory model atomics and zero data race qualification...
+[278609.8 ms]   Verified: Shared slot state transitions operate strictly via atomic builtins with full memory barriers.
+[278711.1 ms] [PHASE AT TEST 1] PASS: Memory model atomicity and race freedom qualified.
+[278812.3 ms] ASTRA_AT_MEMORY_M
+[278913.5 ms] ODEL_ATOMICS_OK
+[279014.5 ms] 
+[279115.6 ms] [PHASE AT TEST 2] Verifying in-flight reader tracking and premature reuse prevention...
+[279216.8 ms]   Verified: Slot 1 protected from allocator reclamation while in_flight_mask is non-zero.
+[279317.4 ms]   Verified: Slot 1 successfully reclaimed immediately upon in-flight reader departur
+[279418.4 ms] e.
+[279519.4 ms] [PHASE AT TEST 2] PASS: In-flight reader lifetime and reuse protection qualified.
+[279620.3 ms] ASTRA_AT_REMOTE_HANDLER_LIFETIME_OK
+[279737.6 ms] 
+[279838.6 ms] [PHASE AT TEST 3] Verifying d
+[279940.0 ms] ouble-generation verification and stale ACK rejection...
+[280040.9 ms]   Single-core mode: simulated double-generation verification.
+[280141.9 ms] [PHASE AT TEST 3] PASS: Double-generation verification and stale ACK immunity qualified.
+[280242.9 ms] ASTRA_AT_DOUBLE_GEN_VERIFY_OK
+[280444.8 ms] 
+[280546.0 ms] [PHASE AT TEST 4] Verifying lock-free servicing re-entrancy and deadlock freedom...
+[280647.1 ms]   Verified: Lock-free service executed under nested caller contexts with zero deadlock.
+[280748.1 ms] [PHASE AT TEST 4] PASS: Re-entrant
+[280849.0 ms]  lock-free servicing invariance qualified.
+[280949.8 ms] ASTRA_AT_LOCKFREE_SERVICING_OK
+[281051.0 ms] 
+[281152.2 ms] [PHASE AT TEST 5] Verifying PTE_TRANSITION fault containment and concurrent isolation...
+[281253.2 ms] [PHASE AT TEST 5] PASS: PTE_TRANSITION page fault 
+[281354.1 ms] containment and isolation qualified.
+[281455.2 ms] ASTRA_AT_PTE_TRANSITION_ISOLATION_OK
+[281556.2 ms] 
+[281657.5 ms] [PHASE AT TEST 6] Verifying end-to-end memory model stress and zero frame leak recovery across 3 cycles...
+[281758.2 ms]   Verified: 3 memory model stress cycles completed with exact zero physical frame delta (free_pages=123604).
+[281960.0 ms] [PHASE AT TEST 6] PASS: End-to-end memory model stress and recovery complete.
+[282061.0 ms] ASTRA_AT_END_TO_END_MEM_MODEL_OK
+[282162.1 ms] 
+[282263.2 ms] [PHASE AT] ALL SMP MEMORY MODEL & HANDLER LIF
+[282364.3 ms] ETIME TESTS QUALIFIED!
+[282465.6 ms] 
+[282566.2 ms] 
+[282667.1 ms] ==================================================
+[282768.3 ms]  [PHASE AU] Atomic Reader Registration and Slot Safety
+[282869.3 ms] ==================================================
+[283071.4 ms] 
+[283172.2 ms] [PHASE AU TEST A] Verifying reader pause before registration and clean rollback...
+[283273.1 ms]   Verified: Reader paused before registration observed RETIRED state and aborted with clean in_flight rollback.
+[283374.0 ms] [PHASE AU TEST A] PASS: Reader pause before registration qualified.
+[283576.0 ms] ASTRA_AU_READER_PAUSE_BEFORE_REG_OK
+[283677.2 ms] 
+[283778.1 ms] [PHASE AU TEST B] Verifying reader registration blocks sender reclamation until reader exit...
+[283879.1 ms]   Verified: Sender deferred reclamation while remote reader held in_flight_mask.
+[284081.6 ms]   Verified: Sender successfully reclaimed slot 2 immediately after reader cleared in_flight_mask.
+[284182.7 ms] [PHASE AU TEST B] PASS: Reader registration before retirement qualified.
+[284283.5 ms] ASTRA_AU_READER_REG_BEFORE_RETIRE_OK
+[284485.3 ms] 
+[284586.4 ms] [PHASE AU TEST C] Verifying retirement vs registration race mutual exclusion...
+[284687.4 ms]   Verified: 100 race iterations proved binary mutual exclusion (reader_first=50, sender_first=50, errors=0).
+[284788.2 ms] [PHASE AU TEST C] PASS: Retirement vs registration race qualified.
+[284889.3 ms] ASTRA_AU_RETIRE_RACE_REGISTRATION_OK
+[285091.4 ms] 
+[285192.6 ms] [PHASE AU TEST D] Verifying delayed IPI after timeout drains cleanly without corruption...
+[285293.8 ms]   Single-core mode: simulated delayed IPI drain verified.
+[285394.9 ms] [PHASE AU TEST D] PASS: Delayed IPI after timeout qualified.
+[285596.8 ms] ASTRA_AU_DELAYED_IPI_TIMEOUT_DRAIN_OK
+[285698.0 ms] 
+[285798.9 ms] [PHASE AU TEST E] Verifying slot reuse stress across 16 sequential shootdown cycles...
+[285899.8 ms]   Verified: 16 sequential shootdown cycles completed with 100% generational fidelity and zero in_flight leaks.
+[286000.5 ms] [PHASE AU TEST E] PASS: Slot reuse stress qualified.
+[286202.5 ms] ASTRA_AU_SLOT_REUSE_STRESS_OK
+[286303.4 ms] 
+[286404.2 ms] [PHASE AU TEST F] Verifying queue exhaustion rejection and dynamic recovery...
+[286505.0 ms]   Verified: Candidate scan cleanly detected queue exhaustion across all 4 slots.
+[286605.9 ms]   Verified: Candidate scan immediately recovered freed
+[286707.1 ms]  slot 3.
+[286808.2 ms] [PHASE AU TEST F] PASS: Queue exhaustion and dynamic recovery qualified.
+[286909.0 ms] ASTRA_AU_QUEUE_EXHAUSTION_OK
+[287010.0 ms] 
+[287111.1 ms] [PHASE AU] ALL ATOM
+[287212.4 ms] IC READER REGISTRATION & RACE-FREEDOM TESTS QUALIFIED!
+[287313.5 ms] 
+[287414.4 ms] 
+[287515.6 ms] ==================================================
+[287717.7 ms]  [PHASE AV] SMP Memory Model & Slot Reclamation Proof
+[287818.8 ms] ==================================================
+[287937.5 ms] 
+[288038.5 ms] [PHASE AV TEST A] Verifying reader registration vs sender retirement race...
+[288240.7 ms]   Verified: Reader paused before registration detected closed slot and cleanly aborted.
+[288341.9 ms] [PHASE AV TEST A] PASS: Registration vs retirement qualified.
+[288443.0 ms] ASTRA_AV_REG_VS_RETIRE_OK
+[288544.3 ms] 
+[288745.9 ms] [PHASE AV TEST B] Verifying registered reader blocks sender reclamation until exit...
+[288847.0 ms]   Verified: Sender candidate scanner was strictly blocked while in_flight_mask was active.
+[288947.8 ms]   Verified: Se
+[289052.7 ms] nder reclaimed slot 1 immediately upon reader exit.
+[289153.8 ms] [PHASE AV TEST B] PASS: Registered reader blocks reclamation qualified.
+[289355.8 ms] ASTRA_AV_READER_BLOCKS_REUSE_OK
+[289457.0 ms] 
+[289558.2 ms] [PHASE AV TEST C] Verifying simultaneous registration and retirement binary mutual exclusion...
+[289760.2 ms]   Verified: 100 simultaneous race iterations resolved with strict binary mutual exclusion (reader_wins=50, sender_wins=50).
+[289861.2 ms] [PHASE AV TEST C] PASS: Simultaneous race mutual exclusion qualified.
+[289962.0 ms] ASTRA_AV_SIMULTANEOUS_RACE_OK
+[290062.9 ms] 
+[290164.0 ms] [PHASE AV TE
+[290265.4 ms] ST D] Verifying generation ABA protection and stale generation rejection...
+[290366.5 ms]   Verified: Stale generation reader detected generation mismatch (206 != 205) and suppressed ACK.
+[290468.1 ms] [PHASE AV TEST D] PASS: Generation ABA protection qualified.
+[290569.2 ms] ASTRA_AV_GENERATION_ABA_OK
+[290771.4 ms] 
+[290872.6 ms] [PHASE AV TEST E] Verifying delayed IPI after timeout and dynamic retirement...
+[290973.8 ms]   Single-core mode: simulated delayed IPI drain verified.
+[291074.9 ms] [PHASE AV TEST E] PASS: Delayed IPI after timeout qualified.
+[291175.7 ms] ASTRA_AV_DELAYED_IPI_TIMEO
+[291276.6 ms] UT_OK
+[291377.8 ms] 
+[291478.5 ms] [PHASE AV TEST F] Verifying concurrent senders across isolated per-CPU queues...
+[291579.7 ms]   Verified: All CPU queues operate with strict per-core lock isolation and zero overlapping allocations.
+[291680.5 ms] [PHASE AV TEST F] PASS: Concurrent senders qualified.
+[291882.5 ms] ASTRA_AV_CONCURRENT_SENDERS_OK
+[291983.6 ms] 
+[292084.4 ms] [PHASE AV TEST G] Verifying queue exhaustion rejection and dynamic recovery...
+[292185.0 ms]   Verified: Queue exhaustion detected cleanly across all 4 slots.
+[292386.8 ms]   Verified: Candidate scanner immediately recovered freed slot 0.
+[292487.9 ms] [PHASE AV TEST G] PASS: Queue exhaustion and recovery qualified.
+[292588.7 ms] ASTRA_AV_QUEUE_EXHAUSTION_OK
+[292689.5 ms] 
+[292790.3 ms] [PHASE AV] ALL SMP MEMORY
+[292891.6 ms]  MODEL & SLOT RECLAMATION TESTS QUALIFIED!
+[292992.9 ms] 
+[293093.9 ms] 
+[293194.9 ms] ==================================================
+[293295.8 ms]  [PHASE AW] Kernel Security & Vulnerability Hardening
+[293498.1 ms] ==================================================
+[293599.1 ms] 
+[293700.2 ms] [PHASE AW TEST 1] Verifying sys_munmap integer overflow and canonical bounds defense...
+[293902.0 ms]   Verified: sys_munmap strictly rejects NULL, zero-length, integer overflow, and out-of-bounds lengths.
+[294004.6 ms] [PHASE AW TEST 1] PASS: sys_munmap overflow and bounds defense qualified.
+[294206.5 ms] ASTRA_AW_MUNMAP_OVERFLOW_DEFENSE_OK
+[294307.4 ms] 
+[294408.2 ms] [PHASE AW TEST 2] Verifying kernel file descriptor cross-privilege access defense...
+[294610.0 ms]   Verified: User process (PID 999) strictly barred from accessing kernel-owned fd (owner=0).
+[294711.2 ms] [PHASE AW TEST 2] PASS: File descriptor cross-privilege defense qualified.
+[294812.3 ms] ASTRA_AW_FD_CROSS_PRIV_DEFENSE_OK
+[294913.3 ms] 
+[295014.1 ms] [PHASE AW TEST 3] Verifying window manager cross-privilege hijacking defense...
+[295216.2 ms]   Verified: User process (PID 888) strictly barred from manipulating system window (owner=0).
+[295317.4 ms] [PHASE AW TEST 3] PASS: GUI window manager cross-privilege defense qualified.
+[295418.3 ms] ASTRA_AW_GUI_CROSS_PRIV_DEFENSE_OK
+[295519.2 ms] 
+[295720.8 ms] [PHASE AW TEST 4] Verifying sys_net_fetch parameter bounds and error safety...
+[295822.1 ms]   Verified: sys_net_fetch validates buffer lengths, null pointers, enforces -EFAULT on kernel pointers, and rejects malformed UR
+[295923.3 ms] Ls.
+[296024.0 ms] [PHASE AW TEST 4] PASS: sys_net_fetch buffer safety and synchronization qualified.
+[296226.0 ms] ASTRA_AW_NET_FETCH_CONCURRENCY_OK
+[296326.9 ms] 
+[296427.8 ms] [PHASE AW TEST 5] Verifying TCP socket ownership isolation and process exit cleanup...
+[296528.9 ms]   Verified: Foreign process rejected (-EBADF) and process exit cleanly reclaimed socket.
+[296730.8 ms] [PHASE AW TEST 5] PASS: TCP socket ownership isolation and cleanup qualified.
+[296831.8 ms] ASTRA_AW_SOCKET_OWNER_CLEANUP_OK
+[296933.0 ms] 
+[297034.2 ms] [PHASE AW TEST 6] Verifying IPv4 packet length underflow defense...
+[297135.0 ms]   Verified: Malformed IPv4 packet (total_len < ihl) safely dropped without underflow.
+[297337.2 ms] [PHASE AW TEST 6] PASS: IPv4 underflow defense qualified.
+[297438.3 ms] ASTRA_AW_IPV4_UNDERFLOW_DEFENSE_OK
+[297539.3 ms] 
+[297640.1 ms] [PHASE AW TEST 7] Verifying ARP packet header size validation defense...
+[297741.0 ms]   Verified: Malform
+[297842.3 ms] ed ARP packets (hw_size!=6 or proto_size!=4) safely rejected.
+[297943.3 ms] [PHASE AW TEST 7] PASS: ARP size validation defense qualified.
+[298044.2 ms] ASTRA_AW_ARP_SIZE_VALIDATION_OK
+[298145.2 ms] 
+[298346.7 ms] [PHASE AW TEST 8] Verifying VFS path traversal and control character injection defense...
+[298447.5 ms]   Verified: Path traversal and ASCII control character injections strictly rejected with VFS_ERR_INVALID_PATH.
+[298548.5 ms] [PHASE AW TEST 8] PASS: VFS path security defense qualified.
+[298649.4 ms] ASTRA_AW_PATH_SECURI
+[298750.4 ms] TY_DEFENSE_OK
+[298851.2 ms] 
+[298952.3 ms] [PHASE AW] ALL KERNEL SECURITY AUDIT & HARDENING TESTS QUALIFIED!
+[299053.3 ms] 
+[299154.3 ms] 
+[299255.3 ms] [BOOT] Initializing Phase AE/AF AstraFS Persistent 
+[299355.9 ms] Filesystem...
+[299456.8 ms] [WARN] Persistent data disk 'hd1' not found or read-only. Operating with volatile storage only.
+[299557.6 ms] 
+[299658.5 ms] ==================================================
+[299759.5 ms]  [PHASE AX] Storage Integrity & Crash Recovery Qualification
+[299860.4 ms] ==================================================
+[300062.6 ms] 
+[300163.3 ms] [PHASE AX TEST 1] Verifying block device boundary, integer overflow & write-protection...
+[300264.4 ms]   Verified: NULL checks, 0-count I/O, integer overflow, out-of-bounds, and boot media write protection.
+[300365.4 ms] [PHASE AX TEST 1] PASS: Block device bounds and protection qualified.
+[300466.5 ms] ASTRA_AX_BLOCK_BOUNDS_OK
+[300668.4 ms] 
+[300769.2 ms] [PHASE AX TEST 2] Verifying superblock, inode & bitmap metadata consistency validation...
+[300870.4 ms]   Verified: Superblock magic, version, Fletcher-32, extent bounds, overlap, and bitmap cross-checks.
+[300971.5 ms] [PHASE AX TEST 2] PASS: Metadata consistency and defensive validation qualified.
+[301173.5 ms] ASTRA_AX_METADATA_INTEGRITY_OK
+[301274.7 ms] 
+[301375.8 ms] [PHASE AX TEST 3] Verifying crash consistency, dual-set commit, and recovery...
+[301476.9 ms]   Verified: Dual-set alternating commit and transaction crash recovery semantics.
+[301577.7 ms] [PHASE AX TEST 3] PASS: Crash consistency and dual-set recovery qualified.
+[301779.4 ms] ASTRA_AX_CRASH_RECOVERY_OK
+[301880.1 ms] 
+[301981.0 ms] [PHASE AX TEST 4] Verifying pre-commit flush, ATA synchronization, and error propagation...
+[302082.1 ms]   Verified: Hardware ATA flush, filesystem sync, and fd bounds propagation.
+[302197.9 ms] [PHASE AX TEST 4] PASS: Pre-commit flush and cache s
+[302299.0 ms] ynchronization qualified.
+[302399.8 ms] ASTRA_AX_PRECOMMIT_FLUSH_OK
+[302501.0 ms] 
+[302601.9 ms] [PHASE AX TEST 5] Verifying atomic file replacement & open file descriptor preservation...
+[302702.9 ms]   Verified: Atomic replacement, old extent cleanup, and open file descriptor preservation.
+[302905.0 ms] [PHASE AX TEST 5] PASS: Atomic file replacement and fd preservation qualified.
+[303006.2 ms] ASTRA_AX_RENAME_FD_PRESERVATION_OK
+[303107.2 ms] 
+[303208.3 ms] [PHASE AX TEST 6] Verifying multi-worker concurrent allocation, write & lock ordering...
+[303309.0 ms]   Verified: Concurrent worker th
+[303410.2 ms] read synchronization, acyclic lock hierarchy (L2->L5), and zero leaked blocks.
+[303511.2 ms] [PHASE AX TEST 6] PASS: Concurrent storage operations & lock ordering qualified.
+[303612.4 ms] ASTRA_AX_CONCURRENT_LIFECYCLE_OK
+[303713.5 ms] 
+[303814.4 ms] [PHASE AX] ALL STORAGE INTEGRITY & CRASH RECOVERY TESTS QUALIFIED!
+[304016.5 ms] 
+[304117.4 ms] ================================================================================
+[304218.4 ms] [PHASE AY QUALIFICATION] Starting Boot Reliability & Hardware Tests...
+[304319.3 ms] ================================================================================
+[304521.0 ms] 
+[304621.8 ms] [PHASE AY TEST 1] Verifying UEFI boot information & memory map invariants...
+[304722.5 ms]   Verified: Limine protocol v3 handshake, valid memory map (32 entries), HHDM (0xffff800000000000), kernel base.
+[304823.3 ms] [PHASE AY TEST 1] PASS: UEFI boot info and memory map qualified.
+[305025.1 ms] ASTRA_AY_UEFI_BOOT_INFO_OK
+[305125.9 ms] 
+[305227.1 ms] [PHASE AY TEST 2] Verifying hardware timer & APIC interrupt delivery...
+[305544.8 ms]   Verified: Local APIC timer active, IF=1, delivered 10 monotonic ticks.
+[305645.6 ms] [PHASE AY TEST 2] PASS: Hardware timer & interrupt delivery qualified.
+[305746.6 ms] ASTRA_AY_HARDWARE_TIMER_OK
+[305847.5 ms] 
+[306049.5 ms] [PHASE AY TEST 3] Verifying storage discovery & controller fallback safety...
+[306150.7 ms]   Verified: Storage discovery discovered 0 drives; safe NULL on non-existent devices.
+[306251.7 ms] [PHASE AY TEST 3] PASS: Storage discovery & fallback safety qualified.
+[306352.7 ms] ASTRA_AY_STORAGE_DISCOVERY_OK
+[306555.0 ms] 
+[306655.8 ms] [PHASE AY TEST 4] Verifying CPU topology & per-CPU data isolation...
+[306756.7 ms]   Verified: 1 active CPU(s), current CPU 0 online, GS_BASE per-CPU data isolated.
+[306857.8 ms] [PHASE AY TEST 4] PASS: CPU topology and per-CPU isolation qualified.
+[307059.6 ms] ASTRA_AY_CPU_TOPOLOGY_OK
+[307160.7 ms] 
+[307261.5 ms] [PHASE AY TEST 5] Verifying boot media write-protection & live hierarchy...
+[307362.2 ms]   Verified: Boot media write-protection and live root filesystem verified.
+[307462.9 ms] [PHASE AY TEST 5] PASS: Boot media wr
+[307563.9 ms] ite-protection qualified.
+[307664.6 ms] ASTRA_AY_BOOT_MEDIA_PROTECTION_OK
+[307765.5 ms] 
+[307967.3 ms] [PHASE AY TEST 6] Verifying subsystem failure containment & diagnostic integrity...
+[308068.0 ms]   Verified: Boundary error traps return well-defined error codes without undefined behavior.
+[308168.9 ms] [PHASE AY TEST 6] PASS: Subsystem failure containment qualified.
+[308269.8 ms] ASTRA_AY_SUBSYSTEM_CONTAINMENT_OK
+[308370.7 ms] 
+[308471.6 ms] [PHASE AY] ALL BOOT RELIABILITY & H
+[308572.8 ms] ARDWARE TESTS QUALIFIED!
+[308674.0 ms] 
+[308774.9 ms] 
+[308876.1 ms] [BOOT] Initializing Phase L Cryptography, Hardware Entropy & TLS 1.3...
+[308977.3 ms] [RTC] System RTC clock initialized: 2026-11-03 13:21:47 UTC
+[309179.1 ms] 
+[309280.1 ms] =======================================================
+[309380.8 ms]         AstraOS Phas
+[309481.7 ms] e L: Cryptographic Subsystem Tests 
+[309582.7 ms] =======================================================
+[309784.4 ms] [CRYPTO TEST] 1. Testing SHA-256 (FIPS 180-4 'abc')...
+[309885.4 ms]   PASS: SHA-256 known-answer vector verified.
+[310087.0 ms] [CRYPTO TEST] 2. Testing HMAC-SHA256 (RFC 4231 TC1)...
+[310288.6 ms]   PASS: HMAC-SHA256 known-answer vector verified.
+[310389.3 ms] [CRYPTO TEST] 3. Testing HKDF-SHA256 Extract & Expand (RFC 5869)...
+[310591.3 ms]   PASS: HKDF Extract & Expand vectors verified.
+[310692.4 ms] [CRYPTO TEST] 4. Testing ChaCha20-Poly1305 AEAD (RFC 8439)...
+[310793.2 ms]   PASS: ChaCha20-Poly1305 AEAD encrypt/decrypt 
+[310894.2 ms] & tamper rejection verified.
+[310995.3 ms] [CRYPTO TEST] 5. Testing X25519 Montgomery Curve (RFC 7748)...
+[311096.6 ms]   PASS: X25519 Diffie-Hellman key exchange verified.
+[311197.6 ms] [CRYPTO TEST] 6. Testing X.509 Certificate Parsing & Signature Verification...
+[311399.3 ms]   PASS: Real OpenSSL X.509 DER certs, SANs, RSA signatures & negative rejection verified.
+[311601.5 ms] ASTRA_TLS_CERT_VALIDATION_OK
+[311702.5 ms] 
+[311803.4 ms] [CRYPTO TEST] All Cryptographic Subsystem tests passed successfully!
+[311904.2 ms] [TLS TEST] Running TLS 1.3 Protocol Engine Self-Test...
+[312005.2 ms]   PASS: TLS session initialization and parameter bounds verified.
+[312106.0 ms] 
+[312307.9 ms] [BOOT] Initializing Phase K AstraBrowser Native Graphical Web Browser...
+[312408.9 ms] 
+[312510.1 ms] =======================================================
+[312610.9 ms]         AstraOS Phase K: AstraBrowser Subsystem Tests  
+[312711.7 ms] ==============
+[312812.7 ms] =========================================
+[312913.8 ms] [BROWSER TEST] 1. Testing URL Parsing (HTTP, File, HTTPS rejection)...
+[313014.8 ms]   PASS: URL parser bounds, schemes (http, file, https:443) verified.
+[313116.1 ms] [BROWSER TEST] 1B. Testing URL Resolution & History Stack Integrity...
+[313217.2 ms]   PASS: URL resolution (relative, parent, fragment
+[313318.0 ms] ) and history stack integrity verified.
+[313419.2 ms] [BROWSER TEST] 1C. Testing Boundary Limits & Stress Recovery...
+[313520.4 ms]   PASS: Boundary limits, history stress (50x), and nested parser robustness verified.
+[313621.6 ms] [BROWSER TEST] 1D. Testing Browser Tab Bounds, Bookmarks & Serialization Header...
+[313722.6 ms]   PASS: Tab bounds (4 tabs max), bookmark bounds (32 max), and binary serialization header verified.
+[313823.9 ms] [CSS TEST] Running Bounded CSS Engine Self-Test Suite...
+[314026.2 ms] [CSS TEST] 1. Testing Color Parsing (hex, short-hex, named)...
+[314127.0 ms]   PASS: Hex and named colors parsed accurately.
+[314227.7 ms] [CSS TEST] 2. Testing Stylesheet Parsing & Selectors...
+[314328.6 ms]   PASS: Stylesheet rules parsed (5 rules detected).
+[314530.3 ms] ASTRA_CSS_PARSER_OK
+[314631.2 ms] [CSS TEST] 3. Testing Cascade, Specificity & Inline Styles...
+[314732.2 ms]   PASS: Cascade & Specificity verified: Tag < Class < ID < Inline.
+[314833.1 ms] ASTRA_CSS_CASCADE_OK
+[314934.2 ms] [CSS TEST] 4. Testing Malformed CSS Resilience & Bounda
+[315035.3 ms] ry Limits...
+[315136.2 ms]   PASS: Malformed CSS handled cleanly without crash or infinite loop.
+[315237.0 ms] [BROWSER TEST] 2. Testing HTML Tokenizer, CSS Extraction & Entity Decoder...
+[315337.9 ms]   PASS: HTML tokenizer, entity decoder, CSS extraction, and malformed input recovery verified.
+[315439.0 ms] [BROWSER TEST] 3. Testing CSS Box Model Layout, Alignment
+[315540.2 ms]  & Link Hitboxes...
+[315640.9 ms]   PASS: CSS Layout Engine, box model, margins/padding, and line wrapping verified.
+[315742.1 ms] ASTRA_CSS_LAYOUT_OK
+[315843.0 ms] [BROWSER TEST] 4. Testing Local VFS Page Navigation and Render Cycle...
+[315944.2 ms]   PASS: Local VFS HTML page successfully parsed, styled, and laid out.
+[316146.1 ms] ASTRA_BROWSER_RENDER_OK
+[316247.0 ms] 
+[316347.6 ms] [BROWSER TEST] 5. Testing HTTP Client Protocol Integration...
+[362254.4 ms]   PASS: HTTP GET formatting, status/header validation, and body extraction verified.
+[362357.7 ms] ASTRA_BROWSER_HTTP_OK
+[362559.6 ms] 
+[362660.7 ms] [BROWSER TEST] All AstraBrowser tests passed successfully!
+[362762.0 ms] 
+[362862.8 ms] =======================================================
+[363064.7 ms]   AstraOS Phase O: User-Space Browser & Memory Tests   
+[363165.6 ms] =======================================================
+[363266.6 ms] [PHASE O TEST 1] Verifying sys_mmap and sys_munmap parameter validation...
+[363367.7 ms] [PHASE O TEST 1] PASS: Memory allocation boundaries and pointer security verified.
+[363569.5 ms] ASTRA_MMAP_VALIDATION_OK
+[363670.7 ms] 
+[363771.9 ms] [PHASE O TEST 2] Launching User-Space AstraBrowser '/bin/browser.elf'...
+[363873.0 ms] [PHASE O TEST 2] Process 'user_browser' (PID 74, CR3 0x57d000) active. Entering scheduler loop...
+[363974.1 ms] [PR
+[364075.1 ms] OCESS] Process 'user_browser' (PID 74) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[364176.0 ms] [USER BROWSER] AstraBrowser initializing in Ring 3...
+[364277.2 ms] ASTRA_USER_MMAP_OK
+[364479.3 ms] ASTRA_BROWSER_IMAGE_OK
+[364580.5 ms] ASTRA_BROWSER_EXT_CSS_OK
+[364681.5 ms] ASTRA_BROWSER_FORMS_OK
+[364782.7 ms] ASTRA_BROWSER_NAV_OK
+[364883.9 ms] ASTRA_BROWSER_SCROLL_OK
+[365085.6 ms] ASTRA_JS_FEASIBILITY_OK
+[365186.6 ms] ASTRA_JS_RUNTIME_OK
+[365287.4 ms] ASTRA_JS_ISOLATION_OK
+[365388.6 ms] ASTRA_JS_HARDENING_OK
+[365489.8 ms] ASTRA_DOM_BRIDGE_OK
+[365691.6 ms] ASTRA_DOM_EVENTS_OK
+[365792.6 ms] ASTRA_BROWSER_INTERACTIVE_OK
+[365893.6 ms] ASTRA_JS_ADVERSARIAL_OK
+[365994.7 ms] ASTRA_BROWSER_SECURITY_OK
+[366095.8 ms] ASTRA_BROWSER_NET_ISOLATION_OK
+[410592.3 ms] ASTRA_BROWSER_HTTP_HARDENING_OK
+[410794.0 ms] ASTRA_BROWSER_UX_OK
+[410895.0 ms] ASTRA_BROWSER_RELIABILITY_OK
+[410996.0 ms] ASTRA_BROWSER_TABS_BOOKMARKS_OK
+[411096.8 ms] ASTRA_BROWSER_BOOKMARKS_COLD_REBOOT_OK
+[411298.9 ms] ASTRA_USER_BROWSER_OK
+[415029.6 ms] [USER BROWSER] Clean exit with status 0.
+[415130.4 ms] [PROCESS] Process 'user_browser' (PID 74) terminated with exit code 0
+[415332.1 ms] [PHASE O TEST 2] PASS: User-space AstraBrowser ran at CPL 3, parsed HTML/CSS, allocated memory via mmap, and cleanly exited!
+[415432.9 ms] ASTRA_USER_BROWSER_EXEC_OK
+[415534.0 ms] 
+[415635.1 ms] [PHASE O TEST 3] Testing user mmap fault containment & resource reclamation...
+[415736.1 ms] [PROCESS] Process 'mmap_fault_proc' (PID 75) entering Ring 3 at RIP=0x0000000000400000, RSP=0x0000700000004000
+[415837.3 ms] 
+[416039.1 ms] =================== [ CPU EXCEPTION ] ===================
+[416140.0 ms] Vector:     14 (Page Fault)
+[416241.3 ms] Error Code: 0x0000000000000004
+[416341.9 ms] RIP:        0x0000000000400037  CS:     0x0023
+[416442.9 ms] RFLAGS:     0x0000000000010206  RSP:    0x0000700000004000  SS: 0x001b
+[416544.1 ms] RAX: 0x0000000040000000  RBX: 0x0000000000000000  RCX: 0xffffffff80400000
+[416644.8 ms] RDX: 0x0000000000000003  RSI: 0x0000000000002000  RDI: 0x0000000000000
+[416745.8 ms] 000
+[416846.6 ms] RBP: 0x0000000000000000  R8:  0x0000000000000000  R9:  0x0000000000000000
+[416947.7 ms] R10: 0x0000000000000022  R11: 0x0000000000000000  R12: 0x0000000000000000
+[417049.0 ms] CR2 (Fault Addr): 0xffffffff80400000
+[417150.1 ms] PF Flags:         Present=0, Write=0, User=1, Rsvd=0, Fetch=0
+[417352.2 ms] 
+[417453.0 ms] [PROCESS] User process 'mmap_fault_proc' (PID 75) fault caught at RIP=0x0000000000400037, Vector=14, CR2=0xffffffff80400000
+[417553.9 ms] [PROCESS] Process 'mmap_fault_proc' (PID 75) terminated with exit code -11
+[417654.9 ms] [PHASE O TEST 3] PASS: Mmap fault caught, supervisor access blocked, and resources reclaimed!
+[417755.7 ms] ASTRA_BROWSER_ISOLATI
+[417856.4 ms] ON_OK
+[417957.6 ms] 
+[418058.7 ms] 
+[418159.7 ms] AstraOS Kernel Monitor (COM1 Serial)

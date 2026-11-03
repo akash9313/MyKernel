@@ -9,6 +9,20 @@
 #define GDT_USER_CODE_SEG   0x20
 #define GDT_TSS_SEG         0x28
 
+struct __attribute__((packed)) gdt_entry {
+    u16 limit_low;
+    u16 base_low;
+    u8  base_middle;
+    u8  access;
+    u8  granularity;
+    u8  base_high;
+};
+
+struct __attribute__((packed)) gdt_pointer {
+    u16 limit;
+    u64 base;
+};
+
 struct __attribute__((packed)) tss {
     u32 reserved0;
     u64 rsp0;

@@ -19,6 +19,7 @@ struct __attribute__((packed)) interrupt_frame {
 };
 
 void idt_init(void);
+void idt_load(void);
 void idt_set_gate(u8 vector, void *isr, u8 flags);
 void idt_set_gate_ist(u8 vector, void *isr, u8 flags, u8 ist);
 void interrupt_handler(struct interrupt_frame *frame);

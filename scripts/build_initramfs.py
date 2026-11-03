@@ -49,6 +49,54 @@ def build_initramfs():
         with open(browser_elf_path, 'rb') as f:
             browser_elf_bytes = f.read()
 
+    normal_app_elf_path = os.path.join(BUILD_DIR, 'normal_app.elf')
+    normal_app_elf_bytes = b''
+    if os.path.exists(normal_app_elf_path):
+        with open(normal_app_elf_path, 'rb') as f:
+            normal_app_elf_bytes = f.read()
+
+    faulting_app_elf_path = os.path.join(BUILD_DIR, 'faulting_app.elf')
+    faulting_app_elf_bytes = b''
+    if os.path.exists(faulting_app_elf_path):
+        with open(faulting_app_elf_path, 'rb') as f:
+            faulting_app_elf_bytes = f.read()
+
+    worker_app_elf_path = os.path.join(BUILD_DIR, 'worker_app.elf')
+    worker_app_elf_bytes = b''
+    if os.path.exists(worker_app_elf_path):
+        with open(worker_app_elf_path, 'rb') as f:
+            worker_app_elf_bytes = f.read()
+
+    cpu_worker_elf_path = os.path.join(BUILD_DIR, 'cpu_worker.elf')
+    cpu_worker_elf_bytes = b''
+    if os.path.exists(cpu_worker_elf_path):
+        with open(cpu_worker_elf_path, 'rb') as f:
+            cpu_worker_elf_bytes = f.read()
+
+    heartbeat_elf_path = os.path.join(BUILD_DIR, 'heartbeat.elf')
+    heartbeat_elf_bytes = b''
+    if os.path.exists(heartbeat_elf_path):
+        with open(heartbeat_elf_path, 'rb') as f:
+            heartbeat_elf_bytes = f.read()
+
+    blocking_worker_elf_path = os.path.join(BUILD_DIR, 'blocking_worker.elf')
+    blocking_worker_elf_bytes = b''
+    if os.path.exists(blocking_worker_elf_path):
+        with open(blocking_worker_elf_path, 'rb') as f:
+            blocking_worker_elf_bytes = f.read()
+
+    cpu_worker_a_elf_path = os.path.join(BUILD_DIR, 'cpu_worker_a.elf')
+    cpu_worker_a_elf_bytes = b''
+    if os.path.exists(cpu_worker_a_elf_path):
+        with open(cpu_worker_a_elf_path, 'rb') as f:
+            cpu_worker_a_elf_bytes = f.read()
+
+    cpu_worker_b_elf_path = os.path.join(BUILD_DIR, 'cpu_worker_b.elf')
+    cpu_worker_b_elf_bytes = b''
+    if os.path.exists(cpu_worker_b_elf_path):
+        with open(cpu_worker_b_elf_path, 'rb') as f:
+            cpu_worker_b_elf_bytes = f.read()
+
     html_index = b"""<!DOCTYPE html>
 <html>
 <head>
@@ -589,6 +637,14 @@ function recoverSecAction() {
         ('/bin/hello_gui.elf', NODE_FILE, hello_gui_elf_bytes),
         ('/bin/counter_gui.elf', NODE_FILE, counter_gui_elf_bytes),
         ('/bin/browser.elf', NODE_FILE, browser_elf_bytes),
+        ('/bin/normal_app.elf', NODE_FILE, normal_app_elf_bytes),
+        ('/bin/faulting_app.elf', NODE_FILE, faulting_app_elf_bytes),
+        ('/bin/worker_app.elf', NODE_FILE, worker_app_elf_bytes),
+        ('/bin/cpu_worker.elf', NODE_FILE, cpu_worker_elf_bytes),
+        ('/bin/cpu_worker_a.elf', NODE_FILE, cpu_worker_a_elf_bytes),
+        ('/bin/cpu_worker_b.elf', NODE_FILE, cpu_worker_b_elf_bytes),
+        ('/bin/heartbeat.elf', NODE_FILE, heartbeat_elf_bytes),
+        ('/bin/blocking_worker.elf', NODE_FILE, blocking_worker_elf_bytes),
         ('/bin/bad_elf.elf', NODE_FILE, bytes(bad_elf_bytes)),
         ('/www', NODE_DIR, b''),
         ('/www/index.html', NODE_FILE, html_index),

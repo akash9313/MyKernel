@@ -2,6 +2,7 @@
 #include <kernel/kprintf.h>
 #include <kernel/mem.h>
 #include <kernel/arch/x86_64/cpu.h>
+#include <kernel/drivers/apic.h>
 
 #define DHCP_MAGIC_COOKIE 0x63825363
 
@@ -156,11 +157,13 @@ bool dhcp_request_lease(u32 timeout_ms) {
     /* Send DHCPDISCOVER to 255.255.255.255:67 from 0.0.0.0:68 */
     udp_send(IP_ADDR_BROADCAST, 68, 67, &disc, sizeof(dhcp_packet_t) - 308 + opt_pos);
 
-    /* Wait for DHCPOFFER */
-    u32 loops = (timeout_ms > 0) ? (timeout_ms * 100) : 50000;
-    while (loops-- && g_dhcp_state == DHCP_WAIT_OFFER) {
+    /* Wait for DHCPOFFER with bounded APIC tick polling (10ms/tick) */
+    u64 start_ticks = apic_get_ticks();
+    u64 max_ticks = (timeout_ms + 9) / 10;
+    if (max_ticks == 0) max_ticks = 1;
+    while ((apic_get_ticks() - start_ticks < max_ticks) && g_dhcp_state == DHCP_WAIT_OFFER) {
         net_poll();
-        for (volatile int d = 0; d < 100; d++) io_wait();
+        cpu_pause();
     }
 
     if (g_dhcp_state != DHCP_WAIT_ACK || g_offered_ip == 0) {
@@ -211,11 +214,11 @@ bool dhcp_request_lease(u32 timeout_ms) {
 
     udp_send(IP_ADDR_BROADCAST, 68, 67, &req, sizeof(dhcp_packet_t) - 308 + opt_pos);
 
-    /* Wait for DHCPACK */
-    loops = (timeout_ms > 0) ? (timeout_ms * 100) : 50000;
-    while (loops-- && g_dhcp_state != DHCP_BOUND) {
+    /* Wait for DHCPACK with bounded APIC tick polling */
+    start_ticks = apic_get_ticks();
+    while ((apic_get_ticks() - start_ticks < max_ticks) && g_dhcp_state != DHCP_BOUND) {
         net_poll();
-        for (volatile int d = 0; d < 100; d++) io_wait();
+        cpu_pause();
     }
 
     udp_unbind(68);

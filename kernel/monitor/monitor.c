@@ -14,6 +14,8 @@
 #include <kernel/gfx.h>
 #include <kernel/net.h>
 #include <kernel/browser.h>
+#include <kernel/block.h>
+#include <kernel/astrafs.h>
 
 #define MONITOR_MAX_LINE 128
 
@@ -192,6 +194,9 @@ static void cmd_help(void) {
     kprintf("  http <host> [path] - Send HTTP 1.0 GET request and display response\n");
     kprintf("  dhcp      - Trigger DHCP discovery and configure IP stack\n");
     kprintf("  browser [url] - Launch or navigate AstraBrowser web browser\n");
+    kprintf("  diskinfo  - Display detected block devices, capacity and status\n");
+    kprintf("  disktest  - Run diagnostic block device read/write self-tests\n");
+    kprintf("  fsinfo    - Display AstraFS persistent filesystem status and contents\n");
     kprintf("  fault     - Trigger a deliberate CPU exception (#UD) for diagnostic testing\n");
     kprintf("  halt      - Halt the processor cleanly\n\n");
 }
@@ -206,7 +211,7 @@ static void cmd_ticks(void) {
 }
 
 static void cmd_version(void) {
-    kprintf("\nAstraOS Kernel v0.2.0-dev\n");
+    kprintf("\nAstraOS Kernel v1.0.0\n");
     kprintf("Target: x86-64 freestanding (Limine protocol v3)\n");
     kprintf("Subsystems: Serial, Framebuffer, GDT, IDT, PMM, VMM, Heap, TSS, APIC\n\n");
 }
@@ -342,6 +347,54 @@ static void cmd_cat(const char *arg) {
     kprintf("\n");
 }
 
+static void cmd_diskinfo(void) {
+    int count = block_get_device_count();
+    kprintf("\nRegistered Block Devices: %d\n", count);
+    for (int i = 0; i < count; i++) {
+        block_device_t *dev = block_get_device(i);
+        if (!dev) continue;
+        u64 cap_mib = dev->capacity_bytes / (1024 * 1024);
+        kprintf("  [%d] %s: %llu MiB (%llu sectors, %u B/sec) [%s%s]\n",
+                i, dev->name,
+                (unsigned long long)cap_mib,
+                (unsigned long long)dev->total_sectors,
+                dev->sector_size,
+                dev->read_only ? "RO" : "RW",
+                dev->is_boot_device ? ", BOOT" : "");
+    }
+    kprintf("\n");
+}
+
+static void cmd_disktest(void) {
+    block_self_test();
+}
+
+static void cmd_fsinfo(void) {
+    if (!astrafs_is_mounted()) {
+        kprintf("\nAstraFS: Not mounted.\n\n");
+        return;
+    }
+    astrafs_state_t *st = astrafs_get_state();
+    u32 total_kb = (st->sb.total_sectors * 512) / 1024;
+    u32 used_kb = (st->sb.used_sectors * 512) / 1024;
+    kprintf("\nAstraFS v1 Mount Status:\n");
+    kprintf("  Device:        %s\n", st->dev ? st->dev->name : "none");
+    kprintf("  Active Set:    %c\n", (st->active_set == 0) ? 'A' : 'B');
+    kprintf("  Generation:    %llu\n", (unsigned long long)st->sb.generation);
+    kprintf("  Volume Size:   %u KiB (%u sectors)\n", total_kb, st->sb.total_sectors);
+    kprintf("  Allocated:     %u KiB (%u sectors)\n", used_kb, st->sb.used_sectors);
+    kprintf("  Files:         %u / %d\n", st->sb.file_count, ASTRAFS_MAX_FILES);
+    kprintf("  Directory listing (/data):\n");
+    for (int i = 0; i < ASTRAFS_MAX_FILES; i++) {
+        if (st->inodes[i].in_use) {
+            kprintf("    - %s (%u bytes, start_lba=%u, sectors=%u)\n",
+                    st->inodes[i].name, st->inodes[i].file_size,
+                    st->inodes[i].start_lba, st->inodes[i].sector_count);
+        }
+    }
+    kprintf("\n");
+}
+
 static void cmd_fault(void) {
     kprintf("\n[DIAG] Triggering deliberate UD2 exception on operator request...\n");
     __asm__ volatile ("ud2");
@@ -403,6 +456,12 @@ static void monitor_execute(char *line) {
         cmd_dhcp();
     } else if (kstrncmp(line, "browser", 7) == 0 && (line[7] == ' ' || line[7] == '\0')) {
         cmd_browser(line + 7);
+    } else if (kstrcmp(line, "diskinfo") == 0) {
+        cmd_diskinfo();
+    } else if (kstrcmp(line, "disktest") == 0) {
+        cmd_disktest();
+    } else if (kstrcmp(line, "fsinfo") == 0) {
+        cmd_fsinfo();
     } else if (kstrcmp(line, "desktop") == 0) {
         if (gfx_is_available()) {
             desktop_render();

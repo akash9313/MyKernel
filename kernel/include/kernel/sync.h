@@ -3,6 +3,8 @@
 
 #include <kernel/types.h>
 #include <kernel/sched.h>
+#include <kernel/spinlock.h>
+#include <kernel/arch/x86_64/cpu.h>
 
 /*
  * AstraOS Synchronization Architecture: Mutexes & Counting Semaphores
@@ -63,6 +65,7 @@
 
 /* Non-recursive Kernel Mutex */
 typedef struct mutex {
+    spinlock_t lock;        /* Low-level spinlock protecting internal fields */
     thread_t *owner;        /* Current owning thread, or NULL if free */
     wait_queue_t waiters;   /* FIFO queue of waiting threads */
     bool initialized;       /* Initialization sentinel */
@@ -70,6 +73,7 @@ typedef struct mutex {
 
 /* Bounded Counting Semaphore */
 typedef struct semaphore {
+    spinlock_t lock;        /* Low-level spinlock protecting internal fields */
     u32 count;              /* Current available permits */
     u32 maximum_count;      /* Upper bound capacity (> 0) */
     wait_queue_t waiters;   /* FIFO queue of waiting threads */

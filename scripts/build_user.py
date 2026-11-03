@@ -193,6 +193,32 @@ def build_user():
         sys.exit(1)
     print(f"[USER] Successfully built ELF: {browser_out_elf} ({os.path.getsize(browser_out_elf)} bytes)")
 
+    # 3f. Compile and Link Test Applications: normal_app, faulting_app, worker_app, cpu_worker, heartbeat, blocking_worker, cpu_worker_a, cpu_worker_b
+    for app_name in ['normal_app', 'faulting_app', 'worker_app', 'cpu_worker', 'heartbeat', 'blocking_worker', 'cpu_worker_a', 'cpu_worker_b']:
+        app_c = os.path.join(USER_DIR, f"{app_name}.c")
+        app_o = os.path.join(BUILD_DIR, f"{app_name}.o")
+        app_elf = os.path.join(BUILD_DIR, f"{app_name}.elf")
+        cmd_c = [CLANG] + CFLAGS + ['-c', app_c, '-o', app_o]
+        res = subprocess.run(cmd_c)
+        if res.returncode != 0:
+            print(f"[ERROR] Failed to compile {app_name}.c")
+            sys.exit(1)
+
+        cmd_ld = [
+            LD,
+            '-T', linker_script,
+            '-static',
+            '-nostdlib',
+            '-z', 'max-page-size=0x1000',
+            '-o', app_elf,
+            s_obj, app_o
+        ]
+        res = subprocess.run(cmd_ld)
+        if res.returncode != 0:
+            print(f"[ERROR] Failed to link {app_name}.elf")
+            sys.exit(1)
+        print(f"[USER] Successfully built ELF: {app_elf} ({os.path.getsize(app_elf)} bytes)")
+
     # 4. Inspect ELF header and program headers
     print("\n[USER] Inspecting ELF Header:")
     subprocess.run([READELF, '-h', OUT_ELF])

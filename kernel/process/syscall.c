@@ -15,6 +15,7 @@
 #include <kernel/boot.h>
 #include <kernel/mem.h>
 #include <kernel/browser.h>
+#include <kernel/smp.h>
 
 extern void syscall_stub_128(void);
 
@@ -72,42 +73,6 @@ bool user_ptr_valid(const void *ptr, size_t len, bool check_writable) {
     return true;
 }
 
-s64 sys_write(int fd, const char *buf, size_t count) {
-    if (fd != 1 && fd != 2) {
-        return -EBADF;
-    }
-    if (count == 0) {
-        return 0;
-    }
-    if (count > SYSCALL_MAX_WRITE_LEN) {
-        return -EINVAL;
-    }
-    if (!user_ptr_valid(buf, count, false)) {
-        return -EFAULT;
-    }
-
-    for (size_t i = 0; i < count; i++) {
-        char c = buf[i];
-        serial_putchar(c);
-        fb_putchar(c);
-    }
-
-    return (s64)count;
-}
-
-s64 sys_yield(void) {
-    thread_yield();
-    return 0;
-}
-
-s64 sys_getpid(void) {
-    process_t *proc = process_current();
-    if (!proc) {
-        return -ESRCH;
-    }
-    return (s64)proc->pid;
-}
-
 #include <kernel/vfs.h>
 
 void sys_exit(int exit_code) {
@@ -129,8 +94,67 @@ static int map_vfs_error(int err) {
         case VFS_ERR_INVAL:          return -EINVAL;
         case VFS_ERR_CORRUPT:        return -EFAULT;
         case VFS_ERR_BUSY:           return -EBADF;
+        case VFS_ERR_EXISTS:         return -EEXIST;
+        case VFS_ERR_NOSPC:          return -ENOSPC;
         default:                     return -EINVAL;
     }
+}
+
+s64 sys_write(int fd, const char *buf, size_t count) {
+    if (fd < 1 || fd >= VFS_MAX_FDS) {
+        return -EBADF;
+    }
+    if (fd >= 3) {
+        pid_t owner = vfs_get_owner((vfs_fd_t)fd);
+        process_t *proc = process_current();
+        pid_t cur_pid = proc ? proc->pid : 0;
+        if (cur_pid != owner) {
+            return -EBADF;
+        }
+    }
+    if (count == 0) {
+        return 0;
+    }
+    if (count > SYSCALL_MAX_WRITE_LEN) {
+        return -EINVAL;
+    }
+    if (!user_ptr_valid(buf, count, false)) {
+        return -EFAULT;
+    }
+
+    /* Standard console output streams: stdout (1) and stderr (2) */
+    if (fd == 1 || fd == 2) {
+        for (size_t i = 0; i < count; i++) {
+            char c = buf[i];
+            serial_putchar(c);
+            fb_putchar(c);
+        }
+        return (s64)count;
+    }
+
+    /* VFS file descriptors */
+    if (fd >= 3 && fd < VFS_MAX_FDS) {
+        ssize_t written = vfs_write((vfs_fd_t)fd, buf, count);
+        if (written < 0) {
+            return (s64)map_vfs_error((int)written);
+        }
+        return (s64)written;
+    }
+
+    return -EBADF;
+}
+
+s64 sys_yield(void) {
+    thread_yield();
+    return 0;
+}
+
+s64 sys_getpid(void) {
+    process_t *proc = process_current();
+    if (!proc) {
+        return -ESRCH;
+    }
+    return (s64)proc->pid;
 }
 
 static bool copy_user_string(char *dst, const char *src_user, size_t max_len) {
@@ -154,10 +178,23 @@ s64 sys_open(const char *path, int flags) {
     if (fd < 0) {
         return (s64)map_vfs_error(fd);
     }
+    process_t *proc = process_current();
+    if (proc) {
+        vfs_set_owner(fd, proc->pid);
+    }
     return (s64)fd;
 }
 
 s64 sys_read(int fd, char *buf, size_t count) {
+    if (fd < 3 || fd >= VFS_MAX_FDS) {
+        return -EBADF;
+    }
+    pid_t owner = vfs_get_owner((vfs_fd_t)fd);
+    process_t *proc = process_current();
+    pid_t cur_pid = proc ? proc->pid : 0;
+    if (cur_pid != owner) {
+        return -EBADF;
+    }
     if (count == 0) return 0;
     if (!user_ptr_valid(buf, count, true)) {
         return -EFAULT;
@@ -171,7 +208,57 @@ s64 sys_read(int fd, char *buf, size_t count) {
 }
 
 s64 sys_close(int fd) {
+    if (fd < 3 || fd >= VFS_MAX_FDS) {
+        return -EBADF;
+    }
+    pid_t owner = vfs_get_owner((vfs_fd_t)fd);
+    process_t *proc = process_current();
+    pid_t cur_pid = proc ? proc->pid : 0;
+    if (cur_pid != owner) {
+        return -EBADF;
+    }
     int res = vfs_close((vfs_fd_t)fd);
+    if (res != VFS_OK) {
+        return (s64)map_vfs_error(res);
+    }
+    return 0;
+}
+
+s64 sys_fsync(int fd) {
+    if (fd < 3 || fd >= VFS_MAX_FDS) {
+        return -EBADF;
+    }
+    pid_t owner = vfs_get_owner((vfs_fd_t)fd);
+    process_t *proc = process_current();
+    pid_t cur_pid = proc ? proc->pid : 0;
+    if (cur_pid != owner) {
+        return -EBADF;
+    }
+    int res = vfs_fsync((vfs_fd_t)fd);
+    if (res != VFS_OK) {
+        return (s64)map_vfs_error(res);
+    }
+    return 0;
+}
+
+s64 sys_sync(void) {
+    int res = vfs_sync();
+    if (res != VFS_OK) {
+        return (s64)map_vfs_error(res);
+    }
+    return 0;
+}
+
+s64 sys_rename(const char *oldpath, const char *newpath) {
+    char kold[VFS_MAX_PATH_LEN];
+    char knew[VFS_MAX_PATH_LEN];
+    if (!copy_user_string(kold, oldpath, sizeof(kold))) {
+        return -EFAULT;
+    }
+    if (!copy_user_string(knew, newpath, sizeof(knew))) {
+        return -EFAULT;
+    }
+    int res = vfs_rename(kold, knew);
     if (res != VFS_OK) {
         return (s64)map_vfs_error(res);
     }
@@ -257,7 +344,7 @@ s64 sys_gui_destroy_window(int id) {
     if (!win) return -ENOENT;
 
     process_t *proc = process_current();
-    if (proc && win->owner_pid != 0 && win->owner_pid != proc->pid) {
+    if (proc && proc->pid != 0 && win->owner_pid != proc->pid) {
         return -EBADF; /* Non-owner process rejected */
     }
 
@@ -274,7 +361,7 @@ s64 sys_gui_get_event(int win_id, input_event_t *ev) {
     if (win_id > 0) {
         wm_window_t *win = wm_find_by_id(win_id);
         if (!win) return -ENOENT;
-        if (proc && win->owner_pid != 0 && win->owner_pid != proc->pid) {
+        if (proc && proc->pid != 0 && win->owner_pid != proc->pid) {
             return -EBADF;
         }
         input_event_t win_ev;
@@ -299,7 +386,7 @@ s64 sys_gui_present(int win_id) {
         wm_window_t *win = wm_find_by_id(win_id);
         if (!win) return -ENOENT;
         process_t *proc = process_current();
-        if (proc && win->owner_pid != 0 && win->owner_pid != proc->pid) {
+        if (proc && proc->pid != 0 && win->owner_pid != proc->pid) {
             return -EBADF;
         }
     }
@@ -312,7 +399,7 @@ s64 sys_gui_draw_rect(int win_id, int x, int y, int w, int h, u32 color) {
     if (!win) return -ENOENT;
 
     process_t *proc = process_current();
-    if (proc && win->owner_pid != 0 && win->owner_pid != proc->pid) {
+    if (proc && proc->pid != 0 && win->owner_pid != proc->pid) {
         return -EBADF;
     }
 
@@ -329,7 +416,7 @@ s64 sys_gui_fill_rect(int win_id, int x, int y, int w, int h, u32 color) {
     if (!win) return -ENOENT;
 
     process_t *proc = process_current();
-    if (proc && win->owner_pid != 0 && win->owner_pid != proc->pid) {
+    if (proc && proc->pid != 0 && win->owner_pid != proc->pid) {
         return -EBADF;
     }
 
@@ -346,7 +433,7 @@ s64 sys_gui_draw_text(int win_id, int x, int y, const char *text, u32 fg, u32 bg
     if (!win) return -ENOENT;
 
     process_t *proc = process_current();
-    if (proc && win->owner_pid != 0 && win->owner_pid != proc->pid) {
+    if (proc && proc->pid != 0 && win->owner_pid != proc->pid) {
         return -EBADF;
     }
 
@@ -364,7 +451,7 @@ s64 sys_gui_clear(int win_id, u32 color) {
     if (!win) return -ENOENT;
 
     process_t *proc = process_current();
-    if (proc && win->owner_pid != 0 && win->owner_pid != proc->pid) {
+    if (proc && proc->pid != 0 && win->owner_pid != proc->pid) {
         return -EBADF;
     }
 
@@ -377,7 +464,7 @@ s64 sys_gui_set_title(int win_id, const char *title) {
     if (!win) return -ENOENT;
 
     process_t *proc = process_current();
-    if (proc && win->owner_pid != 0 && win->owner_pid != proc->pid) {
+    if (proc && proc->pid != 0 && win->owner_pid != proc->pid) {
         return -EBADF;
     }
 
@@ -410,7 +497,7 @@ s64 sys_gui_draw_bitmap(int win_id, int x, int y, int w, int h, const u32 *pixel
     if (!win) return -ENOENT;
 
     process_t *proc = process_current();
-    if (proc && win->owner_pid != 0 && win->owner_pid != proc->pid) {
+    if (proc && proc->pid != 0 && win->owner_pid != proc->pid) {
         return -EBADF;
     }
 
@@ -432,32 +519,58 @@ s64 sys_sleep(u32 ms) {
 s64 sys_net_socket(void) {
     int sock = tcp_socket_create();
     if (sock < 0) return -ENOMEM;
+    process_t *proc = process_current();
+    if (proc) {
+        tcp_set_owner(sock, proc->pid);
+    }
     return (s64)sock;
 }
 
 s64 sys_net_connect(int sock_id, u32 remote_ip, u16 remote_port, u32 timeout_ms) {
+    pid_t owner = tcp_get_owner(sock_id);
+    process_t *proc = process_current();
+    pid_t cur_pid = proc ? proc->pid : 0;
+    if (cur_pid != owner) return -EBADF;
+
     int res = tcp_connect(sock_id, (ip_addr_t)remote_ip, remote_port, timeout_ms);
     if (res < 0) return -EINVAL;
     return 0;
 }
 
 s64 sys_net_send(int sock_id, const void *buf, size_t len) {
+    pid_t owner = tcp_get_owner(sock_id);
+    process_t *proc = process_current();
+    pid_t cur_pid = proc ? proc->pid : 0;
+    if (cur_pid != owner) return -EBADF;
+
     if (len == 0) return 0;
     if (!user_ptr_valid(buf, len, false)) return -EFAULT;
+
     int sent = tcp_send(sock_id, buf, len);
     if (sent < 0) return -EINVAL;
     return (s64)sent;
 }
 
 s64 sys_net_recv(int sock_id, void *buf, size_t max_len, u32 timeout_ms) {
+    pid_t owner = tcp_get_owner(sock_id);
+    process_t *proc = process_current();
+    pid_t cur_pid = proc ? proc->pid : 0;
+    if (cur_pid != owner) return -EBADF;
+
     if (max_len == 0) return 0;
     if (!user_ptr_valid(buf, max_len, true)) return -EFAULT;
+
     int received = tcp_recv(sock_id, buf, max_len, timeout_ms);
     if (received < 0) return -EINVAL;
     return (s64)received;
 }
 
 s64 sys_net_close(int sock_id) {
+    pid_t owner = tcp_get_owner(sock_id);
+    process_t *proc = process_current();
+    pid_t cur_pid = proc ? proc->pid : 0;
+    if (cur_pid != owner) return -EBADF;
+
     int res = tcp_close(sock_id);
     if (res < 0) return -EINVAL;
     return 0;
@@ -558,9 +671,11 @@ s64 sys_mmap(void *addr, size_t length, int prot, int flags) {
             /* Rollback previously mapped pages in this mmap call */
             for (size_t j = 0; j < allocated; j++) {
                 virt_addr_t r_va = va + (j * PAGE_SIZE);
-                vmm_unmap_page(proc->pml4_phys, r_va);
+                int ures = vmm_unmap_page(proc->pml4_phys, r_va);
                 proc->mapped_page_count--;
-                pmm_free_page(proc->mapped_pas[proc->mapped_page_count]);
+                if (ures == VMM_SUCCESS && proc->mapped_pas[proc->mapped_page_count] != 0) {
+                    pmm_free_page(proc->mapped_pas[proc->mapped_page_count]);
+                }
                 proc->mapped_pas[proc->mapped_page_count] = 0;
             }
             return -ENOMEM;
@@ -590,7 +705,7 @@ s64 sys_mmap(void *addr, size_t length, int prot, int flags) {
 }
 
 s64 sys_munmap(void *addr, size_t length) {
-    if (!addr || length == 0) {
+    if (!addr || length == 0 || length > (16 * 1024 * 1024)) {
         return -EINVAL;
     }
     virt_addr_t va = (virt_addr_t)addr;
@@ -599,7 +714,8 @@ s64 sys_munmap(void *addr, size_t length) {
     }
 
     size_t page_count = (length + PAGE_SIZE - 1) / PAGE_SIZE;
-    if (va < USER_MMAP_BASE_VA || va + (page_count * PAGE_SIZE) > USER_MMAP_MAX_VA) {
+    u64 total_bytes = (u64)page_count * PAGE_SIZE;
+    if (va < USER_MMAP_BASE_VA || va + total_bytes < va || va + total_bytes > USER_MMAP_MAX_VA) {
         return -EINVAL;
     }
 
@@ -612,9 +728,9 @@ s64 sys_munmap(void *addr, size_t length) {
         virt_addr_t pva = va + (i * PAGE_SIZE);
         struct vmm_mapping info;
         if (vmm_query(proc->pml4_phys, pva, &info) == VMM_SUCCESS && info.present) {
-            vmm_unmap_page(proc->pml4_phys, pva);
+            int unmap_res = vmm_unmap_page(proc->pml4_phys, pva);
             invlpg(pva);
-            if (info.paddr != 0) {
+            if (unmap_res == VMM_SUCCESS && info.paddr != 0) {
                 pmm_free_page(info.paddr);
                 /* Remove from tracked pages list */
                 for (size_t m = 0; m < proc->mapped_page_count; m++) {
@@ -654,11 +770,15 @@ s64 sys_net_fetch(const char *url_user, char *buf_user, size_t max_len, int *sta
         return -EINVAL;
     }
 
-    /* Bounded kernel temporary buffer for fetch */
+    /* Bounded kernel temporary buffer for fetch, protected by spinlock */
+    static spinlock_t g_net_fetch_lock = SPINLOCK_INIT;
     static char fetch_buf[BROWSER_HTML_BUFFER_MAX];
+
+    u64 fetch_flags = spinlock_acquire_irqsave(&g_net_fetch_lock);
     int kstatus = 0;
     int nbytes = browser_fetch_url(&url, fetch_buf, sizeof(fetch_buf), &kstatus);
     if (nbytes < 0) {
+        spinlock_release_irqrestore(&g_net_fetch_lock, fetch_flags);
         if (status_user) *status_user = (kstatus ? kstatus : 500);
         return -EIO;
     }
@@ -669,6 +789,7 @@ s64 sys_net_fetch(const char *url_user, char *buf_user, size_t max_len, int *sta
     }
     kmemcpy(buf_user, fetch_buf, copy_len);
     buf_user[copy_len] = '\0';
+    spinlock_release_irqrestore(&g_net_fetch_lock, fetch_flags);
 
     if (status_user) {
         *status_user = kstatus;
@@ -676,7 +797,27 @@ s64 sys_net_fetch(const char *url_user, char *buf_user, size_t max_len, int *sta
     return (s64)copy_len;
 }
 
+s64 sys_waitpid(pid_t pid, int *status_user, int options) {
+    if (status_user && !user_ptr_valid(status_user, sizeof(int), true)) {
+        return -EFAULT;
+    }
+    int status = 0;
+    pid_t reaped = process_waitpid(pid, &status, options);
+    if ((s32)reaped < 0) {
+        return (s64)(s32)reaped;
+    }
+    if (reaped > 0 && status_user) {
+        *status_user = status;
+    }
+    return (s64)reaped;
+}
+
+u32 sys_getcpuid(void) {
+    return smp_cur_cpu_id();
+}
+
 void syscall_dispatcher(struct interrupt_frame *frame) {
+    sti();
     u64 syscall_nr = frame->rax;
 
     switch (syscall_nr) {
@@ -776,8 +917,24 @@ void syscall_dispatcher(struct interrupt_frame *frame) {
         case SYS_GUI_DRAW_BITMAP:
             frame->rax = (u64)sys_gui_draw_bitmap((int)frame->rdi, (int)frame->rsi, (int)frame->rdx, (int)frame->r10, (int)frame->r8, (const u32 *)frame->r9);
             break;
+        case SYS_FSYNC:
+            frame->rax = (u64)sys_fsync((int)frame->rdi);
+            break;
+        case SYS_SYNC:
+            frame->rax = (u64)sys_sync();
+            break;
+        case SYS_RENAME:
+            frame->rax = (u64)sys_rename((const char *)frame->rdi, (const char *)frame->rsi);
+            break;
+        case SYS_WAITPID:
+            frame->rax = (u64)sys_waitpid((pid_t)frame->rdi, (int *)frame->rsi, (int)frame->rdx);
+            break;
+        case SYS_GETCPUID:
+            frame->rax = (u64)sys_getcpuid();
+            break;
         default:
             frame->rax = (u64)-ENOSYS;
             break;
     }
+    cli();
 }

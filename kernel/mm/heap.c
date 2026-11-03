@@ -5,6 +5,9 @@
 #include <kernel/panic.h>
 #include <kernel/arch/x86_64/cpu.h>
 #include <kernel/preempt.h>
+#include <kernel/sync.h>
+
+static spinlock_t g_heap_lock = SPINLOCK_INIT;
 
 #ifndef NULL
 #define NULL ((void *)0)
@@ -479,45 +482,50 @@ void heap_core_get_stats(struct heap_stats *out_stats) {
 void *kmalloc(size_t size) {
     if (!g_heap_initialized) return NULL;
     if (in_interrupt()) panic("kmalloc forbidden in interrupt context!");
-    preempt_disable();
+    u64 flags = spinlock_acquire_irqsave(&g_heap_lock);
     void *ptr = heap_core_malloc(size);
-    preempt_enable();
+    spinlock_release_irqrestore(&g_heap_lock, flags);
     return ptr;
 }
 
 void kfree(void *ptr) {
     if (!g_heap_initialized || !ptr) return;
     if (in_interrupt()) panic("kfree forbidden in interrupt context!");
-    preempt_disable();
+    u64 flags = spinlock_acquire_irqsave(&g_heap_lock);
     heap_core_free(ptr);
-    preempt_enable();
+    spinlock_release_irqrestore(&g_heap_lock, flags);
 }
 
 void *kcalloc(size_t count, size_t size) {
     if (!g_heap_initialized) return NULL;
     if (in_interrupt()) panic("kcalloc forbidden in interrupt context!");
-    preempt_disable();
+    u64 flags = spinlock_acquire_irqsave(&g_heap_lock);
     void *ptr = heap_core_calloc(count, size);
-    preempt_enable();
+    spinlock_release_irqrestore(&g_heap_lock, flags);
     return ptr;
 }
 
 void *krealloc(void *ptr, size_t size) {
     if (!g_heap_initialized) return NULL;
     if (in_interrupt()) panic("krealloc forbidden in interrupt context!");
-    preempt_disable();
+    u64 flags = spinlock_acquire_irqsave(&g_heap_lock);
     void *new_ptr = heap_core_realloc(ptr, size);
-    preempt_enable();
+    spinlock_release_irqrestore(&g_heap_lock, flags);
     return new_ptr;
 }
 
 bool heap_validate(void) {
     if (!g_heap_initialized) return false;
-    return heap_core_validate();
+    u64 flags = spinlock_acquire_irqsave(&g_heap_lock);
+    bool valid = heap_core_validate();
+    spinlock_release_irqrestore(&g_heap_lock, flags);
+    return valid;
 }
 
 void heap_get_stats(struct heap_stats *out_stats) {
+    u64 flags = spinlock_acquire_irqsave(&g_heap_lock);
     heap_core_get_stats(out_stats);
+    spinlock_release_irqrestore(&g_heap_lock, flags);
 }
 
 bool heap_is_initialized(void) {

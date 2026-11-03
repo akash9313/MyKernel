@@ -13,7 +13,7 @@
 
 typedef struct wm_window {
     int id;
-    u32 owner_pid;          /* 0 for kernel-owned windows; >0 for user-space process */
+    pid_t owner_pid;         /* 0 for kernel-owned windows; >0 for user-space process */
     char title[64];
     int x;
     int y;
@@ -49,9 +49,9 @@ typedef struct wm_window {
 /* Window Manager Core API */
 void wm_init(void);
 wm_window_t *wm_create_window(const char *title, int x, int y, int w, int h);
-wm_window_t *wm_create_window_owner(const char *title, int x, int y, int w, int h, u32 owner_pid);
+wm_window_t *wm_create_window_owner(const char *title, int x, int y, int w, int h, pid_t owner_pid);
 void wm_destroy_window(wm_window_t *win);
-void wm_destroy_all_for_pid(u32 pid);
+void wm_destroy_all_for_pid(pid_t pid);
 bool wm_window_push_event(wm_window_t *win, const input_event_t *ev);
 bool wm_window_pop_event(wm_window_t *win, input_event_t *out_ev);
 void wm_bring_to_front(wm_window_t *win);
@@ -64,12 +64,29 @@ wm_window_t *wm_window_at(int x, int y);
 void wm_render(void);
 void wm_handle_input_event(const input_event_t *ev);
 bool wm_self_test(void);
+int wm_get_window_count(void);
+bool wm_is_initialized(void);
+
+/* Desktop Lifecycle State Machine */
+typedef enum desktop_lifecycle_state {
+    DESKTOP_STATE_BOOTING = 0,
+    DESKTOP_STATE_KERNEL_READY = 1,
+    DESKTOP_STATE_GUI_INITIALIZING = 2,
+    DESKTOP_STATE_READY = 3,
+    DESKTOP_STATE_FAILED = 4
+} desktop_lifecycle_state_t;
+
+desktop_lifecycle_state_t desktop_get_lifecycle_state(void);
+void desktop_set_lifecycle_state(desktop_lifecycle_state_t state);
+bool desktop_is_ready(void);
+bool desktop_is_initialized(void);
 
 /* Desktop Shell & Applications */
 void desktop_init(void);
 void desktop_render(void);
 void desktop_handle_event(const input_event_t *ev);
 bool desktop_self_test(void);
+bool desktop_test_user_launch(void);
 
 /* GUI Applications Launchers */
 void app_editor_launch(const char *filepath);

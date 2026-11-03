@@ -1,6 +1,7 @@
 #include "idt.h"
 #include <kernel/kprintf.h>
 #include <kernel/arch/x86_64/cpu.h>
+#include <kernel/smp.h>
 
 struct __attribute__((packed)) idt_entry {
     u16 isr_low;
@@ -69,6 +70,8 @@ extern void *irq_stub_44;
 extern void *irq_stub_45;
 extern void *irq_stub_46;
 extern void *irq_stub_47;
+extern void *irq_stub_250;
+extern void *irq_stub_251;
 extern void *irq_stub_255;
 
 static const char *exception_messages[32] = {
@@ -159,6 +162,9 @@ extern void ps2_handle_keyboard_irq(void);
 extern void ps2_handle_mouse_irq(void);
 
 void interrupt_handler(struct interrupt_frame *frame) {
+    if (g_smp_initialized) {
+        g_cpus[smp_cur_cpu_id()].interrupt_depth++;
+    }
     g_interrupt_depth++;
     g_irq_depth++;
     if (frame->vector == 32) {
@@ -172,6 +178,13 @@ void interrupt_handler(struct interrupt_frame *frame) {
         outb(0xA0, 0x20); /* Slave PIC EOI */
         outb(0x20, 0x20); /* Master PIC EOI */
         apic_eoi();
+    } else if (frame->vector == 250) {
+        /* Generic IPI: acknowledge with EOI */
+        apic_eoi();
+    } else if (frame->vector == 251) {
+        /* TLB Shootdown IPI */
+        smp_handle_tlb_shootdown();
+        apic_eoi();
     } else if (frame->vector == 255) {
         /* Spurious interrupt: no EOI required per Intel spec */
     } else {
@@ -180,10 +193,16 @@ void interrupt_handler(struct interrupt_frame *frame) {
     }
     g_irq_depth--;
     g_interrupt_depth--;
+    if (g_smp_initialized) {
+        g_cpus[smp_cur_cpu_id()].interrupt_depth--;
+    }
 }
 
 void exception_handler(struct interrupt_frame *frame) {
     cli();
+    if (g_smp_initialized) {
+        g_cpus[smp_cur_cpu_id()].interrupt_depth++;
+    }
     g_interrupt_depth++;
     g_exception_depth++;
 
@@ -243,6 +262,9 @@ void exception_handler(struct interrupt_frame *frame) {
          */
         g_exception_depth--;
         g_interrupt_depth--;
+        if (g_smp_initialized) {
+            g_cpus[smp_cur_cpu_id()].interrupt_depth--;
+        }
         process_exit_from_fault(frame);
         /* Does not return */
     }
@@ -339,6 +361,12 @@ void idt_init(void) {
         idt_set_gate((u8)(32 + i), irq_stubs[i], 0x8E);
     }
 
+    /* Vector 250: Generic IPI */
+    idt_set_gate(250, &irq_stub_250, 0x8E);
+
+    /* Vector 251: TLB Shootdown IPI */
+    idt_set_gate(251, &irq_stub_251, 0x8E);
+
     /* Vector 255: Spurious Interrupt */
     idt_set_gate(255, &irq_stub_255, 0x8E);
 
@@ -348,7 +376,11 @@ void idt_init(void) {
     g_idtr.limit = sizeof(g_idt) - 1;
     g_idtr.base = (u64)&g_idt;
 
-    __asm__ volatile ("lidt %0" : : "m"(g_idtr));
+    idt_load();
     kprintf("[IDT] 256-entry IDT loaded (Exceptions 0..31 with IST1 #DF, IRQs 32..47, Spurious 255)\n");
     kprintf("ASTRA_IDT_OK\n\n");
+}
+
+void idt_load(void) {
+    __asm__ volatile ("lidt %0" : : "m"(g_idtr) : "memory");
 }

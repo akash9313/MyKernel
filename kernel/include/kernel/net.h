@@ -181,7 +181,7 @@ typedef enum {
 } tcp_state_t;
 
 #define TCP_RX_BUFFER_SIZE 16384
-#define TCP_MAX_SOCKETS    16
+#define TCP_MAX_SOCKETS    8
 
 typedef struct tcp_socket {
     int id;
@@ -201,6 +201,7 @@ typedef struct tcp_socket {
     size_t rx_count;
 
     u64 last_activity_tick;
+    pid_t owner_pid;
 } tcp_socket_t;
 
 int tcp_socket_create(void);
@@ -208,11 +209,30 @@ int tcp_connect(int sock_id, ip_addr_t remote_ip, u16 remote_port, u32 timeout_m
 int tcp_send(int sock_id, const void *data, size_t len);
 int tcp_recv(int sock_id, void *buf, size_t max_len, u32 timeout_ms);
 int tcp_close(int sock_id);
+pid_t tcp_get_owner(int sock_id);
+int tcp_set_owner(int sock_id, pid_t pid);
+int tcp_close_all_for_pid(pid_t pid);
 
-/* HTTP Client */
+/* HTTP Client & Response Parser */
+typedef struct {
+    int status_code;
+    size_t header_len;
+    const char *body;
+    size_t body_len;
+    s64 content_length;     /* -1 if not specified */
+    bool is_chunked;
+    bool is_close;
+    bool has_duplicate_cl;
+    bool is_truncated;
+    char location[256];
+} http_response_t;
+
+int http_parse_response(const char *raw, size_t raw_len, http_response_t *resp);
+int http_decode_chunked(const char *in, size_t in_len, char *out, size_t max_out);
 int http_get(const char *host, const char *path, char *response_buf, size_t max_len, int *out_status_code);
 
 /* Automated Self-Tests */
 bool net_self_test(void);
+
 
 #endif /* ASTRA_KERNEL_NET_H */

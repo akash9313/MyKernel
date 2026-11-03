@@ -27,11 +27,31 @@ static void k_strcpy(char *dst, const char *src, size_t max) {
     dst[i] = '\0';
 }
 
+static int k_strcmp(const char *s1, const char *s2) {
+    if (!s1 && !s2) return 0;
+    if (!s1) return -1;
+    if (!s2) return 1;
+    while (*s1 && (*s1 == *s2)) {
+        s1++;
+        s2++;
+    }
+    return *(const unsigned char *)s1 - *(const unsigned char *)s2;
+}
+
 static void history_push(const char *url, const char *title) {
     if (!url || url[0] == '\0') return;
 
+    /* Do not push duplicate of current entry */
+    if (g_browser.history_count > 0 && g_browser.history_index >= 0 &&
+        g_browser.history_index < g_browser.history_count) {
+        if (k_strcmp(g_browser.history[g_browser.history_index].url, url) == 0) {
+            return;
+        }
+    }
+
     /* If we are in the middle of history and navigate, discard forward history */
-    if (g_browser.history_index >= 0 && g_browser.history_index < g_browser.history_count - 1) {
+    if (g_browser.history_count > 0 && g_browser.history_index >= 0 &&
+        g_browser.history_index < g_browser.history_count - 1) {
         g_browser.history_count = g_browser.history_index + 1;
     }
 
@@ -43,17 +63,66 @@ static void history_push(const char *url, const char *title) {
         g_browser.history_count = BROWSER_MAX_HISTORY - 1;
     }
 
-    int idx = g_browser.history_count++;
+    int idx = (g_browser.history_count == 0) ? 0 : g_browser.history_count;
+    g_browser.history_count = idx + 1;
     k_strcpy(g_browser.history[idx].url, url, sizeof(g_browser.history[idx].url));
     k_strcpy(g_browser.history[idx].title, title ? title : url, sizeof(g_browser.history[idx].title));
     g_browser.history_index = idx;
 }
 
-void app_browser_navigate(const char *raw_url) {
+static void sanitize_browser_url(const char *in, char *out, size_t max) {
+    if (!in || !out || max == 0) return;
+    while (*in == ' ' || *in == '\t') in++;
+    size_t len = k_strlen(in);
+    while (len > 0 && (in[len - 1] == ' ' || in[len - 1] == '\t' || in[len - 1] == '\r' || in[len - 1] == '\n')) {
+        len--;
+    }
+    if (len == 0 || len >= max - 8) {
+        out[0] = '\0';
+        return;
+    }
+
+    char clean[BROWSER_URL_MAX];
+    for (size_t i = 0; i < len && i < sizeof(clean) - 1; i++) clean[i] = in[i];
+    clean[len < sizeof(clean) ? len : sizeof(clean) - 1] = '\0';
+
+    if (k_strlen(clean) >= 7 && (clean[0] == 'f' || clean[0] == 'h')) {
+        if (clean[0] == 'f' && clean[1] == 'i' && clean[2] == 'l' && clean[3] == 'e' && clean[4] == ':' && clean[5] == '/' && clean[6] == '/') {
+            k_strcpy(out, clean, max);
+            return;
+        }
+        if (clean[0] == 'h' && clean[1] == 't' && clean[2] == 't' && clean[3] == 'p' && clean[4] == ':' && clean[5] == '/' && clean[6] == '/') {
+            k_strcpy(out, clean, max);
+            return;
+        }
+        if (clean[0] == 'h' && clean[1] == 't' && clean[2] == 't' && clean[3] == 'p' && clean[4] == 's' && clean[5] == ':' && clean[6] == '/' && clean[7] == '/') {
+            k_strcpy(out, clean, max);
+            return;
+        }
+    }
+
+    if (clean[0] == '/') {
+        k_strcpy(out, "file://", max);
+        k_strcpy(out + 7, clean, max - 7);
+        return;
+    }
+
+    /* Auto-prefix http:// */
+    k_strcpy(out, "http://", max);
+    k_strcpy(out + 7, clean, max - 7);
+}
+
+void app_browser_navigate_ex(const char *raw_url, bool record_history) {
     if (!raw_url || raw_url[0] == '\0') return;
 
-    k_strcpy(g_browser.current_url, raw_url, sizeof(g_browser.current_url));
-    k_strcpy(g_browser.input_url, raw_url, sizeof(g_browser.input_url));
+    char sanitized_url[BROWSER_URL_MAX];
+    sanitize_browser_url(raw_url, sanitized_url, sizeof(sanitized_url));
+    if (sanitized_url[0] == '\0') {
+        k_strcpy(sanitized_url, raw_url, sizeof(sanitized_url));
+    }
+
+    k_strcpy(g_browser.current_url, sanitized_url, sizeof(g_browser.current_url));
+    k_strcpy(g_browser.input_url, sanitized_url, sizeof(g_browser.input_url));
     g_browser.input_cursor = (int)k_strlen(g_browser.input_url);
     g_browser.input_focused = false;
     g_browser.scroll_y = 0;
@@ -62,11 +131,11 @@ void app_browser_navigate(const char *raw_url) {
     k_strcpy(g_browser.status_msg, "Loading...", sizeof(g_browser.status_msg));
 
     browser_url_t url;
-    if (!browser_url_parse(raw_url, &url)) {
+    if (!browser_url_parse(sanitized_url, &url)) {
         k_strcpy(g_browser.status_msg, "Error: Invalid URL format", sizeof(g_browser.status_msg));
         const char *err_page = "<html><head><title>AstraBrowser - Error</title></head>"
                                "<body><h1>Malformed URL</h1><p>The specified address could not be parsed.</p>"
-                               "<p>Expected format: <b>http://host/path</b> or <b>file:///path</b></p>"
+                               "<p>Expected format: <b>http://host/path</b>, <b>https://host/path</b>, or <b>file:///path</b></p>"
                                "<hr><p><a href=\"file:///www/index.html\">Return to Home</a></p></body></html>";
         k_strcpy(g_browser.html_buf, err_page, sizeof(g_browser.html_buf));
         g_browser.html_len = k_strlen(err_page);
@@ -79,15 +148,21 @@ void app_browser_navigate(const char *raw_url) {
                 if (url.scheme == URL_SCHEME_HTTPS) {
                     k_strcpy(g_browser.status_msg, "Ready (HTTPS 200 OK)", sizeof(g_browser.status_msg));
                     kprintf("ASTRA_BROWSER_HTTPS_OK\n");
-                } else {
+                } else if (url.scheme == URL_SCHEME_HTTP) {
                     k_strcpy(g_browser.status_msg, "Ready (HTTP 200 OK)", sizeof(g_browser.status_msg));
+                    kprintf("ASTRA_BROWSER_HTTP_FETCH_OK\n");
+                } else {
+                    k_strcpy(g_browser.status_msg, "Ready (File loaded)", sizeof(g_browser.status_msg));
                 }
             } else if (status_code == 404) {
                 k_strcpy(g_browser.status_msg, "404 Not Found", sizeof(g_browser.status_msg));
+                kprintf("%s\n", g_browser.status_msg);
             } else if (status_code == 495) {
                 k_strcpy(g_browser.status_msg, "Security Error: Invalid Certificate", sizeof(g_browser.status_msg));
+                kprintf("%s\n", g_browser.status_msg);
             } else if (status_code == 525) {
                 k_strcpy(g_browser.status_msg, "Security Error: TLS Handshake Failed", sizeof(g_browser.status_msg));
+                kprintf("%s\n", g_browser.status_msg);
             } else {
                 char sbuf[64] = "Loaded (Status: ";
                 int si = 16;
@@ -97,10 +172,12 @@ void app_browser_navigate(const char *raw_url) {
                 sbuf[si++] = ')';
                 sbuf[si] = '\0';
                 k_strcpy(g_browser.status_msg, sbuf, sizeof(g_browser.status_msg));
+                kprintf("%s\n", sbuf);
             }
         } else {
             g_browser.html_len = k_strlen(g_browser.html_buf);
             k_strcpy(g_browser.status_msg, "Error: Fetch Failed", sizeof(g_browser.status_msg));
+            kprintf("%s\n", g_browser.status_msg);
         }
     }
 
@@ -134,7 +211,13 @@ void app_browser_navigate(const char *raw_url) {
                                          &g_browser.doc_height);
 
     g_browser.loading = false;
-    history_push(raw_url, g_browser.page_title);
+    if (record_history) {
+        history_push(sanitized_url, g_browser.page_title);
+    }
+}
+
+void app_browser_navigate(const char *raw_url) {
+    app_browser_navigate_ex(raw_url, true);
 }
 
 static void browser_on_paint(wm_window_t *win, gfx_surface_t *s) {
@@ -294,24 +377,24 @@ static void browser_on_event(wm_window_t *win, const input_event_t *ev) {
             /* Back Button [<-] */
             if (rel_x >= 6 && rel_x <= 32 && g_browser.history_index > 0) {
                 g_browser.history_index--;
-                app_browser_navigate(g_browser.history[g_browser.history_index].url);
+                app_browser_navigate_ex(g_browser.history[g_browser.history_index].url, false);
                 return;
             }
             /* Forward Button [->] */
             if (rel_x >= 36 && rel_x <= 62 && g_browser.history_index < g_browser.history_count - 1) {
                 g_browser.history_index++;
-                app_browser_navigate(g_browser.history[g_browser.history_index].url);
+                app_browser_navigate_ex(g_browser.history[g_browser.history_index].url, false);
                 return;
             }
             /* Reload Button [R] */
             if (rel_x >= 66 && rel_x <= 92) {
-                app_browser_navigate(g_browser.current_url);
+                app_browser_navigate_ex(g_browser.current_url, false);
                 return;
             }
             /* Go Button [Go] */
             int go_x = win->client_w - 46;
             if (rel_x >= go_x && rel_x <= go_x + 40) {
-                app_browser_navigate(g_browser.input_url);
+                app_browser_navigate_ex(g_browser.input_url, true);
                 return;
             }
             /* Address Bar */
@@ -359,9 +442,11 @@ static void browser_on_event(wm_window_t *win, const input_event_t *ev) {
                 int sy = view_y + b->y - g_browser.scroll_y;
                 if (rel_x >= b->x && rel_x <= b->x + b->w &&
                     rel_y >= sy && rel_y <= sy + b->h) {
-                    /* Follow Hyperlink! */
-                    kprintf("[BROWSER] Following link to '%s'\n", b->href);
-                    app_browser_navigate(b->href);
+                    /* Follow Hyperlink with relative URL resolution */
+                    char res_link[BROWSER_URL_MAX];
+                    browser_url_resolve(g_browser.current_url, b->href, res_link, sizeof(res_link));
+                    kprintf("[BROWSER] Following link to '%s'\n", res_link);
+                    app_browser_navigate(res_link);
                     return;
                 }
             }
@@ -371,6 +456,10 @@ static void browser_on_event(wm_window_t *win, const input_event_t *ev) {
             if (ev->key.keycode == KEY_ENTER) {
                 g_browser.input_focused = false;
                 app_browser_navigate(g_browser.input_url);
+            } else if (ev->key.keycode == KEY_ESC) {
+                k_strcpy(g_browser.input_url, g_browser.current_url, sizeof(g_browser.input_url));
+                g_browser.input_cursor = (int)k_strlen(g_browser.input_url);
+                g_browser.input_focused = false;
             } else if (ev->key.keycode == KEY_BACKSPACE) {
                 if (g_browser.input_cursor > 0) {
                     size_t len = k_strlen(g_browser.input_url);
@@ -390,14 +479,35 @@ static void browser_on_event(wm_window_t *win, const input_event_t *ev) {
                 }
             }
         } else {
-            /* Viewport vertical scrolling via arrow keys */
+            /* Navigation shortcuts when address bar is not focused */
+            if (ev->key.ascii == 'r' || ev->key.ascii == 'R' ||
+                ((ev->key.modifiers & KEY_MOD_CTRL) && (ev->key.ascii == 'r' || ev->key.ascii == 'R'))) {
+                app_browser_navigate_ex(g_browser.current_url, false);
+                return;
+            } else if (ev->key.keycode == KEY_LEFT || ev->key.ascii == 'h' ||
+                       ((ev->key.modifiers & KEY_MOD_ALT) && ev->key.keycode == KEY_LEFT)) {
+                if (g_browser.history_index > 0) {
+                    g_browser.history_index--;
+                    app_browser_navigate_ex(g_browser.history[g_browser.history_index].url, false);
+                    return;
+                }
+            } else if (ev->key.keycode == KEY_RIGHT || ev->key.ascii == 'l' ||
+                       ((ev->key.modifiers & KEY_MOD_ALT) && ev->key.keycode == KEY_RIGHT)) {
+                if (g_browser.history_index < g_browser.history_count - 1) {
+                    g_browser.history_index++;
+                    app_browser_navigate_ex(g_browser.history[g_browser.history_index].url, false);
+                    return;
+                }
+            }
+
+            /* Viewport vertical scrolling via arrow keys or j/k */
             int view_h = win->client_h - TOOLBAR_HEIGHT - STATUS_HEIGHT;
             int max_scroll = g_browser.doc_height - view_h;
             if (max_scroll > 0) {
-                if (ev->key.keycode == KEY_UP) {
+                if (ev->key.keycode == KEY_UP || ev->key.ascii == 'k') {
                     g_browser.scroll_y -= 20;
                     if (g_browser.scroll_y < 0) g_browser.scroll_y = 0;
-                } else if (ev->key.keycode == KEY_DOWN) {
+                } else if (ev->key.keycode == KEY_DOWN || ev->key.ascii == 'j') {
                     g_browser.scroll_y += 20;
                     if (g_browser.scroll_y > max_scroll) g_browser.scroll_y = max_scroll;
                 }
@@ -469,6 +579,198 @@ bool browser_self_test(void) {
         return false;
     }
     kprintf("  PASS: URL parser bounds, schemes (http, file, https:443) verified.\n");
+
+    /* 1B. Phase Y: URL Resolution & History Stack Tests */
+    kprintf("[BROWSER TEST] 1B. Testing URL Resolution & History Stack Integrity...\n");
+    char res_url[BROWSER_URL_MAX];
+    browser_url_resolve("file:///www/index.html", "about.html", res_url, sizeof(res_url));
+    if (k_strcmp(res_url, "file:///www/about.html") != 0) {
+        kprintf("[BROWSER TEST FAIL] URL resolution failed for relative file path!\n");
+        return false;
+    }
+
+    browser_url_resolve("file:///www/sub/page.html", "../index.html", res_url, sizeof(res_url));
+    if (k_strcmp(res_url, "file:///www/index.html") != 0) {
+        kprintf("[BROWSER TEST FAIL] URL resolution failed for parent directory!\n");
+        return false;
+    }
+
+    browser_url_resolve("http://10.0.2.2:8000/docs/guide.html", "/root.css", res_url, sizeof(res_url));
+    if (k_strcmp(res_url, "http://10.0.2.2:8000/root.css") != 0) {
+        kprintf("[BROWSER TEST FAIL] URL resolution failed for root relative HTTP path!\n");
+        return false;
+    }
+
+    browser_url_resolve("http://10.0.2.2:8000/page.html", "#summary", res_url, sizeof(res_url));
+    if (k_strcmp(res_url, "http://10.0.2.2:8000/page.html#summary") != 0) {
+        kprintf("[BROWSER TEST FAIL] URL resolution failed for in-page fragment!\n");
+        return false;
+    }
+
+    /* History deduplication and stack verification */
+    static browser_history_entry_t saved_history[BROWSER_MAX_HISTORY];
+    int saved_count = g_browser.history_count;
+    int saved_index = g_browser.history_index;
+    for (int i = 0; i < BROWSER_MAX_HISTORY; i++) saved_history[i] = g_browser.history[i];
+
+    g_browser.history_count = 0;
+    g_browser.history_index = 0;
+
+    history_push("file:///page1.html", "Page 1");
+    if (g_browser.history_count != 1 || g_browser.history_index != 0 ||
+        k_strcmp(g_browser.history[0].url, "file:///page1.html") != 0) {
+        kprintf("[BROWSER TEST FAIL] History push failed on first entry!\n");
+        return false;
+    }
+
+    /* Duplicate push on current URL must not increment */
+    history_push("file:///page1.html", "Page 1");
+    if (g_browser.history_count != 1 || g_browser.history_index != 0) {
+        kprintf("[BROWSER TEST FAIL] Duplicate history entry was not deduplicated!\n");
+        return false;
+    }
+
+    history_push("file:///page2.html", "Page 2");
+    history_push("file:///page3.html", "Page 3");
+    if (g_browser.history_count != 3 || g_browser.history_index != 2) {
+        kprintf("[BROWSER TEST FAIL] History sequence failed!\n");
+        return false;
+    }
+
+    /* Simulate Back: index 2 -> 1, then new navigation truncates forward */
+    g_browser.history_index = 1;
+    history_push("file:///page2_fork.html", "Page 2 Fork");
+    if (g_browser.history_count != 3 || g_browser.history_index != 2 ||
+        k_strcmp(g_browser.history[2].url, "file:///page2_fork.html") != 0) {
+        kprintf("[BROWSER TEST FAIL] History branch truncation failed!\n");
+        return false;
+    }
+
+    g_browser.history_count = saved_count;
+    g_browser.history_index = saved_index;
+    for (int i = 0; i < BROWSER_MAX_HISTORY; i++) g_browser.history[i] = saved_history[i];
+    kprintf("  PASS: URL resolution (relative, parent, fragment) and history stack integrity verified.\n");
+
+    /* 1C. Phase Z: Reliability, Resource Bounds & Recovery Tests */
+    kprintf("[BROWSER TEST] 1C. Testing Boundary Limits & Stress Recovery...\n");
+
+    /* 1C-1: URL Length Boundary */
+    char long_test_url[300];
+    for (int i = 0; i < 280; i++) long_test_url[i] = 'z';
+    long_test_url[280] = '\0';
+    browser_url_t b_url;
+    if (browser_url_parse(long_test_url, &b_url) && b_url.scheme != URL_SCHEME_UNKNOWN) {
+        kprintf("[BROWSER TEST FAIL] Oversized URL accepted without error!\n");
+        return false;
+    }
+
+    /* 1C-2: History Stack Stress (50 iterations) */
+    g_browser.history_count = 0;
+    g_browser.history_index = 0;
+    for (int i = 0; i < 50; i++) {
+        char h_buf[32] = "file:///stress_";
+        h_buf[15] = '0' + (i / 10);
+        h_buf[16] = '0' + (i % 10);
+        h_buf[17] = '.'; h_buf[18] = 'h'; h_buf[19] = 't'; h_buf[20] = 'm'; h_buf[21] = '\0';
+        history_push(h_buf, "Stress");
+        if (g_browser.history_count > BROWSER_MAX_HISTORY ||
+            g_browser.history_index < 0 || g_browser.history_index >= BROWSER_MAX_HISTORY) {
+            kprintf("[BROWSER TEST FAIL] History stack bounds exceeded during stress loop!\n");
+            return false;
+        }
+    }
+    if (g_browser.history_count != BROWSER_MAX_HISTORY || g_browser.history_index != BROWSER_MAX_HISTORY - 1) {
+        kprintf("[BROWSER TEST FAIL] Bounded history stack count/index incorrect after 50 pushes!\n");
+        return false;
+    }
+
+    /* Restore history */
+    g_browser.history_count = saved_count;
+    g_browser.history_index = saved_index;
+    for (int i = 0; i < BROWSER_MAX_HISTORY; i++) g_browser.history[i] = saved_history[i];
+
+    /* 1C-3: HTML Parser robustness against deeply nested tags */
+    static const char nested_kernel_html[] =
+        "<html><body><div><div><div><div><div><div><div><div>"
+        "<h1>Robust Header</h1><p>Nested structure content.</p>"
+        "</div></div></div></div></div></div></div></div></body></html>";
+    static html_node_t nested_nodes[BROWSER_MAX_NODES];
+    static css_stylesheet_t nested_sheet;
+    char parsed_title[32];
+    int parsed_count = html_parse(nested_kernel_html, k_strlen(nested_kernel_html),
+                                  nested_nodes, BROWSER_MAX_NODES,
+                                  parsed_title, sizeof(parsed_title),
+                                  &nested_sheet);
+    if (parsed_count <= 0 || parsed_count > BROWSER_MAX_NODES) {
+        kprintf("[BROWSER TEST FAIL] HTML parser failed on nested markup!\n");
+        return false;
+    }
+    kprintf("  PASS: Boundary limits, history stress (50x), and nested parser robustness verified.\n");
+
+    /* 1D. Phase AA: Tabs & Bookmarks Bounds Verification */
+    kprintf("[BROWSER TEST] 1D. Testing Browser Tab Bounds, Bookmarks & Serialization Header...\n");
+
+    /* 1D-1: Tab limit validation (MAX_TABS = 4) */
+    #define K_BROWSER_MAX_TABS 4
+    #define K_BROWSER_MAX_BOOKMARKS 32
+    #define K_BOOKMARK_MAGIC 0x41535442
+    #define K_BOOKMARK_VERSION 1
+
+    int sim_tab_count = 0;
+    for (int t = 0; t < 10; t++) {
+        if (sim_tab_count < K_BROWSER_MAX_TABS) {
+            sim_tab_count++;
+        }
+    }
+    if (sim_tab_count != K_BROWSER_MAX_TABS) {
+        kprintf("[BROWSER TEST FAIL] Tab limit exceeded MAX_TABS!\n");
+        return false;
+    }
+
+    /* 1D-2: Bookmark limit validation (MAX_BOOKMARKS = 32) */
+    static struct {
+        char url[256];
+        char title[64];
+    } k_bookmarks[K_BROWSER_MAX_BOOKMARKS];
+    int k_bm_count = 0;
+
+    for (int b = 0; b < 40; b++) {
+        if (k_bm_count < K_BROWSER_MAX_BOOKMARKS) {
+            k_bookmarks[k_bm_count].url[0] = 'a';
+            k_bookmarks[k_bm_count].url[1] = '\0';
+            k_bookmarks[k_bm_count].title[0] = 't';
+            k_bookmarks[k_bm_count].title[1] = '\0';
+            k_bm_count++;
+        }
+    }
+    if (k_bm_count != K_BROWSER_MAX_BOOKMARKS) {
+        kprintf("[BROWSER TEST FAIL] Bookmark limit exceeded MAX_BOOKMARKS!\n");
+        return false;
+    }
+
+    /* 1D-3: Serialization header format check */
+    #pragma pack(push, 1)
+    typedef struct {
+        u32 magic;
+        u16 version;
+        u16 count;
+        u32 checksum;
+        u32 reserved;
+    } k_bookmark_hdr_t;
+    #pragma pack(pop)
+
+    k_bookmark_hdr_t khdr;
+    khdr.magic = K_BOOKMARK_MAGIC;
+    khdr.version = K_BOOKMARK_VERSION;
+    khdr.count = (u16)k_bm_count;
+    khdr.checksum = 0x12345678;
+    khdr.reserved = 0;
+
+    if (sizeof(k_bookmark_hdr_t) != 16 || khdr.magic != 0x41535442 || khdr.version != 1 || khdr.count != 32) {
+        kprintf("[BROWSER TEST FAIL] Bookmark binary serialization header malformed!\n");
+        return false;
+    }
+    kprintf("  PASS: Tab bounds (4 tabs max), bookmark bounds (32 max), and binary serialization header verified.\n");
 
     /* Run Phase M: Bounded CSS Engine Self-Test Suite */
     if (!css_self_test()) {

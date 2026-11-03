@@ -4,7 +4,7 @@
 .global thread_switch_asm
 .type thread_switch_asm, @function
 /*
- * void thread_switch_asm(void **prev_rsp_ptr, void *next_rsp, void *next_thread);
+ * void thread_switch_asm(void **prev_rsp_ptr, void *next_rsp, void *next_thread, volatile u32 *prev_executing);
  *
  * System V AMD64 ABI Callee-Saved Registers:
  *   %rbx, %rbp, %r12, %r13, %r14, %r15
@@ -13,6 +13,7 @@
  *   %rdi: Pointer to location where outgoing thread's RSP is stored
  *   %rsi: Incoming thread's saved RSP
  *   %rdx: Incoming thread_t pointer (to atomically synchronize g_current_thread)
+ *   %rcx: Pointer to outgoing thread's is_executing flag (atomically cleared after RSP is saved)
  */
 thread_switch_asm:
     /* Save callee-saved registers */
@@ -24,10 +25,13 @@ thread_switch_asm:
     pushq %r15
     pushfq                          /* Preserve RFLAGS (including current IF state) */
 
-    /* Context switch: swap stack pointers and synchronize g_current_thread */
+    /* Context switch: swap stack pointers */
     movq %rsp, (%rdi)               /* *prev_rsp_ptr = %rsp */
-    movq %rdx, g_current_thread(%rip) /* g_current_thread = next */
-    movq %rsi, %rsp                 /* %rsp = next_rsp */
+    movq %rsi, %rsp                 /* %rsp = next_rsp (Switch off outgoing stack first!) */
+    testq %rcx, %rcx
+    jz 1f
+    movl $0, (%rcx)                 /* Atomically clear prev->is_executing = 0 only after leaving stack */
+1:
 
     /* Restore incoming thread's context */
     popfq                           /* Restore RFLAGS (resumes incoming IF state) */

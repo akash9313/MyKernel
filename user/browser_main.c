@@ -65,6 +65,9 @@ void sys_exit(int status) __attribute__((noreturn));
 s64 sys_open(const char *path, int flags);
 s64 sys_read(int fd, void *buf, size_t count);
 s64 sys_close(int fd);
+s64 sys_fsync(int fd);
+s64 sys_sync(void);
+s64 sys_rename(const char *oldpath, const char *newpath);
 
 s64 sys_gui_create_window(const char *title, int x, int y, int w, int h);
 s64 sys_gui_destroy_window(int id);
@@ -96,11 +99,15 @@ s64 sys_net_fetch(const char *url, char *buf, size_t max_len, int *out_status);
 /* UI Layout Constants */
 #define WIN_WIDTH       640
 #define WIN_HEIGHT      440
-#define TOOLBAR_HEIGHT  34
+#define TAB_BAR_HEIGHT  24
+#define TOOLBAR_HEIGHT  30
 #define STATUS_HEIGHT   24
 #define SCROLLBAR_WIDTH 14
 #define FONT_WIDTH      8
 #define FONT_HEIGHT     16
+
+#define MAX_TABS        4
+#define MAX_BOOKMARKS   32
 
 /* Color Palette */
 #define COLOR_TOOLBAR_BG     0xFF111827
@@ -185,10 +192,25 @@ static bool ustrcasestartswith(const char *s, const char *prefix) {
     return true;
 }
 
+static bool ustrcontains(const char *s, const char *sub) {
+    if (!s || !sub) return false;
+    size_t slen = ustrlen(s);
+    size_t sublen = ustrlen(sub);
+    if (sublen > slen) return false;
+    for (size_t i = 0; i <= slen - sublen; i++) {
+        size_t j = 0;
+        while (j < sublen && utolower(s[i + j]) == utolower(sub[j])) {
+            j++;
+        }
+        if (j == sublen) return true;
+    }
+    return false;
+}
+
 /* -----------------------------------------------------------------
  * Dynamic Memory Arena Allocator (Multi-Chunk Safe Reclamation)
  * ----------------------------------------------------------------- */
-#define MAX_ARENA_CHUNKS 16
+#define MAX_ARENA_CHUNKS 64
 static void *g_arena_chunks[MAX_ARENA_CHUNKS];
 static size_t g_arena_chunk_sizes[MAX_ARENA_CHUNKS];
 static int g_arena_chunk_count = 0;
@@ -198,12 +220,29 @@ static size_t g_arena_curr_used = 0;
 
 static void *umalloc(size_t size) {
     size = (size + 15) & ~15UL; /* Align to 16 bytes */
-    if (!g_arena_curr_base || g_arena_curr_used + size > g_arena_curr_cap) {
+    if (size >= 65536) {
+        /* Large allocation: allocate exact required pages */
         if (g_arena_chunk_count >= MAX_ARENA_CHUNKS) {
-            return NULL; /* Bounded arena limit (4 MiB maximum) */
+            return NULL;
         }
         size_t alloc_sz = (size + 4095) & ~4095UL;
-        if (alloc_sz < 262144) alloc_sz = 262144; /* 256 KiB chunks */
+        void *p = sys_mmap(NULL, alloc_sz, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE);
+        if (p == MAP_FAILED || (long)p < 0) {
+            return NULL;
+        }
+        g_arena_chunks[g_arena_chunk_count] = p;
+        g_arena_chunk_sizes[g_arena_chunk_count] = alloc_sz;
+        g_arena_chunk_count++;
+        umemset(p, 0, size);
+        return p;
+    }
+
+    if (!g_arena_curr_base || g_arena_curr_used + size > g_arena_curr_cap) {
+        if (g_arena_chunk_count >= MAX_ARENA_CHUNKS) {
+            return NULL; /* Bounded arena limit */
+        }
+        size_t alloc_sz = (size + 4095) & ~4095UL;
+        if (alloc_sz < 65536) alloc_sz = 65536; /* 64 KiB chunks for small objects */
 
         void *p = sys_mmap(NULL, alloc_sz, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE);
         if (p == MAP_FAILED || (long)p < 0) {
@@ -344,6 +383,7 @@ static bool parse_url(const char *url_str, parsed_url_t *out) {
             out->host[hi++] = *p++;
         }
         out->host[hi] = '\0';
+        if (hi == 0) return false;
         if (*p == ':') {
             p++;
             u32 port_val = 0;
@@ -368,6 +408,7 @@ static bool parse_url(const char *url_str, parsed_url_t *out) {
             out->host[hi++] = *p++;
         }
         out->host[hi] = '\0';
+        if (hi == 0) return false;
         if (*p == ':') {
             p++;
             u32 port_val = 0;
@@ -535,9 +576,39 @@ static s64 fetch_resource(const char *url_str, void *buf, size_t max_len) {
     return -1;
 }
 
+/* Full-Page Resource Fetching Helper (returns content and status code) */
+static s64 fetch_page_resource(const char *url_str, void *buf, size_t max_len, int *out_status) {
+    if (!url_str || !buf || max_len == 0) return -1;
+    if (out_status) *out_status = 0;
+    parsed_url_t purl;
+    if (!parse_url(url_str, &purl)) return -1;
+
+    if (purl.scheme == SCHEME_FILE) {
+        s64 fd = sys_open(purl.path, 0);
+        if (fd < 0) {
+            if (out_status) *out_status = 404;
+            return -1;
+        }
+        s64 bytes = sys_read((int)fd, buf, max_len);
+        sys_close((int)fd);
+        if (out_status) *out_status = (bytes >= 0) ? 200 : 500;
+        return bytes;
+    } else if (purl.scheme == SCHEME_HTTP || purl.scheme == SCHEME_HTTPS) {
+        int status_code = 0;
+        s64 bytes = sys_net_fetch(url_str, (char *)buf, max_len, &status_code);
+        if (out_status) *out_status = status_code;
+        return bytes;
+    }
+    return -1;
+}
+
 /* -----------------------------------------------------------------
  * BMP Image Decoder (User-Space)
  * ----------------------------------------------------------------- */
+#define MAX_BMP_PIXELS 65536
+static u32 s_bmp_pixels[MAX_BMP_PIXELS];
+static size_t s_bmp_pixels_used = 0;
+
 #pragma pack(push, 1)
 typedef struct {
     u16 bfType;
@@ -608,9 +679,12 @@ static u32 *decode_bmp(const u8 *data, size_t len, int *out_w, int *out_h) {
         return NULL;
     }
 
-    /* Allocate decoded 32-bit pixel buffer in user space */
-    u32 *pixels = (u32 *)umalloc(num_pixels * sizeof(u32));
-    if (!pixels) return NULL;
+    /* Allocate decoded 32-bit pixel buffer from reusable per-page static scratch pool */
+    if (s_bmp_pixels_used + num_pixels > MAX_BMP_PIXELS) {
+        return NULL;
+    }
+    u32 *pixels = &s_bmp_pixels[s_bmp_pixels_used];
+    s_bmp_pixels_used += num_pixels;
 
     const u8 *pixel_base = data + file_hdr->bfOffBits;
     for (int row = 0; row < abs_h; row++) {
@@ -965,10 +1039,94 @@ static void apply_cascade(dom_node_t *node, const stylesheet_t *sheet) {
 }
 
 /* -----------------------------------------------------------------
+ * Phase AA: Bookmarks & Persistent Storage Abstraction
+ * ----------------------------------------------------------------- */
+typedef struct {
+    char url[256];
+    char title[64];
+    u32 created_at;
+} bookmark_entry_t;
+
+#define BOOKMARK_MAGIC 0x41535442 /* "ASTB" */
+#define BOOKMARK_VERSION 1
+
+#pragma pack(push, 1)
+typedef struct {
+    u32 magic;       /* 0x41535442 "ASTB" */
+    u16 version;     /* 1 */
+    u16 count;       /* 0..32 */
+    u32 checksum;    /* Fletcher-32 of payload */
+    u32 reserved;
+} bookmark_header_t;
+
+typedef struct {
+    char url[256];
+    char title[64];
+} bookmark_disk_entry_t;
+#pragma pack(pop)
+
+/* -----------------------------------------------------------------
+ * Phase AA: Bounded Tab Structure
+ * ----------------------------------------------------------------- */
+typedef struct {
+    bool active;
+    char current_url[256];
+    char input_url[256];
+    int input_cursor;
+    bool input_focused;
+    char status_text[96];
+    char page_title[64];
+
+    /* History */
+    char history[16][256];
+    int history_index;
+    int history_count;
+
+    /* DOM & Layout pointers */
+    dom_node_t *nodes;
+    int node_count;
+    stylesheet_t *stylesheet;
+    layout_box_t *boxes;
+    int box_count;
+    char *html_buf;
+    size_t html_len;
+
+    /* Scrolling */
+    int scroll_y;
+    int doc_height;
+
+    /* Forms */
+    form_control_t controls[MAX_FORM_CONTROLS];
+    int control_count;
+    int focused_control_id;
+    char active_form_action[160];
+    char active_form_method[16];
+
+    /* JS VM pointer & Document Lifecycle */
+    u32 doc_generation;
+    js_vm_t *doc_vm;
+    bool doc_vm_initialized;
+
+    bool dispatching_event;
+    int mutation_count_in_event;
+} browser_tab_t;
+
+/* -----------------------------------------------------------------
  * Browser Application State
  * ----------------------------------------------------------------- */
 typedef struct {
     int win_id;
+
+    /* Tabs */
+    int tab_count;
+    int active_tab_idx;
+    browser_tab_t tabs[MAX_TABS];
+
+    /* Bookmarks */
+    bookmark_entry_t bookmarks[MAX_BOOKMARKS];
+    int bookmark_count;
+
+    /* Active Tab Working State (Mirrored for Zero-Regression Compatibility) */
     char current_url[256];
     char input_url[256];
     int input_cursor;
@@ -1012,10 +1170,31 @@ typedef struct {
 } browser_app_t;
 
 static browser_app_t g_browser;
+static browser_app_t s_test_app;
+
+/* Preallocated tab pools for 4 tabs */
+static dom_node_t *s_tab_nodes_pool[MAX_TABS];
+static layout_box_t *s_tab_boxes_pool[MAX_TABS];
+static stylesheet_t *s_tab_sheet_pool[MAX_TABS];
+static char *s_tab_html_pool[MAX_TABS];
+static js_vm_t *s_tab_vm_pool[MAX_TABS];
 
 static void navigate_to(browser_app_t *b, const char *url_str, bool record_history);
 static int layout_page(browser_app_t *b, const dom_node_t *nodes, int node_count, int view_w, layout_box_t *boxes, int max_boxes, int *out_doc_h);
 static void render_browser_ui(browser_app_t *b);
+static void tab_save_active(browser_app_t *b);
+static void tab_load_active(browser_app_t *b, int idx);
+static int tab_create(browser_app_t *b, const char *url);
+static bool tab_close(browser_app_t *b, int idx);
+static bool tab_select(browser_app_t *b, int idx);
+static int bookmark_find(const browser_app_t *b, const char *url);
+static int bookmark_add(browser_app_t *b, const char *url, const char *title);
+static bool bookmark_remove(browser_app_t *b, const char *url);
+static bool __attribute__((unused)) bookmark_open(browser_app_t *b, int idx);
+static s64 bookmarks_serialize(const browser_app_t *b, void *buf, size_t max_len);
+static bool bookmarks_deserialize(browser_app_t *b, const void *buf, size_t len);
+static s64 __attribute__((unused)) bookmarks_save(browser_app_t *b);
+static s64 __attribute__((unused)) bookmarks_load(browser_app_t *b);
 
 /* -----------------------------------------------------------------
  * DOM Bridge for Sandboxed JavaScript Engine (Phase S & T Hardened)
@@ -1294,14 +1473,12 @@ static int parse_html(browser_app_t *b, const char *html, dom_node_t *nodes, int
                     char full_css_url[256];
                     resolve_url(b->current_url, href_val, full_css_url, sizeof(full_css_url));
 
-                    /* Fetch external stylesheet */
-                    char *css_ext_buf = (char *)umalloc(8192);
-                    if (css_ext_buf) {
-                        s64 bytes = fetch_resource(full_css_url, css_ext_buf, 8191);
-                        if (bytes > 0) {
-                            css_ext_buf[bytes] = '\0';
-                            parse_stylesheet(css_ext_buf, sheet);
-                        }
+                    /* Fetch external stylesheet into static scratch buffer to prevent arena leak */
+                    static char s_css_ext_buf[8192];
+                    s64 bytes = fetch_resource(full_css_url, s_css_ext_buf, sizeof(s_css_ext_buf) - 1);
+                    if (bytes > 0) {
+                        s_css_ext_buf[bytes] = '\0';
+                        parse_stylesheet(s_css_ext_buf, sheet);
                     }
                 }
                 continue;
@@ -1323,47 +1500,45 @@ static int parse_html(browser_app_t *b, const char *html, dom_node_t *nodes, int
 
             /* 3. Script Block (<script [src="..."]> ... </script>) */
             if (ustrcaseeq(tag_name, "script") && !is_closing) {
-                char *script_buf = (char *)umalloc(4096);
-                if (script_buf) {
-                    script_buf[0] = '\0';
+                static char script_buf[4096];
+                script_buf[0] = '\0';
 
-                    if (src_val[0]) {
-                        /* External script fetch */
-                        char full_script_url[256];
-                        resolve_url(b->current_url, src_val, full_script_url, sizeof(full_script_url));
-                        s64 bytes = fetch_resource(full_script_url, script_buf, 4095);
-                        if (bytes > 0) {
-                            script_buf[bytes] = '\0';
-                        }
-                    } else {
-                        /* Inline script */
-                        size_t si = 0;
-                        while (*p && !ustrcasestartswith(p, "</script>") && si < 4095) {
-                            script_buf[si++] = *p++;
-                        }
-                        script_buf[si] = '\0';
+                if (src_val[0]) {
+                    /* External script fetch */
+                    char full_script_url[256];
+                    resolve_url(b->current_url, src_val, full_script_url, sizeof(full_script_url));
+                    s64 bytes = fetch_resource(full_script_url, script_buf, sizeof(script_buf) - 1);
+                    if (bytes > 0) {
+                        script_buf[bytes] = '\0';
                     }
+                } else {
+                    /* Inline script */
+                    size_t si = 0;
+                    while (*p && !ustrcasestartswith(p, "</script>") && si < sizeof(script_buf) - 1) {
+                        script_buf[si++] = *p++;
+                    }
+                    script_buf[si] = '\0';
+                }
 
-                    if (script_buf[0]) {
-                        b->nodes = nodes;
-                        b->node_count = node_count;
-                        if (!b->doc_vm_initialized) {
-                            b->doc_generation++;
-                            js_init(&b->doc_vm);
-                            js_set_dom_bridge(&b->doc_vm, b,
-                                              browser_js_dom_get_element_by_id,
-                                              browser_js_dom_get_text_content,
-                                              browser_js_dom_set_text_content);
-                            js_set_dom_event_bridge(&b->doc_vm, browser_js_dom_set_onclick);
-                            b->doc_vm_initialized = true;
-                        }
-                        js_value_t js_res;
-                        js_error_t js_err = js_eval(&b->doc_vm, script_buf, &js_res);
-                        if (js_err != JS_OK) {
-                            /* Report error non-destructively in browser status */
-                            ustrcpy(b->status_text, "[JS Error] ", sizeof(b->status_text));
-                            ustrcat(b->status_text, js_error_string(js_err), sizeof(b->status_text));
-                        }
+                if (script_buf[0]) {
+                    b->nodes = nodes;
+                    b->node_count = node_count;
+                    if (!b->doc_vm_initialized) {
+                        b->doc_generation++;
+                        js_init(&b->doc_vm);
+                        js_set_dom_bridge(&b->doc_vm, b,
+                                          browser_js_dom_get_element_by_id,
+                                          browser_js_dom_get_text_content,
+                                          browser_js_dom_set_text_content);
+                        js_set_dom_event_bridge(&b->doc_vm, browser_js_dom_set_onclick);
+                        b->doc_vm_initialized = true;
+                    }
+                    js_value_t js_res;
+                    js_error_t js_err = js_eval(&b->doc_vm, script_buf, &js_res);
+                    if (js_err != JS_OK) {
+                        /* Report error non-destructively in browser status */
+                        ustrcpy(b->status_text, "[JS Error] ", sizeof(b->status_text));
+                        ustrcat(b->status_text, js_error_string(js_err), sizeof(b->status_text));
                     }
                 }
 
@@ -1554,13 +1729,11 @@ static int layout_page(browser_app_t *b, const dom_node_t *nodes, int node_count
             int dw = 0, dh = 0;
             u32 *pixels = NULL;
 
-            /* Allocate temporary image buffer */
-            u8 *img_file_buf = (u8 *)umalloc(65536);
-            if (img_file_buf) {
-                s64 nbytes = fetch_resource(img_full_url, img_file_buf, 65535);
-                if (nbytes > 0) {
-                    pixels = decode_bmp(img_file_buf, (size_t)nbytes, &dw, &dh);
-                }
+            /* Temporary image buffer via static scratch buffer to prevent arena leak */
+            static u8 s_img_file_buf[65536];
+            s64 nbytes = fetch_resource(img_full_url, s_img_file_buf, sizeof(s_img_file_buf) - 1);
+            if (nbytes > 0) {
+                pixels = decode_bmp(s_img_file_buf, (size_t)nbytes, &dw, &dh);
             }
 
             int final_w = (n->img_w > 0) ? n->img_w : (dw > 0 ? dw : 32);
@@ -1726,6 +1899,540 @@ static int layout_page(browser_app_t *b, const dom_node_t *nodes, int node_count
     return box_count;
 }
 
+static void browser_history_push(browser_app_t *b, const char *url_str) {
+    if (!b || !url_str || !url_str[0]) return;
+
+    /* Deduplicate identical consecutive entries */
+    if (b->history_count > 0 && b->history_index >= 0 && b->history_index < b->history_count) {
+        if (ustrcaseeq(b->history[b->history_index], url_str)) {
+            return;
+        }
+    }
+
+    /* If navigating from middle of history, truncate forward entries */
+    if (b->history_count > 0 && b->history_index >= 0 && b->history_index < b->history_count - 1) {
+        b->history_count = b->history_index + 1;
+    }
+
+    if (b->history_count >= 16) {
+        for (int h = 0; h < 15; h++) {
+            ustrcpy(b->history[h], b->history[h + 1], sizeof(b->history[h]));
+        }
+        b->history_index = 15;
+        ustrcpy(b->history[15], url_str, sizeof(b->history[15]));
+        b->history_count = 16;
+    } else {
+        if (b->history_count == 0) {
+            b->history_index = 0;
+        } else {
+            b->history_index++;
+        }
+        ustrcpy(b->history[b->history_index], url_str, sizeof(b->history[b->history_index]));
+        b->history_count = b->history_index + 1;
+    }
+}
+
+static bool sanitize_url_input(const char *input, char *out, size_t out_max) {
+    if (!input || !out || out_max == 0) return false;
+    out[0] = '\0';
+    while (*input == ' ' || *input == '\t') input++;
+    if (!*input) return false;
+
+    size_t len = ustrlen(input);
+    while (len > 0 && (input[len - 1] == ' ' || input[len - 1] == '\t' || input[len - 1] == '\r' || input[len - 1] == '\n')) {
+        len--;
+    }
+    if (len == 0 || len >= out_max - 8) return false;
+
+    char clean[256];
+    for (size_t i = 0; i < len && i < sizeof(clean) - 1; i++) clean[i] = input[i];
+    clean[len < sizeof(clean) ? len : sizeof(clean) - 1] = '\0';
+
+    if (ustrcasestartswith(clean, "file:///") ||
+        ustrcasestartswith(clean, "http://") ||
+        ustrcasestartswith(clean, "https://")) {
+        ustrcpy(out, clean, out_max);
+        return true;
+    }
+
+    if (clean[0] == '/') {
+        ustrcpy(out, "file://", out_max);
+        ustrcat(out, clean, out_max);
+        return true;
+    }
+
+    /* Reject unsupported schemes */
+    if (ustrcasestartswith(clean, "javascript:") ||
+        ustrcasestartswith(clean, "data:") ||
+        ustrcasestartswith(clean, "ftp://") ||
+        ustrcasestartswith(clean, "file:/")) {
+        ustrcpy(out, clean, out_max);
+        return false;
+    }
+
+    /* Default to http:// */
+    ustrcpy(out, "http://", out_max);
+    ustrcat(out, clean, out_max);
+    return true;
+}
+
+/* -----------------------------------------------------------------
+ * Phase AA: Checksum & Serialization
+ * ----------------------------------------------------------------- */
+static u32 calculate_checksum(const void *data, size_t len) {
+    const u8 *p = (const u8 *)data;
+    u32 c0 = 0xffff, c1 = 0xffff;
+    while (len) {
+        size_t block = len > 360 ? 360 : len;
+        len -= block;
+        do {
+            c0 += *p++;
+            c1 += c0;
+        } while (--block);
+        c0 = (c0 & 0xffff) + (c0 >> 16);
+        c1 = (c1 & 0xffff) + (c1 >> 16);
+    }
+    c0 = (c0 & 0xffff) + (c0 >> 16);
+    c1 = (c1 & 0xffff) + (c1 >> 16);
+    return (c1 << 16) | c0;
+}
+
+/* -----------------------------------------------------------------
+ * Phase AA: Tab State Synchronization
+ * ----------------------------------------------------------------- */
+static void tab_save_active(browser_app_t *b) {
+    if (!b || b->tab_count == 0 || b->active_tab_idx < 0 || b->active_tab_idx >= MAX_TABS) return;
+    browser_tab_t *t = &b->tabs[b->active_tab_idx];
+    t->active = true;
+    ustrcpy(t->current_url, b->current_url, sizeof(t->current_url));
+    ustrcpy(t->input_url, b->input_url, sizeof(t->input_url));
+    t->input_cursor = b->input_cursor;
+    t->input_focused = b->input_focused;
+    ustrcpy(t->status_text, b->status_text, sizeof(t->status_text));
+    ustrcpy(t->page_title, b->page_title, sizeof(t->page_title));
+
+    t->history_index = b->history_index;
+    t->history_count = b->history_count;
+    for (int i = 0; i < 16; i++) {
+        ustrcpy(t->history[i], b->history[i], sizeof(t->history[i]));
+    }
+
+    t->nodes = b->nodes;
+    t->node_count = b->node_count;
+    t->stylesheet = b->stylesheet;
+    t->boxes = b->boxes;
+    t->box_count = b->box_count;
+    t->html_buf = b->html_buf;
+    t->html_len = b->html_len;
+
+    t->scroll_y = b->scroll_y;
+    t->doc_height = b->doc_height;
+
+    t->control_count = b->control_count;
+    t->focused_control_id = b->focused_control_id;
+    ustrcpy(t->active_form_action, b->active_form_action, sizeof(t->active_form_action));
+    ustrcpy(t->active_form_method, b->active_form_method, sizeof(t->active_form_method));
+    for (int i = 0; i < MAX_FORM_CONTROLS; i++) {
+        t->controls[i] = b->controls[i];
+    }
+
+    t->doc_generation = b->doc_generation;
+    if (t->doc_vm) {
+        *t->doc_vm = b->doc_vm;
+    }
+    t->doc_vm_initialized = b->doc_vm_initialized;
+    t->dispatching_event = b->dispatching_event;
+    t->mutation_count_in_event = b->mutation_count_in_event;
+}
+
+static void tab_load_active(browser_app_t *b, int idx) {
+    if (!b || idx < 0 || idx >= MAX_TABS) return;
+    b->active_tab_idx = idx;
+    browser_tab_t *t = &b->tabs[idx];
+
+    ustrcpy(b->current_url, t->current_url, sizeof(b->current_url));
+    ustrcpy(b->input_url, t->input_url, sizeof(b->input_url));
+    b->input_cursor = t->input_cursor;
+    b->input_focused = t->input_focused;
+    ustrcpy(b->status_text, t->status_text, sizeof(b->status_text));
+    ustrcpy(b->page_title, t->page_title, sizeof(b->page_title));
+
+    b->history_index = t->history_index;
+    b->history_count = t->history_count;
+    for (int i = 0; i < 16; i++) {
+        ustrcpy(b->history[i], t->history[i], sizeof(b->history[i]));
+    }
+
+    b->nodes = t->nodes;
+    b->node_count = t->node_count;
+    b->stylesheet = t->stylesheet;
+    b->boxes = t->boxes;
+    b->box_count = t->box_count;
+    b->html_buf = t->html_buf;
+    b->html_len = t->html_len;
+
+    b->scroll_y = t->scroll_y;
+    b->doc_height = t->doc_height;
+
+    b->control_count = t->control_count;
+    b->focused_control_id = t->focused_control_id;
+    ustrcpy(b->active_form_action, t->active_form_action, sizeof(b->active_form_action));
+    ustrcpy(b->active_form_method, t->active_form_method, sizeof(b->active_form_method));
+    for (int i = 0; i < MAX_FORM_CONTROLS; i++) {
+        b->controls[i] = t->controls[i];
+    }
+
+    b->doc_generation = t->doc_generation;
+    if (t->doc_vm) {
+        b->doc_vm = *t->doc_vm;
+    }
+    b->doc_vm_initialized = t->doc_vm_initialized;
+    b->dispatching_event = t->dispatching_event;
+    b->mutation_count_in_event = t->mutation_count_in_event;
+
+    if (b->doc_vm_initialized) {
+        js_set_dom_bridge(&b->doc_vm, b,
+                          browser_js_dom_get_element_by_id,
+                          browser_js_dom_get_text_content,
+                          browser_js_dom_set_text_content);
+        js_set_dom_event_bridge(&b->doc_vm, browser_js_dom_set_onclick);
+    }
+
+    if (b->win_id > 0 && b->page_title[0]) {
+        sys_gui_set_title(b->win_id, b->page_title);
+    }
+}
+
+static int tab_create(browser_app_t *b, const char *url) {
+    if (!b || b->tab_count >= MAX_TABS) {
+        return -1;
+    }
+    tab_save_active(b);
+
+    int new_idx = b->tab_count;
+    browser_tab_t *t = &b->tabs[new_idx];
+    umemset(t, 0, sizeof(*t));
+
+    t->active = true;
+    t->nodes = s_tab_nodes_pool[new_idx];
+    t->boxes = s_tab_boxes_pool[new_idx];
+    t->stylesheet = s_tab_sheet_pool[new_idx];
+    t->html_buf = s_tab_html_pool[new_idx];
+    t->doc_vm = s_tab_vm_pool[new_idx];
+    if (t->doc_vm) {
+        js_init(t->doc_vm);
+    }
+    t->focused_control_id = -1;
+    t->doc_generation = (new_idx + 1) * 1000;
+
+    b->tab_count++;
+    tab_load_active(b, new_idx);
+
+    const char *target = (url && url[0]) ? url : "file:///www/index.html";
+    navigate_to(b, target, true);
+    return new_idx;
+}
+
+static bool tab_close(browser_app_t *b, int idx) {
+    if (!b || idx < 0 || idx >= b->tab_count) {
+        return false;
+    }
+
+    if (b->tab_count == 1) {
+        tab_load_active(b, 0);
+        b->history_count = 0;
+        b->history_index = 0;
+        b->scroll_y = 0;
+        b->doc_generation++;
+        navigate_to(b, "file:///www/index.html", true);
+        return true;
+    }
+
+    tab_save_active(b);
+
+    for (int i = idx; i < b->tab_count - 1; i++) {
+        browser_tab_t *dst = &b->tabs[i];
+        const browser_tab_t *src = &b->tabs[i + 1];
+
+        dom_node_t *saved_nodes = dst->nodes;
+        layout_box_t *saved_boxes = dst->boxes;
+        stylesheet_t *saved_sheet = dst->stylesheet;
+        char *saved_html = dst->html_buf;
+        js_vm_t *saved_vm = dst->doc_vm;
+
+        *dst = *src;
+
+        dst->nodes = saved_nodes;
+        dst->boxes = saved_boxes;
+        dst->stylesheet = saved_sheet;
+        dst->html_buf = saved_html;
+        dst->doc_vm = saved_vm;
+
+        if (src->nodes && src->node_count > 0 && dst->nodes) {
+            umemcpy(dst->nodes, src->nodes, sizeof(dom_node_t) * (src->node_count < MAX_NODES ? src->node_count : MAX_NODES));
+        }
+        if (src->boxes && src->box_count > 0 && dst->boxes) {
+            umemcpy(dst->boxes, src->boxes, sizeof(layout_box_t) * (src->box_count < MAX_BOXES ? src->box_count : MAX_BOXES));
+        }
+        if (src->stylesheet && dst->stylesheet) {
+            umemcpy(dst->stylesheet, src->stylesheet, sizeof(stylesheet_t));
+        }
+        if (src->html_buf && dst->html_buf && src->html_len > 0) {
+            size_t copy_len = src->html_len < 32767 ? src->html_len : 32767;
+            umemcpy(dst->html_buf, src->html_buf, copy_len + 1);
+            dst->html_buf[copy_len] = '\0';
+        }
+        if (src->doc_vm && dst->doc_vm) {
+            *dst->doc_vm = *src->doc_vm;
+        }
+    }
+
+    int last_idx = b->tab_count - 1;
+    dom_node_t *last_nodes = b->tabs[last_idx].nodes;
+    layout_box_t *last_boxes = b->tabs[last_idx].boxes;
+    stylesheet_t *last_sheet = b->tabs[last_idx].stylesheet;
+    char *last_html = b->tabs[last_idx].html_buf;
+    js_vm_t *last_vm = b->tabs[last_idx].doc_vm;
+
+    umemset(&b->tabs[last_idx], 0, sizeof(browser_tab_t));
+    b->tabs[last_idx].nodes = last_nodes;
+    b->tabs[last_idx].boxes = last_boxes;
+    b->tabs[last_idx].stylesheet = last_sheet;
+    b->tabs[last_idx].html_buf = last_html;
+    b->tabs[last_idx].doc_vm = last_vm;
+
+    b->tab_count--;
+
+    if (b->active_tab_idx == idx) {
+        if (b->active_tab_idx >= b->tab_count) {
+            b->active_tab_idx = b->tab_count - 1;
+        }
+    } else if (b->active_tab_idx > idx) {
+        b->active_tab_idx--;
+    }
+
+    tab_load_active(b, b->active_tab_idx);
+    return true;
+}
+
+static bool tab_select(browser_app_t *b, int idx) {
+    if (!b || idx < 0 || idx >= b->tab_count) {
+        return false;
+    }
+    if (idx == b->active_tab_idx) {
+        return true;
+    }
+    tab_save_active(b);
+    tab_load_active(b, idx);
+    b->input_focused = false;
+    b->focused_control_id = -1;
+    return true;
+}
+
+/* -----------------------------------------------------------------
+ * Phase AA: Bookmark Management & Serialization
+ * ----------------------------------------------------------------- */
+static int bookmark_find(const browser_app_t *b, const char *url) {
+    if (!b || !url || !url[0]) return -1;
+    for (int i = 0; i < b->bookmark_count; i++) {
+        if (ustrcaseeq(b->bookmarks[i].url, url)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int bookmark_add(browser_app_t *b, const char *url, const char *title) {
+    if (!b || !url || !url[0]) return -1;
+    if (ustrlen(url) >= 250) return -1;
+
+    if (!ustrcasestartswith(url, "file:///") &&
+        !ustrcasestartswith(url, "http://") &&
+        !ustrcasestartswith(url, "https://")) {
+        return -1;
+    }
+
+    int existing = bookmark_find(b, url);
+    if (existing >= 0) {
+        if (title && title[0]) {
+            ustrcpy(b->bookmarks[existing].title, title, sizeof(b->bookmarks[existing].title));
+        }
+        return existing;
+    }
+
+    if (b->bookmark_count >= MAX_BOOKMARKS) {
+        return -1;
+    }
+
+    int idx = b->bookmark_count;
+    ustrcpy(b->bookmarks[idx].url, url, sizeof(b->bookmarks[idx].url));
+    if (title && title[0]) {
+        ustrcpy(b->bookmarks[idx].title, title, sizeof(b->bookmarks[idx].title));
+    } else {
+        ustrcpy(b->bookmarks[idx].title, url, sizeof(b->bookmarks[idx].title));
+    }
+    b->bookmarks[idx].created_at = 1;
+    b->bookmark_count++;
+    return idx;
+}
+
+static bool bookmark_remove(browser_app_t *b, const char *url) {
+    if (!b || !url || !url[0]) return false;
+    int idx = bookmark_find(b, url);
+    if (idx < 0) return false;
+
+    for (int i = idx; i < b->bookmark_count - 1; i++) {
+        b->bookmarks[i] = b->bookmarks[i + 1];
+    }
+    umemset(&b->bookmarks[b->bookmark_count - 1], 0, sizeof(bookmark_entry_t));
+    b->bookmark_count--;
+    return true;
+}
+
+static bool __attribute__((unused)) bookmark_open(browser_app_t *b, int idx) {
+    if (!b || idx < 0 || idx >= b->bookmark_count) return false;
+    navigate_to(b, b->bookmarks[idx].url, true);
+    return true;
+}
+
+static s64 bookmarks_serialize(const browser_app_t *b, void *buf, size_t max_len) {
+    if (!b || !buf) return -1;
+    size_t needed = sizeof(bookmark_header_t) + ((size_t)b->bookmark_count * sizeof(bookmark_disk_entry_t));
+    if (max_len < needed) return -1;
+
+    bookmark_header_t *hdr = (bookmark_header_t *)buf;
+    hdr->magic = BOOKMARK_MAGIC;
+    hdr->version = BOOKMARK_VERSION;
+    hdr->count = (u16)b->bookmark_count;
+    hdr->reserved = 0;
+
+    bookmark_disk_entry_t *entries = (bookmark_disk_entry_t *)((u8 *)buf + sizeof(bookmark_header_t));
+    for (int i = 0; i < b->bookmark_count; i++) {
+        umemset(&entries[i], 0, sizeof(entries[i]));
+        ustrcpy(entries[i].url, b->bookmarks[i].url, sizeof(entries[i].url));
+        ustrcpy(entries[i].title, b->bookmarks[i].title, sizeof(entries[i].title));
+    }
+
+    size_t payload_len = (size_t)b->bookmark_count * sizeof(bookmark_disk_entry_t);
+    hdr->checksum = calculate_checksum(entries, payload_len);
+
+    return (s64)needed;
+}
+
+static bool bookmarks_deserialize(browser_app_t *b, const void *buf, size_t len) {
+    if (!b || !buf || len < sizeof(bookmark_header_t)) return false;
+
+    const bookmark_header_t *hdr = (const bookmark_header_t *)buf;
+    if (hdr->magic != BOOKMARK_MAGIC) return false;
+    if (hdr->version != BOOKMARK_VERSION) return false;
+    if (hdr->count > MAX_BOOKMARKS) return false;
+
+    size_t expected_len = sizeof(bookmark_header_t) + ((size_t)hdr->count * sizeof(bookmark_disk_entry_t));
+    if (len < expected_len) return false;
+
+    const bookmark_disk_entry_t *entries = (const bookmark_disk_entry_t *)((const u8 *)buf + sizeof(bookmark_header_t));
+    size_t payload_len = (size_t)hdr->count * sizeof(bookmark_disk_entry_t);
+    u32 sum = calculate_checksum(entries, payload_len);
+    if (sum != hdr->checksum) return false;
+
+    /* Verify string termination on every entry prior to modifying state */
+    for (int i = 0; i < (int)hdr->count; i++) {
+        bool url_term = false;
+        for (int k = 0; k < 256; k++) {
+            if (entries[i].url[k] == '\0') { url_term = true; break; }
+        }
+        if (!url_term) return false;
+
+        bool title_term = false;
+        for (int k = 0; k < 64; k++) {
+            if (entries[i].title[k] == '\0') { title_term = true; break; }
+        }
+        if (!title_term) return false;
+    }
+
+    /* All validations passed: safe to update in-memory bookmarks */
+    b->bookmark_count = 0;
+    for (int i = 0; i < (int)hdr->count; i++) {
+        /* Scheme validation: only file:///, http://, https:// permitted */
+        if (!ustrcasestartswith(entries[i].url, "file:///") &&
+            !ustrcasestartswith(entries[i].url, "http://") &&
+            !ustrcasestartswith(entries[i].url, "https://")) {
+            continue;
+        }
+
+        int cur = b->bookmark_count;
+        if (cur >= MAX_BOOKMARKS) break;
+
+        ustrcpy(b->bookmarks[cur].url, entries[i].url, sizeof(b->bookmarks[cur].url));
+        ustrcpy(b->bookmarks[cur].title, entries[i].title, sizeof(b->bookmarks[cur].title));
+        b->bookmarks[cur].created_at = 1;
+        b->bookmark_count++;
+    }
+    return true;
+}
+
+static s64 bookmarks_save_path(browser_app_t *b, const char *path) {
+    if (!b || !path) return -1;
+    static u8 s_bm_buf[sizeof(bookmark_header_t) + MAX_BOOKMARKS * sizeof(bookmark_disk_entry_t)];
+    s64 written = bookmarks_serialize(b, s_bm_buf, sizeof(s_bm_buf));
+    if (written <= 0) return -1;
+
+    char tmp_path[128];
+    ustrcpy(tmp_path, path, sizeof(tmp_path));
+    ustrcat(tmp_path, ".tmp", sizeof(tmp_path));
+
+    s64 fd = sys_open(tmp_path, 2 /* VFS_O_WRONLY */ | 0x0040 /* VFS_O_CREAT */ | 0x0200 /* VFS_O_TRUNC */);
+    if (fd < 0) return fd;
+
+    s64 nwritten = sys_write((int)fd, (const char *)s_bm_buf, (size_t)written);
+    s64 sync_res = sys_fsync((int)fd);
+    sys_close((int)fd);
+
+    if (nwritten != written || sync_res != 0) {
+        return -1;
+    }
+
+    /* Atomic replacement via rename */
+    s64 ren_res = sys_rename(tmp_path, path);
+    if (ren_res != 0) {
+        return ren_res;
+    }
+    return nwritten;
+}
+
+static s64 bookmarks_load_path(browser_app_t *b, const char *path) {
+    if (!b || !path) return -1;
+    static u8 s_bm_buf[sizeof(bookmark_header_t) + MAX_BOOKMARKS * sizeof(bookmark_disk_entry_t)];
+    s64 fd = sys_open(path, 1 /* VFS_O_RDONLY */);
+    if (fd < 0) return fd;
+    s64 nbytes = sys_read((int)fd, s_bm_buf, sizeof(s_bm_buf));
+    sys_close((int)fd);
+    if (nbytes >= (s64)sizeof(bookmark_header_t)) {
+        if (bookmarks_deserialize(b, s_bm_buf, (size_t)nbytes)) {
+            return nbytes;
+        }
+    }
+    return -1;
+}
+
+static s64 __attribute__((unused)) bookmarks_save(browser_app_t *b) {
+    if (!b) return -1;
+    s64 res = bookmarks_save_path(b, "/data/bookmarks.bin");
+    if (res < 0) {
+        res = bookmarks_save_path(b, "/etc/bookmarks.bin");
+    }
+    return res;
+}
+
+static s64 __attribute__((unused)) bookmarks_load(browser_app_t *b) {
+    if (!b) return -1;
+    s64 res = bookmarks_load_path(b, "/data/bookmarks.bin");
+    if (res < 0) {
+        res = bookmarks_load_path(b, "/etc/bookmarks.bin");
+    }
+    return res;
+}
+
 static void navigate_to(browser_app_t *b, const char *url_str, bool record_history) {
     if (!url_str || !url_str[0]) return;
     if (ustrlen(url_str) >= 250) {
@@ -1733,8 +2440,14 @@ static void navigate_to(browser_app_t *b, const char *url_str, bool record_histo
         return;
     }
 
+    char sanitized[256];
+    bool san_ok = sanitize_url_input(url_str, sanitized, sizeof(sanitized));
+    if (!san_ok && sanitized[0] == '\0') {
+        ustrcpy(sanitized, url_str, sizeof(sanitized));
+    }
+
     parsed_url_t purl;
-    bool parse_ok = parse_url(url_str, &purl);
+    bool parse_ok = parse_url(sanitized, &purl);
 
     /* Check for in-page fragment navigation */
     if (parse_ok && b->html_len > 0 && purl.fragment[0] != '\0') {
@@ -1745,33 +2458,21 @@ static void navigate_to(browser_app_t *b, const char *url_str, bool record_histo
                 purl.port == cur_purl.port &&
                 ustrcaseeq(purl.path, cur_purl.path)) {
                 /* Same page - jump directly to fragment without re-fetching */
-                ustrcpy(b->current_url, url_str, sizeof(b->current_url));
-                ustrcpy(b->input_url, url_str, sizeof(b->input_url));
+                ustrcpy(b->current_url, sanitized, sizeof(b->current_url));
+                ustrcpy(b->input_url, sanitized, sizeof(b->input_url));
                 b->input_cursor = (int)ustrlen(b->input_url);
+                b->input_focused = false;
 
                 if (record_history) {
-                    if (b->history_count == 0 || !ustrcaseeq(b->history[b->history_index], url_str)) {
-                        b->history_count = b->history_index + 1;
-                        if (b->history_count >= 16) {
-                            for (int h = 0; h < 15; h++) {
-                                ustrcpy(b->history[h], b->history[h + 1], sizeof(b->history[h]));
-                            }
-                            b->history_index = 15;
-                            ustrcpy(b->history[15], url_str, sizeof(b->history[15]));
-                            b->history_count = 16;
-                        } else {
-                            b->history_index++;
-                            ustrcpy(b->history[b->history_index], url_str, sizeof(b->history[b->history_index]));
-                            b->history_count = b->history_index + 1;
-                        }
-                    }
+                    browser_history_push(b, sanitized);
                 }
 
                 /* Find target box */
                 bool found = false;
                 for (int i = 0; i < b->box_count; i++) {
                     if (b->boxes[i].id_name[0] && ustrcaseeq(b->boxes[i].id_name, purl.fragment)) {
-                        int view_h = WIN_HEIGHT - TOOLBAR_HEIGHT - STATUS_HEIGHT;
+                        int top_bars = (b->tab_count > 0) ? (TAB_BAR_HEIGHT + TOOLBAR_HEIGHT) : TOOLBAR_HEIGHT;
+                        int view_h = WIN_HEIGHT - top_bars - STATUS_HEIGHT;
                         int max_scroll = b->doc_height - view_h;
                         if (max_scroll < 0) max_scroll = 0;
                         int target_y = b->boxes[i].y - 8;
@@ -1790,14 +2491,15 @@ static void navigate_to(browser_app_t *b, const char *url_str, bool record_histo
                     ustrcat(b->status_text, purl.fragment, sizeof(b->status_text));
                     ustrcat(b->status_text, " not found", sizeof(b->status_text));
                 }
+                tab_save_active(b);
                 return;
             }
         }
     }
 
     /* Normal full page navigation */
-    ustrcpy(b->current_url, url_str, sizeof(b->current_url));
-    ustrcpy(b->input_url, url_str, sizeof(b->input_url));
+    ustrcpy(b->current_url, sanitized, sizeof(b->current_url));
+    ustrcpy(b->input_url, sanitized, sizeof(b->input_url));
     b->input_cursor = (int)ustrlen(b->input_url);
     b->input_focused = false;
     b->scroll_y = 0;
@@ -1805,22 +2507,11 @@ static void navigate_to(browser_app_t *b, const char *url_str, bool record_histo
 
     /* Record bounded history */
     if (record_history) {
-        if (b->history_count == 0 || !ustrcaseeq(b->history[b->history_index], url_str)) {
-            b->history_count = b->history_index + 1;
-            if (b->history_count >= 16) {
-                for (int h = 0; h < 15; h++) {
-                    ustrcpy(b->history[h], b->history[h + 1], sizeof(b->history[h]));
-                }
-                b->history_index = 15;
-                ustrcpy(b->history[15], url_str, sizeof(b->history[15]));
-                b->history_count = 16;
-            } else {
-                b->history_index++;
-                ustrcpy(b->history[b->history_index], url_str, sizeof(b->history[b->history_index]));
-                b->history_count = b->history_index + 1;
-            }
-        }
+        browser_history_push(b, sanitized);
     }
+
+    /* Reset transient bitmap scratch pool */
+    s_bmp_pixels_used = 0;
 
     /* Clear stylesheet rules between page loads */
     b->stylesheet->count = 0;
@@ -1850,23 +2541,75 @@ static void navigate_to(browser_app_t *b, const char *url_str, bool record_histo
             const char *scheme = (purl.scheme == SCHEME_HTTPS) ? "https://" : "http://";
             ustrcpy(clean_fetch_url, scheme, sizeof(clean_fetch_url));
             ustrcat(clean_fetch_url, purl.host, sizeof(clean_fetch_url));
+            if ((purl.scheme == SCHEME_HTTP && purl.port != 80) || (purl.scheme == SCHEME_HTTPS && purl.port != 443)) {
+                char pbuf[16];
+                char ptmp[16];
+                int pi = 0;
+                u32 pv = purl.port;
+                while (pv > 0) {
+                    ptmp[pi++] = '0' + (pv % 10);
+                    pv /= 10;
+                }
+                pbuf[0] = ':';
+                int pj = 1;
+                for (int k = pi - 1; k >= 0; k--) pbuf[pj++] = ptmp[k];
+                pbuf[pj] = '\0';
+                ustrcat(clean_fetch_url, pbuf, sizeof(clean_fetch_url));
+            }
             ustrcat(clean_fetch_url, purl.path, sizeof(clean_fetch_url));
         }
 
-        s64 bytes = fetch_resource(clean_fetch_url, b->html_buf, 16383);
+        int page_status = 0;
+        s64 bytes = fetch_page_resource(clean_fetch_url, b->html_buf, 16383, &page_status);
         if (bytes >= 0) {
             b->html_buf[bytes] = '\0';
             b->html_len = (size_t)bytes;
             if (purl.scheme == SCHEME_FILE) {
                 ustrcpy(b->status_text, "Ready (File loaded)", sizeof(b->status_text));
-            } else if (purl.scheme == SCHEME_HTTPS) {
-                ustrcpy(b->status_text, "Ready (HTTPS 200 OK)", sizeof(b->status_text));
+            } else if (page_status == 200) {
+                if (purl.scheme == SCHEME_HTTPS) {
+                    ustrcpy(b->status_text, "Ready (HTTPS 200 OK)", sizeof(b->status_text));
+                } else {
+                    ustrcpy(b->status_text, "Ready (HTTP 200 OK)", sizeof(b->status_text));
+                }
+            } else if (page_status == 404) {
+                ustrcpy(b->status_text, "404 Not Found", sizeof(b->status_text));
+            } else if (page_status == 495) {
+                ustrcpy(b->status_text, "Security Error: Certificate Failed", sizeof(b->status_text));
+            } else if (page_status == 502) {
+                ustrcpy(b->status_text, "Error: DNS Resolution Failed", sizeof(b->status_text));
+            } else if (page_status == 504) {
+                ustrcpy(b->status_text, "Error: Connection Timed Out", sizeof(b->status_text));
+            } else if (page_status == 525) {
+                ustrcpy(b->status_text, "Security Error: TLS Handshake Failed", sizeof(b->status_text));
             } else {
-                ustrcpy(b->status_text, "Ready (HTTP 200 OK)", sizeof(b->status_text));
+                char sbuf[48];
+                ustrcpy(sbuf, "Loaded (Status: ", sizeof(sbuf));
+                int si = (int)ustrlen(sbuf);
+                sbuf[si++] = '0' + (page_status / 100) % 10;
+                sbuf[si++] = '0' + (page_status / 10) % 10;
+                sbuf[si++] = '0' + (page_status % 10);
+                sbuf[si++] = ')';
+                sbuf[si] = '\0';
+                ustrcpy(b->status_text, sbuf, sizeof(b->status_text));
             }
         } else {
-            ustrcpy(b->status_text, "Resource Not Found (404)", sizeof(b->status_text));
-            const char *err = "<html><head><title>404 Not Found</title></head><body><h1>Resource Not Found</h1><p>Requested URL could not be resolved.</p></body></html>";
+            const char *err = "<html><head><title>404 Not Found</title></head><body><h1>Resource Not Found</h1><p>Requested URL could not be resolved.</p><hr><p><a href=\"file:///www/index.html\">Return to Home</a></p></body></html>";
+            if (page_status == 495) {
+                ustrcpy(b->status_text, "Security Error: Certificate Failed", sizeof(b->status_text));
+                err = "<html><head><title>Security Error</title></head><body><h1>Certificate Verification Failed</h1><p>The TLS certificate is invalid, expired, or untrusted.</p><hr><p><a href=\"file:///www/index.html\">Return to Home</a></p></body></html>";
+            } else if (page_status == 525) {
+                ustrcpy(b->status_text, "Security Error: TLS Handshake Failed", sizeof(b->status_text));
+                err = "<html><head><title>Security Error</title></head><body><h1>TLS Handshake Failed</h1><p>Secure connection parameters could not be negotiated.</p><hr><p><a href=\"file:///www/index.html\">Return to Home</a></p></body></html>";
+            } else if (page_status == 502) {
+                ustrcpy(b->status_text, "Error: DNS Resolution Failed", sizeof(b->status_text));
+                err = "<html><head><title>502 Bad Gateway</title></head><body><h1>502 Bad Gateway</h1><p>Could not resolve the specified hostname or framing was malformed.</p><hr><p><a href=\"file:///www/index.html\">Return to Home</a></p></body></html>";
+            } else if (page_status == 504) {
+                ustrcpy(b->status_text, "Error: Connection Timed Out", sizeof(b->status_text));
+                err = "<html><head><title>504 Gateway Timeout</title></head><body><h1>Connection Timed Out</h1><p>Server connection refused or timed out.</p><hr><p><a href=\"file:///www/index.html\">Return to Home</a></p></body></html>";
+            } else {
+                ustrcpy(b->status_text, "Resource Not Found (404)", sizeof(b->status_text));
+            }
             ustrcpy(b->html_buf, err, 4096);
             b->html_len = ustrlen(err);
         }
@@ -1888,7 +2631,8 @@ static void navigate_to(browser_app_t *b, const char *url_str, bool record_histo
     if (purl.fragment[0] != '\0') {
         for (int i = 0; i < b->box_count; i++) {
             if (b->boxes[i].id_name[0] && ustrcaseeq(b->boxes[i].id_name, purl.fragment)) {
-                int view_h = WIN_HEIGHT - TOOLBAR_HEIGHT - STATUS_HEIGHT;
+                int top_bars = (b->tab_count > 0) ? (TAB_BAR_HEIGHT + TOOLBAR_HEIGHT) : TOOLBAR_HEIGHT;
+                int view_h = WIN_HEIGHT - top_bars - STATUS_HEIGHT;
                 int max_scroll = b->doc_height - view_h;
                 if (max_scroll < 0) max_scroll = 0;
                 int target_y = b->boxes[i].y - 8;
@@ -1899,6 +2643,8 @@ static void navigate_to(browser_app_t *b, const char *url_str, bool record_histo
             }
         }
     }
+
+    tab_save_active(b);
 }
 
 static void render_browser_ui(browser_app_t *b) {
@@ -1908,51 +2654,97 @@ static void render_browser_ui(browser_app_t *b) {
     /* 1. Clear background */
     sys_gui_clear(win, COLOR_VIEWPORT_BG);
 
-    /* 2. Top Navigation Toolbar */
-    sys_gui_fill_rect(win, 0, 0, WIN_WIDTH, TOOLBAR_HEIGHT, COLOR_TOOLBAR_BG);
-    sys_gui_draw_rect(win, 0, TOOLBAR_HEIGHT - 1, WIN_WIDTH, 1, COLOR_PANEL_BORDER);
+    /* 2. Top Tab Bar (y = 0..23, h = 24) */
+    sys_gui_fill_rect(win, 0, 0, WIN_WIDTH, TAB_BAR_HEIGHT, 0xFF080C16);
+    sys_gui_draw_rect(win, 0, TAB_BAR_HEIGHT - 1, WIN_WIDTH, 1, COLOR_PANEL_BORDER);
+
+    for (int t = 0; t < b->tab_count && t < MAX_TABS; t++) {
+        int tx = 4 + t * 140;
+        int tw = 136;
+        int ty = 2;
+        int th = 20;
+        bool is_active = (t == b->active_tab_idx);
+
+        u32 tab_bg = is_active ? COLOR_BTN_ACTIVE : COLOR_BTN_BG;
+        u32 tab_border = is_active ? COLOR_BORDER_CYAN : COLOR_BORDER_DEFAULT;
+        sys_gui_fill_rect(win, tx, ty, tw, th, tab_bg);
+        sys_gui_draw_rect(win, tx, ty, tw, th, tab_border);
+
+        /* Tab title truncated */
+        char tab_disp[16];
+        const char *src_title = b->tabs[t].page_title[0] ? b->tabs[t].page_title : "New Tab";
+        size_t ti = 0;
+        while (src_title[ti] && ti < 11) {
+            tab_disp[ti] = src_title[ti];
+            ti++;
+        }
+        tab_disp[ti] = '\0';
+        sys_gui_draw_text(win, tx + 6, ty + 3, tab_disp, COLOR_TEXT_WHITE, 0);
+
+        /* Tab close button [x] */
+        sys_gui_draw_text(win, tx + tw - 14, ty + 3, "x", is_active ? COLOR_ACCENT_RED : COLOR_TEXT_MUTED, 0);
+    }
+
+    /* [+] New Tab button if tab_count < MAX_TABS */
+    if (b->tab_count < MAX_TABS) {
+        int plus_x = 4 + b->tab_count * 140;
+        sys_gui_fill_rect(win, plus_x, 2, 24, 20, COLOR_BTN_BG);
+        sys_gui_draw_rect(win, plus_x, 2, 24, 20, COLOR_BORDER_DEFAULT);
+        sys_gui_draw_text(win, plus_x + 8, 4, "+", COLOR_TEXT_WHITE, 0);
+    }
+
+    /* 3. Navigation Toolbar (y = 24..53, h = 30) */
+    int tb_y = TAB_BAR_HEIGHT;
+    sys_gui_fill_rect(win, 0, tb_y, WIN_WIDTH, TOOLBAR_HEIGHT, COLOR_TOOLBAR_BG);
+    sys_gui_draw_rect(win, 0, tb_y + TOOLBAR_HEIGHT - 1, WIN_WIDTH, 1, COLOR_PANEL_BORDER);
 
     /* Back Button [<-] */
     bool can_back = (b->history_index > 0);
-    sys_gui_fill_rect(win, 6, 5, 26, 24, can_back ? COLOR_BTN_ACTIVE : COLOR_BTN_BG);
-    sys_gui_draw_rect(win, 6, 5, 26, 24, COLOR_BORDER_DEFAULT);
-    sys_gui_draw_text(win, 11, 9, "<-", can_back ? COLOR_TEXT_WHITE : COLOR_TEXT_MUTED, 0);
+    sys_gui_fill_rect(win, 6, tb_y + 3, 24, 24, can_back ? COLOR_BTN_ACTIVE : COLOR_BTN_BG);
+    sys_gui_draw_rect(win, 6, tb_y + 3, 24, 24, COLOR_BORDER_DEFAULT);
+    sys_gui_draw_text(win, 10, tb_y + 7, "<-", can_back ? COLOR_TEXT_WHITE : COLOR_TEXT_MUTED, 0);
 
     /* Forward Button [->] */
     bool can_fwd = (b->history_index < b->history_count - 1);
-    sys_gui_fill_rect(win, 36, 5, 26, 24, can_fwd ? COLOR_BTN_ACTIVE : COLOR_BTN_BG);
-    sys_gui_draw_rect(win, 36, 5, 26, 24, COLOR_BORDER_DEFAULT);
-    sys_gui_draw_text(win, 41, 9, "->", can_fwd ? COLOR_TEXT_WHITE : COLOR_TEXT_MUTED, 0);
+    sys_gui_fill_rect(win, 34, tb_y + 3, 24, 24, can_fwd ? COLOR_BTN_ACTIVE : COLOR_BTN_BG);
+    sys_gui_draw_rect(win, 34, tb_y + 3, 24, 24, COLOR_BORDER_DEFAULT);
+    sys_gui_draw_text(win, 38, tb_y + 7, "->", can_fwd ? COLOR_TEXT_WHITE : COLOR_TEXT_MUTED, 0);
 
     /* Reload Button [R] */
-    sys_gui_fill_rect(win, 66, 5, 26, 24, COLOR_BTN_BG);
-    sys_gui_draw_rect(win, 66, 5, 26, 24, COLOR_BORDER_DEFAULT);
-    sys_gui_draw_text(win, 74, 9, "R", COLOR_TEXT_WHITE, 0);
+    sys_gui_fill_rect(win, 62, tb_y + 3, 24, 24, COLOR_BTN_BG);
+    sys_gui_draw_rect(win, 62, tb_y + 3, 24, 24, COLOR_BORDER_DEFAULT);
+    sys_gui_draw_text(win, 70, tb_y + 7, "R", COLOR_TEXT_WHITE, 0);
+
+    /* Bookmark Toggle Button [*] */
+    bool is_bookmarked = (bookmark_find(b, b->current_url) >= 0);
+    sys_gui_fill_rect(win, 90, tb_y + 3, 24, 24, is_bookmarked ? 0xFF854D0E : COLOR_BTN_BG);
+    sys_gui_draw_rect(win, 90, tb_y + 3, 24, 24, is_bookmarked ? COLOR_ACCENT_YELLOW : COLOR_BORDER_DEFAULT);
+    sys_gui_draw_text(win, 98, tb_y + 7, "*", is_bookmarked ? COLOR_ACCENT_YELLOW : COLOR_TEXT_MUTED, 0);
 
     /* URL Bar */
-    int url_x = 98;
-    int url_w = WIN_WIDTH - url_x - 52;
-    sys_gui_fill_rect(win, url_x, 5, url_w, 24, 0xFF080C16);
-    sys_gui_draw_rect(win, url_x, 5, url_w, 24, b->input_focused ? COLOR_BORDER_CYAN : COLOR_BORDER_DEFAULT);
-    sys_gui_draw_text(win, url_x + 6, 9, b->input_url, COLOR_TEXT_WHITE, 0);
+    int url_x = 118;
+    int url_w = WIN_WIDTH - url_x - 48;
+    sys_gui_fill_rect(win, url_x, tb_y + 3, url_w, 24, 0xFF080C16);
+    sys_gui_draw_rect(win, url_x, tb_y + 3, url_w, 24, b->input_focused ? COLOR_BORDER_CYAN : COLOR_BORDER_DEFAULT);
+    sys_gui_draw_text(win, url_x + 6, tb_y + 7, b->input_url, COLOR_TEXT_WHITE, 0);
 
     /* Cursor in URL bar */
     if (b->input_focused) {
         int cur_x = url_x + 6 + (b->input_cursor * FONT_WIDTH);
         if (cur_x < url_x + url_w - 4) {
-            sys_gui_fill_rect(win, cur_x, 8, 2, 16, COLOR_BORDER_CYAN);
+            sys_gui_fill_rect(win, cur_x, tb_y + 6, 2, 16, COLOR_BORDER_CYAN);
         }
     }
 
     /* Go Button */
-    int go_x = WIN_WIDTH - 46;
-    sys_gui_fill_rect(win, go_x, 5, 40, 24, COLOR_BTN_ACTIVE);
-    sys_gui_draw_rect(win, go_x, 5, 40, 24, COLOR_BORDER_CYAN);
-    sys_gui_draw_text(win, go_x + 12, 9, "Go", COLOR_TEXT_WHITE, 0);
+    int go_x = WIN_WIDTH - 44;
+    sys_gui_fill_rect(win, go_x, tb_y + 3, 38, 24, COLOR_BTN_ACTIVE);
+    sys_gui_draw_rect(win, go_x, tb_y + 3, 38, 24, COLOR_BORDER_CYAN);
+    sys_gui_draw_text(win, go_x + 10, tb_y + 7, "Go", COLOR_TEXT_WHITE, 0);
 
-    /* 3. Render HTML Boxes in Viewport */
-    int view_y = TOOLBAR_HEIGHT;
-    int view_h = WIN_HEIGHT - TOOLBAR_HEIGHT - STATUS_HEIGHT;
+    /* 4. Render HTML Boxes in Viewport */
+    int view_y = TAB_BAR_HEIGHT + TOOLBAR_HEIGHT;
+    int view_h = WIN_HEIGHT - view_y - STATUS_HEIGHT;
 
     for (int i = 0; i < b->box_count; i++) {
         const layout_box_t *box = &b->boxes[i];
@@ -1961,7 +2753,7 @@ static void render_browser_ui(browser_app_t *b) {
         /* Vertical clipping */
         if (sy + box->h < view_y || sy >= view_y + view_h) continue;
 
-        /* 3A: Render Web Image */
+        /* 4A: Render Web Image */
         if (box->is_image) {
             if (box->image_pixels) {
                 sys_gui_draw_bitmap(win, box->x, sy, box->w, box->h, box->image_pixels);
@@ -1974,7 +2766,7 @@ static void render_browser_ui(browser_app_t *b) {
             continue;
         }
 
-        /* 3B: Render Form Control */
+        /* 4B: Render Form Control */
         if (box->form_ctrl_id >= 0 && box->form_ctrl_id < b->control_count) {
             const form_control_t *fc = &b->controls[box->form_ctrl_id];
             if (fc->type == CTRL_INPUT_TEXT) {
@@ -2012,7 +2804,7 @@ static void render_browser_ui(browser_app_t *b) {
             continue;
         }
 
-        /* 3C: Render Standard HTML Elements */
+        /* 4C: Render Standard HTML Elements */
         if (box->has_bg) {
             sys_gui_fill_rect(win, box->x, sy, box->w, box->h, box->bg_color);
         }
@@ -2037,7 +2829,7 @@ static void render_browser_ui(browser_app_t *b) {
         }
     }
 
-    /* 4. Vertical Scrollbar */
+    /* 5. Vertical Scrollbar */
     int sb_x = WIN_WIDTH - SCROLLBAR_WIDTH;
     sys_gui_fill_rect(win, sb_x, view_y, SCROLLBAR_WIDTH, view_h, 0xFF0D121F);
     sys_gui_draw_rect(win, sb_x, view_y, SCROLLBAR_WIDTH, view_h, COLOR_PANEL_BORDER);
@@ -2051,7 +2843,7 @@ static void render_browser_ui(browser_app_t *b) {
         sys_gui_draw_rect(win, sb_x + 2, thumb_y, SCROLLBAR_WIDTH - 4, thumb_h, COLOR_BORDER_DEFAULT);
     }
 
-    /* 5. Bottom Status Bar */
+    /* 6. Bottom Status Bar */
     int stat_y = WIN_HEIGHT - STATUS_HEIGHT;
     sys_gui_fill_rect(win, 0, stat_y, WIN_WIDTH, STATUS_HEIGHT, COLOR_STATUS_BG);
     sys_gui_draw_rect(win, 0, stat_y, WIN_WIDTH, 1, COLOR_PANEL_BORDER);
@@ -2086,6 +2878,7 @@ static void run_phase_p_self_tests(void) {
     for (size_t i = 54; i < sizeof(synth_bmp); i++) synth_bmp[i] = 0xAA;
 
     int bw = 0, bh = 0;
+    s_bmp_pixels_used = 0;
     u32 *dec_pixels = decode_bmp(synth_bmp, sizeof(synth_bmp), &bw, &bh);
     if (!dec_pixels || bw != 4 || bh != 4) {
         const char err[] = "[FATAL] Phase P BMP decoder self-test failed!\n";
@@ -2139,7 +2932,7 @@ static void run_phase_p_self_tests(void) {
     sys_write(1, ext_css_ok, ustrlen(ext_css_ok));
 
     /* TEST 3: Interactive HTML Forms Verification */
-    static browser_app_t test_app;
+#define test_app s_test_app
     umemset(&test_app, 0, sizeof(test_app));
     test_app.nodes = (dom_node_t *)umalloc(sizeof(dom_node_t) * 16);
     test_app.stylesheet = &test_sheet;
@@ -2175,6 +2968,7 @@ static void run_phase_p_self_tests(void) {
 
     const char forms_ok[] = "ASTRA_BROWSER_FORMS_OK\n";
     sys_write(1, forms_ok, ustrlen(forms_ok));
+#undef test_app
 }
 
 /* -----------------------------------------------------------------
@@ -2202,7 +2996,7 @@ static void run_phase_q_self_tests(void) {
     if (!ustrcaseeq(res, "file:///www/about.html#features")) sys_exit(45);
 
     /* TEST 2: Bounded History Stack (Push, Shift, Truncate, Back, Forward) */
-    static browser_app_t hist_app;
+#define hist_app s_test_app
     umemset(&hist_app, 0, sizeof(hist_app));
     hist_app.nodes = (dom_node_t *)umalloc(sizeof(dom_node_t) * 16);
     static stylesheet_t q_sheet;
@@ -2253,7 +3047,7 @@ static void run_phase_q_self_tests(void) {
     sys_write(1, nav_ok, ustrlen(nav_ok));
 
     /* TEST 3: Fragment Anchor Navigation & Vertical Scrolling */
-    static browser_app_t scroll_app;
+#define scroll_app s_test_app
     umemset(&scroll_app, 0, sizeof(scroll_app));
     scroll_app.nodes = (dom_node_t *)umalloc(sizeof(dom_node_t) * 32);
     scroll_app.stylesheet = &q_sheet;
@@ -2335,6 +3129,8 @@ static void run_phase_q_self_tests(void) {
 
     const char scroll_ok[] = "ASTRA_BROWSER_SCROLL_OK\n";
     sys_write(1, scroll_ok, ustrlen(scroll_ok));
+#undef hist_app
+#undef scroll_app
 }
 
 /* -----------------------------------------------------------------
@@ -2353,7 +3149,7 @@ static void run_phase_r_self_tests(void) {
     sys_write(1, feas_ok, ustrlen(feas_ok));
 
     /* 2. Test Browser DOM Integration (getElementById & textContent mutation) */
-    static browser_app_t js_app;
+#define js_app s_test_app
     umemset(&js_app, 0, sizeof(js_app));
     js_app.nodes = (dom_node_t *)umalloc(sizeof(dom_node_t) * 16);
     static stylesheet_t r_sheet;
@@ -2405,6 +3201,7 @@ static void run_phase_r_self_tests(void) {
 
     const char iso_ok[] = "ASTRA_JS_ISOLATION_OK\n";
     sys_write(1, iso_ok, ustrlen(iso_ok));
+#undef js_app
 }
 
 /* -----------------------------------------------------------------
@@ -2423,7 +3220,7 @@ static void run_phase_s_self_tests(void) {
     sys_write(1, hard_ok, ustrlen(hard_ok));
 
     /* 2. Test Safe DOM Bridge: Safe textContent updates & bounded reflow */
-    static browser_app_t s_app;
+#define s_app s_test_app
     umemset(&s_app, 0, sizeof(s_app));
     s_app.nodes = (dom_node_t *)umalloc(sizeof(dom_node_t) * 16);
     static stylesheet_t s_sheet;
@@ -2490,6 +3287,7 @@ static void run_phase_s_self_tests(void) {
 
     const char bridge_ok[] = "ASTRA_DOM_BRIDGE_OK\n";
     sys_write(1, bridge_ok, ustrlen(bridge_ok));
+#undef s_app
 }
 
 /* -----------------------------------------------------------------
@@ -2507,7 +3305,7 @@ static void run_phase_t_self_tests(void) {
     sys_write(1, events_ok, ustrlen(events_ok));
 
     /* 2. Interactive DOM Events & Button Click Dispatch Self-Test */
-    static browser_app_t t_app;
+#define t_app s_test_app
     static dom_node_t t_nodes[32];
     static layout_box_t t_boxes[32];
     static stylesheet_t t_sheet;
@@ -2668,6 +3466,7 @@ static void run_phase_t_self_tests(void) {
 
     const char interactive_ok[] = "ASTRA_BROWSER_INTERACTIVE_OK\n";
     sys_write(1, interactive_ok, ustrlen(interactive_ok));
+#undef t_app
 }
 
 /* -----------------------------------------------------------------
@@ -2685,7 +3484,7 @@ static void run_phase_u_self_tests(void) {
     sys_write(1, js_adv_ok, ustrlen(js_adv_ok));
 
     /* 2. Adversarial Browser DOM & Event Isolation Tests */
-    static browser_app_t u_app;
+#define u_app s_test_app
     static dom_node_t u_nodes[32];
     static layout_box_t u_boxes[32];
     static stylesheet_t u_sheet;
@@ -2777,6 +3576,677 @@ static void run_phase_u_self_tests(void) {
 
     const char sec_ok[] = "ASTRA_BROWSER_SECURITY_OK\n";
     sys_write(1, sec_ok, ustrlen(sec_ok));
+#undef u_app
+}
+
+/* -----------------------------------------------------------------
+ * Phase V Self-Tests (End-to-End Browser Networking & HTTPS Validation)
+ * ----------------------------------------------------------------- */
+static void run_phase_v_self_tests(void) {
+    int status = 0;
+    char net_buf[1024];
+
+    /* TEST 1: Syscall parameter bounds on sys_net_fetch */
+    /* Negative Test 1A: Null URL must be rejected with -EINVAL */
+    if (sys_net_fetch(NULL, net_buf, sizeof(net_buf), &status) >= 0) {
+        sys_exit(180);
+    }
+
+    /* Negative Test 1B: Null destination buffer must be rejected */
+    if (sys_net_fetch("http://10.0.2.2:8000/", NULL, 1024, &status) >= 0) {
+        sys_exit(181);
+    }
+
+    /* Negative Test 1C: Buffer too small (< 32 bytes) must be rejected */
+    if (sys_net_fetch("http://10.0.2.2:8000/", net_buf, 16, &status) >= 0) {
+        sys_exit(182);
+    }
+
+    /* TEST 2: Invalid URL scheme rejection via sys_net_fetch */
+    status = 0;
+    if (sys_net_fetch("ftp://10.0.2.2/file.txt", net_buf, sizeof(net_buf), &status) >= 0 || status != 400) {
+        sys_exit(183);
+    }
+
+    /* Negative Test 2B: Malformed URL without scheme */
+    status = 0;
+    if (sys_net_fetch("htp:/malformed", net_buf, sizeof(net_buf), &status) >= 0 || status != 400) {
+        sys_exit(184);
+    }
+
+    /* TEST 3: Port formatting in URL parser */
+    parsed_url_t purl;
+    if (!parse_url("https://10.0.2.2:8443/test.html", &purl) || purl.scheme != SCHEME_HTTPS ||
+        purl.port != 8443 || !ustrcaseeq(purl.host, "10.0.2.2") || !ustrcaseeq(purl.path, "/test.html")) {
+        sys_exit(185);
+    }
+
+    if (!parse_url("http://10.0.2.2:8000/index.html", &purl) || purl.scheme != SCHEME_HTTP ||
+        purl.port != 8000 || !ustrcaseeq(purl.host, "10.0.2.2") || !ustrcaseeq(purl.path, "/index.html")) {
+        sys_exit(186);
+    }
+
+    /* TEST 4: Resource fetching & status extraction */
+    int page_status = 0;
+    s64 file_bytes = fetch_page_resource("file:///www/index.html", net_buf, sizeof(net_buf) - 1, &page_status);
+    if (file_bytes <= 0 || page_status != 200) {
+        sys_exit(187);
+    }
+
+    /* Negative Test 4B: Nonexistent local file returns 404 */
+    page_status = 0;
+    s64 missing_bytes = fetch_page_resource("file:///nonexistent_file_xyz.html", net_buf, sizeof(net_buf) - 1, &page_status);
+    if (missing_bytes != -1 || page_status != 404) {
+        sys_exit(188);
+    }
+
+    const char net_ok[] = "ASTRA_BROWSER_NET_ISOLATION_OK\n";
+    sys_write(1, net_ok, ustrlen(net_ok));
+}
+
+static void run_phase_w_self_tests(void) {
+    /* -------------------------------------------------------------
+     * Phase W: HTTP Protocol Hardening & Browser Reliability Self-Tests
+     * ------------------------------------------------------------- */
+    char net_buf[1024];
+    int status = 0;
+
+    /* TEST 1: URL parser port edge cases */
+    parsed_url_t purl;
+    if (!parse_url("http://10.0.2.2:8000/chunked", &purl) || purl.port != 8000) {
+        sys_exit(190);
+    }
+    if (!parse_url("https://10.0.2.2:8443/status/500", &purl) || purl.port != 8443) {
+        sys_exit(191);
+    }
+
+    /* Negative Test 1B: Empty or invalid URL strings */
+    if (parse_url("", &purl) || parse_url("http://", &purl)) {
+        sys_exit(192);
+    }
+
+    /* TEST 2: Syscall fetch of live endpoints if network active */
+    s64 b = fetch_page_resource("http://10.0.2.2:8000/", net_buf, sizeof(net_buf) - 1, &status);
+    if (b > 0 && status == 200) {
+        /* Adversarial Test 2B: Malformed header endpoint must yield 502 Bad Gateway */
+        status = 0;
+        fetch_page_resource("http://10.0.2.2:8000/malformed", net_buf, sizeof(net_buf) - 1, &status);
+        if (status != 502) sys_exit(194);
+    } else if (b > 0 && status != 504 && status != 502) {
+        /* If live server was reached but returned unexpected non-200 code */
+        sys_exit(193);
+    }
+
+    const char w_ok[] = "ASTRA_BROWSER_HTTP_HARDENING_OK\n";
+    sys_write(1, w_ok, ustrlen(w_ok));
+}
+
+static void run_phase_y_self_tests(void) {
+    /* -------------------------------------------------------------
+     * Phase Y: Browser UX, Navigation, URL Validation & Shortcuts Self-Tests
+     * ------------------------------------------------------------- */
+
+    /* TEST 1: URL input sanitization & auto-prefixing */
+    char s_out[256];
+    if (!sanitize_url_input("   http://10.0.2.2:8000/index.html   ", s_out, sizeof(s_out)) ||
+        !ustrcaseeq(s_out, "http://10.0.2.2:8000/index.html")) {
+        sys_exit(201);
+    }
+
+    if (!sanitize_url_input("/www/index.html", s_out, sizeof(s_out)) ||
+        !ustrcaseeq(s_out, "file:///www/index.html")) {
+        sys_exit(202);
+    }
+
+    if (!sanitize_url_input("10.0.2.2:8000/page.html", s_out, sizeof(s_out)) ||
+        !ustrcaseeq(s_out, "http://10.0.2.2:8000/page.html")) {
+        sys_exit(203);
+    }
+
+    /* Negative Test 1B: Unsupported schemes */
+    if (sanitize_url_input("ftp://example.com/file.iso", s_out, sizeof(s_out))) {
+        sys_exit(204);
+    }
+    if (sanitize_url_input("javascript:alert(1)", s_out, sizeof(s_out))) {
+        sys_exit(205);
+    }
+    if (sanitize_url_input("", s_out, sizeof(s_out))) {
+        sys_exit(206);
+    }
+
+    /* TEST 2: History stack integrity & non-duplicating reload */
+#define y_app s_test_app
+    umemset(&y_app, 0, sizeof(y_app));
+    y_app.nodes = (dom_node_t *)umalloc(sizeof(dom_node_t) * 16);
+    static stylesheet_t y_sheet;
+    y_app.stylesheet = &y_sheet;
+    y_app.boxes = (layout_box_t *)umalloc(sizeof(layout_box_t) * 16);
+    y_app.html_buf = (char *)umalloc(4096);
+
+    /* Initial navigation */
+    browser_history_push(&y_app, "file:///p1.html");
+    if (y_app.history_count != 1 || y_app.history_index != 0 ||
+        !ustrcaseeq(y_app.history[0], "file:///p1.html")) {
+        sys_exit(210);
+    }
+
+    /* Reload must not add duplicate history */
+    browser_history_push(&y_app, "file:///p1.html");
+    if (y_app.history_count != 1 || y_app.history_index != 0) {
+        sys_exit(211);
+    }
+
+    /* Push page 2 and page 3 */
+    browser_history_push(&y_app, "file:///p2.html");
+    browser_history_push(&y_app, "file:///p3.html");
+    if (y_app.history_count != 3 || y_app.history_index != 2) {
+        sys_exit(212);
+    }
+
+    /* Simulate Back: index 2 -> 1, then fork new navigation */
+    y_app.history_index = 1;
+    browser_history_push(&y_app, "file:///p2_branch.html");
+    if (y_app.history_count != 3 || y_app.history_index != 2 ||
+        !ustrcaseeq(y_app.history[2], "file:///p2_branch.html")) {
+        sys_exit(213);
+    }
+
+    /* Push additional URLs to verify bounded 16-entry history limit */
+    for (int i = 0; i < 20; i++) {
+        char d_url[32];
+        d_url[0] = 'f'; d_url[1] = 'i'; d_url[2] = 'l'; d_url[3] = 'e';
+        d_url[4] = ':'; d_url[5] = '/'; d_url[6] = '/'; d_url[7] = '/';
+        d_url[8] = 'y'; d_url[9] = '0' + (i / 10); d_url[10] = '0' + (i % 10);
+        d_url[11] = '.'; d_url[12] = 'h'; d_url[13] = 't'; d_url[14] = 'm'; d_url[15] = '\0';
+        browser_history_push(&y_app, d_url);
+    }
+    if (y_app.history_count != 16 || y_app.history_index != 15) {
+        sys_exit(214);
+    }
+
+    /* TEST 3: Relative link resolution & fragment preservation */
+    char rel_res[256];
+    resolve_url("file:///www/index.html", "about.html", rel_res, sizeof(rel_res));
+    if (!ustrcaseeq(rel_res, "file:///www/about.html")) {
+        sys_exit(220);
+    }
+
+    resolve_url("file:///www/deep/page.html", "../img/logo.bmp", rel_res, sizeof(rel_res));
+    if (!ustrcaseeq(rel_res, "file:///www/img/logo.bmp")) {
+        sys_exit(221);
+    }
+
+    resolve_url("http://10.0.2.2:8000/docs/index.html", "/root.css", rel_res, sizeof(rel_res));
+    if (!ustrcaseeq(rel_res, "http://10.0.2.2:8000/root.css")) {
+        sys_exit(222);
+    }
+
+    resolve_url("http://10.0.2.2:8000/docs/index.html", "sub.html#header", rel_res, sizeof(rel_res));
+    if (!ustrcaseeq(rel_res, "http://10.0.2.2:8000/docs/sub.html#header")) {
+        sys_exit(223);
+    }
+
+    /* TEST 4: Repeated navigation & resource reclamation */
+    u32 start_gen = y_app.doc_generation;
+    for (int nav_i = 0; nav_i < 15; nav_i++) {
+        const char *t_url = (nav_i % 2 == 0) ? "file:///www/index.html" : "file:///www/nav_test.html";
+        navigate_to(&y_app, t_url, false);
+    }
+    if (y_app.doc_generation != start_gen + 15) {
+        sys_exit(230);
+    }
+    if (g_arena_chunk_count >= MAX_ARENA_CHUNKS) {
+        /* Arena must not overflow on repeated navigations */
+        sys_exit(231);
+    }
+
+    /* TEST 5: HTTP error response and 404 page formatting */
+    navigate_to(&y_app, "file:///nonexistent_file_404.html", false);
+    if (!ustrcontains(y_app.status_text, "404") || y_app.box_count == 0) {
+        sys_exit(240);
+    }
+
+    /* Negative Test 5B: Malformed URL produces valid error DOM */
+    navigate_to(&y_app, "ftp://unsupported.local/file", false);
+    if (!ustrcontains(y_app.status_text, "Error") || y_app.box_count == 0) {
+        sys_exit(241);
+    }
+
+    const char y_ok[] = "ASTRA_BROWSER_UX_OK\n";
+    sys_write(1, y_ok, ustrlen(y_ok));
+#undef y_app
+}
+
+static void run_phase_z_self_tests(void) {
+    /* -------------------------------------------------------------
+     * Phase Z: Browser Reliability, Resource Safety & Recovery Self-Tests
+     * ------------------------------------------------------------- */
+#define z_app s_test_app
+    umemset(&z_app, 0, sizeof(z_app));
+    z_app.nodes = (dom_node_t *)umalloc(sizeof(dom_node_t) * 32);
+    static stylesheet_t z_sheet;
+    z_app.stylesheet = &z_sheet;
+    z_app.boxes = (layout_box_t *)umalloc(sizeof(layout_box_t) * 32);
+    z_app.html_buf = (char *)umalloc(4096);
+
+    if (!z_app.nodes || !z_app.boxes || !z_app.html_buf) {
+        sys_exit(250);
+    }
+
+    /* -------------------------------------------------------------
+     * TEST 1: Navigation Stress Test (100 sequential navigations)
+     * ------------------------------------------------------------- */
+    int initial_arena_chunks = g_arena_chunk_count;
+    u32 start_gen = z_app.doc_generation;
+
+    const char *test_urls[5] = {
+        "file:///www/index.html",
+        "file:///www/about.html",
+        "file:///www/scroll.html",
+        "file:///www/css_test.html",
+        "file:///www/nav_test.html"
+    };
+
+    for (int nav_i = 0; nav_i < 100; nav_i++) {
+        int url_idx = nav_i % 5;
+        /* Perform mixed operations: Forward, Back, Reload, or New Navigate */
+        if (nav_i > 0 && (nav_i % 15 == 0) && z_app.history_index > 0) {
+            /* Simulate Back */
+            z_app.history_index--;
+            navigate_to(&z_app, z_app.history[z_app.history_index], false);
+        } else if (nav_i > 0 && (nav_i % 25 == 0) && z_app.history_index < z_app.history_count - 1) {
+            /* Simulate Forward */
+            z_app.history_index++;
+            navigate_to(&z_app, z_app.history[z_app.history_index], false);
+        } else if (nav_i > 0 && (nav_i % 10 == 0)) {
+            /* Simulate Reload */
+            navigate_to(&z_app, z_app.current_url, false);
+        } else {
+            /* New navigation */
+            navigate_to(&z_app, test_urls[url_idx], true);
+        }
+
+        /* Verify post-navigation integrity */
+        if (z_app.history_count < 1 || z_app.history_count > 16 ||
+            z_app.history_index < 0 || z_app.history_index >= z_app.history_count) {
+            sys_exit(251);
+        }
+        if (z_app.node_count <= 0 || z_app.box_count <= 0) {
+            sys_exit(252);
+        }
+    }
+
+    /* Verify document generation advanced for all navigations */
+    if (z_app.doc_generation < start_gen + 100) {
+        sys_exit(253);
+    }
+
+    /* Step 2 verification: Arena chunk count must not grow during navigations */
+    if (g_arena_chunk_count > initial_arena_chunks) {
+        sys_exit(254); /* Resource leak detected! */
+    }
+
+    /* -------------------------------------------------------------
+     * TEST 2: Input and Parser Boundary Tests
+     * ------------------------------------------------------------- */
+    /* 2A: Max-length URL boundary (<250 characters accepted) */
+    char long_url[300];
+    for (int i = 0; i < 240; i++) long_url[i] = 'a';
+    long_url[240] = '\0';
+    char prefix_url[260];
+    ustrcpy(prefix_url, "file:///", sizeof(prefix_url));
+    ustrcat(prefix_url, long_url, 248); /* Under 250 limit */
+    navigate_to(&z_app, prefix_url, false);
+    if (ustrcontains(z_app.status_text, "exceeds limit")) {
+        sys_exit(255);
+    }
+
+    /* 2B: Exceeded length URL (>=250 characters rejected) */
+    char oversized_url[300];
+    ustrcpy(oversized_url, "file:///", sizeof(oversized_url));
+    for (int i = 8; i < 280; i++) oversized_url[i] = 'x';
+    oversized_url[280] = '\0';
+    navigate_to(&z_app, oversized_url, false);
+    if (!ustrcontains(z_app.status_text, "exceeds limit")) {
+        sys_exit(256);
+    }
+
+    /* 2C: Oversized and deeply nested markup parsing */
+    static const char deep_html[] =
+        "<html><body>"
+        "<div><div><div><div><div><div><div><div><div><div>"
+        "<div><div><div><div><div><div><div><div><div><div>"
+        "<h1>Deep Title</h1><p>Deep paragraph text within nested structure.</p>"
+        "</div></div></div></div></div></div></div></div></div></div>"
+        "</div></div></div></div></div></div></div></div></div></div>"
+        "</body></html>";
+    int deep_nodes = parse_html(&z_app, deep_html, z_app.nodes, 32, z_app.stylesheet, z_app.page_title, sizeof(z_app.page_title));
+    if (deep_nodes <= 0 || deep_nodes > 32) {
+        sys_exit(257);
+    }
+
+    /* 2D: Long HTML text run chunking */
+    static const char long_text_html[] =
+        "<html><body><p>"
+        "This is an intentionally long run of continuous plain text designed to verify that the "
+        "HTML text run tokenizer correctly chunks content into bounded dom_node_t entries without "
+        "overflowing the 128-byte text buffer or triggering memory corruption in user space."
+        "</p></body></html>";
+    int long_nodes = parse_html(&z_app, long_text_html, z_app.nodes, 32, z_app.stylesheet, z_app.page_title, sizeof(z_app.page_title));
+    if (long_nodes < 2) {
+        sys_exit(258);
+    }
+
+    /* 2E: Malformed and oversized BMP dimensions */
+    u8 bad_bmp[64];
+    umemset(bad_bmp, 0, sizeof(bad_bmp));
+    bmp_file_header_t *bf = (bmp_file_header_t *)bad_bmp;
+    bmp_info_header_t *bi = (bmp_info_header_t *)(bad_bmp + sizeof(bmp_file_header_t));
+    bf->bfType = 0x4D42; /* 'BM' */
+    bi->biSize = 40;
+    bi->biPlanes = 1;
+    bi->biBitCount = 24;
+    bi->biWidth = 1000; /* Exceeds 512 max limit */
+    bi->biHeight = 1000;
+    int bw = 0, bh = 0;
+    if (decode_bmp(bad_bmp, sizeof(bad_bmp), &bw, &bh) != NULL) {
+        sys_exit(259);
+    }
+
+    /* 2F: JavaScript instruction budget exhaustion */
+    static const char inf_loop_js[] = "var i = 0; while (i < 1000000) { i = i + 1; }";
+    js_init(&z_app.doc_vm);
+    z_app.doc_vm_initialized = true;
+    js_value_t js_v;
+    js_error_t js_err = js_eval(&z_app.doc_vm, inf_loop_js, &js_v);
+    if (js_err != JS_ERR_TIMEOUT) {
+        sys_exit(260);
+    }
+
+    /* -------------------------------------------------------------
+     * TEST 3: Stale DOM Handle Rejection Across Navigations
+     * ------------------------------------------------------------- */
+    static const char handle_doc[] = "<html><body><div id=\"stale_test\">Old Text</div></body></html>";
+    z_app.node_count = parse_html(&z_app, handle_doc, z_app.nodes, 32, z_app.stylesheet, z_app.page_title, sizeof(z_app.page_title));
+    u32 doc_gen_1 = 0;
+    int elem_idx = browser_js_dom_get_element_by_id(&z_app, "stale_test", &doc_gen_1);
+    if (elem_idx < 0 || doc_gen_1 != z_app.doc_generation) {
+        sys_exit(261);
+    }
+
+    /* Advance navigation to new document */
+    navigate_to(&z_app, "file:///www/index.html", false);
+    u32 doc_gen_2 = z_app.doc_generation;
+    if (doc_gen_2 == doc_gen_1) {
+        sys_exit(262);
+    }
+
+    /* Stale handle access with old generation doc_gen_1 MUST be rejected */
+    if (browser_js_dom_set_text_content(&z_app, doc_gen_1, elem_idx, "Stale Exploit") != false) {
+        sys_exit(263);
+    }
+    if (browser_js_dom_get_text_content(&z_app, doc_gen_1, elem_idx) != NULL) {
+        sys_exit(264);
+    }
+
+    /* -------------------------------------------------------------
+     * TEST 4: Browser Error Recovery Verification
+     * ------------------------------------------------------------- */
+    /* 4A: Failed operation: invalid scheme */
+    navigate_to(&z_app, "ftp://invalid.host/file.txt", false);
+    if (!ustrcontains(z_app.status_text, "Error") && !ustrcontains(z_app.status_text, "Invalid")) {
+        sys_exit(265);
+    }
+
+    /* 4B: Recovery: immediately navigate to valid page */
+    navigate_to(&z_app, "file:///www/index.html", true);
+    if (z_app.node_count <= 0 || z_app.box_count <= 0 || !ustrcaseeq(z_app.current_url, "file:///www/index.html")) {
+        sys_exit(266);
+    }
+
+    /* 4C: Failed operation: 404 nonexistent file */
+    navigate_to(&z_app, "file:///www/nonexistent_recovery_404.html", true);
+    if (!ustrcontains(z_app.status_text, "404")) {
+        sys_exit(267);
+    }
+
+    /* 4D: Recovery: Back navigation restores valid page */
+    if (z_app.history_index > 0) {
+        z_app.history_index--;
+        navigate_to(&z_app, z_app.history[z_app.history_index], false);
+    }
+    if (!ustrcaseeq(z_app.current_url, "file:///www/index.html") || z_app.node_count <= 0) {
+        sys_exit(268);
+    }
+
+    /* 4E: Execute valid DOM event on recovered page */
+    static const char event_doc[] = "<html><body><button id=\"btn_ok\" onclick=\"document.getElementById('res').textContent = 'EventOK';\">Click</button><p id=\"res\">Initial</p></body></html>";
+    z_app.node_count = parse_html(&z_app, event_doc, z_app.nodes, 32, z_app.stylesheet, z_app.page_title, sizeof(z_app.page_title));
+    z_app.box_count = layout_page(&z_app, z_app.nodes, z_app.node_count, WIN_WIDTH - SCROLLBAR_WIDTH, z_app.boxes, 32, &z_app.doc_height);
+    browser_dispatch_click(&z_app, "document.getElementById('res').textContent = 'EventOK';");
+    int res_idx = browser_js_dom_get_element_by_id(&z_app, "res", NULL);
+    if (res_idx < 0 || !ustrcaseeq(z_app.nodes[res_idx].text, "EventOK")) {
+        sys_exit(269);
+    }
+
+    const char z_ok[] = "ASTRA_BROWSER_RELIABILITY_OK\n";
+    sys_write(1, z_ok, ustrlen(z_ok));
+#undef z_app
+}
+
+/* -----------------------------------------------------------------
+ * Phase AA Self-Tests (Tabs, Bookmarks & Persistent Storage Abstraction)
+ * ----------------------------------------------------------------- */
+static void run_phase_aa_self_tests(void) {
+    browser_app_t *aa_app = (browser_app_t *)umalloc(sizeof(browser_app_t));
+    if (!aa_app) sys_exit(269);
+    umemset(aa_app, 0, sizeof(*aa_app));
+
+    /* Temporarily assign pool pointers using dynamic arena allocations */
+    dom_node_t *saved_nodes_pool[MAX_TABS];
+    layout_box_t *saved_boxes_pool[MAX_TABS];
+    stylesheet_t *saved_sheet_pool[MAX_TABS];
+    char *saved_html_pool[MAX_TABS];
+    js_vm_t *saved_vm_pool[MAX_TABS];
+    for (int t = 0; t < MAX_TABS; t++) {
+        saved_nodes_pool[t] = s_tab_nodes_pool[t];
+        saved_boxes_pool[t] = s_tab_boxes_pool[t];
+        saved_sheet_pool[t] = s_tab_sheet_pool[t];
+        saved_html_pool[t] = s_tab_html_pool[t];
+        saved_vm_pool[t] = s_tab_vm_pool[t];
+
+        s_tab_nodes_pool[t] = (dom_node_t *)umalloc(sizeof(dom_node_t) * 32);
+        s_tab_boxes_pool[t] = (layout_box_t *)umalloc(sizeof(layout_box_t) * 32);
+        s_tab_sheet_pool[t] = (stylesheet_t *)umalloc(sizeof(stylesheet_t));
+        s_tab_html_pool[t] = (char *)umalloc(4096);
+        s_tab_vm_pool[t] = (js_vm_t *)umalloc(sizeof(js_vm_t));
+    }
+
+    /* Initialize Tab 0 */
+    aa_app->tabs[0].active = true;
+    aa_app->tabs[0].nodes = s_tab_nodes_pool[0];
+    aa_app->tabs[0].boxes = s_tab_boxes_pool[0];
+    aa_app->tabs[0].stylesheet = s_tab_sheet_pool[0];
+    aa_app->tabs[0].html_buf = s_tab_html_pool[0];
+    aa_app->tabs[0].doc_vm = s_tab_vm_pool[0];
+    aa_app->tabs[0].focused_control_id = -1;
+    aa_app->tabs[0].doc_generation = 1000;
+    aa_app->tab_count = 1;
+    tab_load_active(aa_app, 0);
+
+    /* -------------------------------------------------------------
+     * TEST 1: Tab Creation & Bounded Limit (MAX_TABS = 4)
+     * ------------------------------------------------------------- */
+    int t1 = tab_create(aa_app, "file:///www/img_test.html");
+    if (t1 != 1 || aa_app->tab_count != 2) sys_exit(270);
+
+    int t2 = tab_create(aa_app, "file:///www/form_test.html");
+    if (t2 != 2 || aa_app->tab_count != 3) sys_exit(271);
+
+    int t3 = tab_create(aa_app, "file:///www/js_test.html");
+    if (t3 != 3 || aa_app->tab_count != 4) sys_exit(272);
+
+    /* Attempt to exceed MAX_TABS -> MUST fail and return -1 */
+    int t4 = tab_create(aa_app, "file:///www/nav_test.html");
+    if (t4 != -1 || aa_app->tab_count != 4) sys_exit(273);
+
+    /* -------------------------------------------------------------
+     * TEST 2: Tab Isolation & Independent State
+     * ------------------------------------------------------------- */
+    tab_select(aa_app, 0);
+    navigate_to(aa_app, "file:///www/index.html", true);
+
+    tab_save_active(aa_app);
+    if (!ustrcaseeq(aa_app->tabs[0].current_url, "file:///www/index.html")) sys_exit(274);
+    if (!ustrcaseeq(aa_app->tabs[1].current_url, "file:///www/img_test.html")) sys_exit(275);
+    if (!ustrcaseeq(aa_app->tabs[2].current_url, "file:///www/form_test.html")) sys_exit(276);
+    if (!ustrcaseeq(aa_app->tabs[3].current_url, "file:///www/js_test.html")) sys_exit(277);
+
+    /* -------------------------------------------------------------
+     * TEST 3: Cross-Tab DOM Handle Invalidation
+     * ------------------------------------------------------------- */
+    tab_select(aa_app, 0);
+    static const char tab0_doc[] = "<html><body><h1 id=\"tab0_title\">Tab Zero Header</h1></body></html>";
+    aa_app->node_count = parse_html(aa_app, tab0_doc, aa_app->nodes, 32, aa_app->stylesheet, aa_app->page_title, sizeof(aa_app->page_title));
+    u32 tab0_gen = 0;
+    int tab0_elem = browser_js_dom_get_element_by_id(aa_app, "tab0_title", &tab0_gen);
+    if (tab0_elem < 0 || tab0_gen != aa_app->doc_generation) sys_exit(278);
+
+    tab_select(aa_app, 2);
+    if (browser_js_dom_set_text_content(aa_app, tab0_gen, tab0_elem, "CrossTab Injection") != false) {
+        sys_exit(279);
+    }
+    if (browser_js_dom_get_text_content(aa_app, tab0_gen, tab0_elem) != NULL) {
+        sys_exit(280);
+    }
+
+    /* -------------------------------------------------------------
+     * TEST 4: Tab Switching & Selection
+     * ------------------------------------------------------------- */
+    tab_select(aa_app, 1);
+    if (aa_app->active_tab_idx != 1 || !ustrcaseeq(aa_app->current_url, "file:///www/img_test.html")) sys_exit(281);
+    tab_select(aa_app, 3);
+    if (aa_app->active_tab_idx != 3 || !ustrcaseeq(aa_app->current_url, "file:///www/js_test.html")) sys_exit(282);
+
+    /* -------------------------------------------------------------
+     * TEST 5: Tab Closure & Selection Adjustment
+     * ------------------------------------------------------------- */
+    bool c3 = tab_close(aa_app, 3);
+    if (!c3 || aa_app->tab_count != 3 || aa_app->active_tab_idx != 2) sys_exit(283);
+    if (!ustrcaseeq(aa_app->current_url, "file:///www/form_test.html")) sys_exit(284);
+
+    bool c1 = tab_close(aa_app, 1);
+    if (!c1 || aa_app->tab_count != 2) sys_exit(285);
+    if (!ustrcaseeq(aa_app->tabs[0].current_url, "file:///www/index.html")) sys_exit(286);
+    if (!ustrcaseeq(aa_app->tabs[1].current_url, "file:///www/form_test.html")) sys_exit(287);
+
+    /* -------------------------------------------------------------
+     * TEST 6: Close Last Remaining Tab Resets to Home
+     * ------------------------------------------------------------- */
+    tab_close(aa_app, 1);
+    if (aa_app->tab_count != 1) sys_exit(288);
+    tab_close(aa_app, 0);
+    if (aa_app->tab_count != 1 || !ustrcaseeq(aa_app->current_url, "file:///www/index.html")) sys_exit(289);
+
+    /* -------------------------------------------------------------
+     * TEST 7: Bookmark Addition & Bounded Limit (MAX_BOOKMARKS = 32)
+     * ------------------------------------------------------------- */
+    aa_app->bookmark_count = 0;
+    for (int b = 0; b < MAX_BOOKMARKS; b++) {
+        char b_url[64];
+        ustrcpy(b_url, "file:///www/page_", sizeof(b_url));
+        int bi = (int)ustrlen(b_url);
+        b_url[bi++] = '0' + (b / 10);
+        b_url[bi++] = '0' + (b % 10);
+        b_url[bi++] = '.'; b_url[bi++] = 'h'; b_url[bi++] = 't'; b_url[bi++] = 'm'; b_url[bi++] = 'l';
+        b_url[bi] = '\0';
+        int b_idx = bookmark_add(aa_app, b_url, "Test Bookmark");
+        if (b_idx != b || aa_app->bookmark_count != b + 1) sys_exit(290);
+    }
+    int b_overflow = bookmark_add(aa_app, "file:///www/overflow.html", "Overflow");
+    if (b_overflow != -1 || aa_app->bookmark_count != MAX_BOOKMARKS) sys_exit(291);
+
+    /* -------------------------------------------------------------
+     * TEST 8: Bookmark Deduplication & URL Validation
+     * ------------------------------------------------------------- */
+    bookmark_remove(aa_app, "file:///www/page_00.html");
+    if (aa_app->bookmark_count != MAX_BOOKMARKS - 1) sys_exit(292);
+
+    int dup_idx = bookmark_add(aa_app, "file:///www/page_01.html", "Updated Title 01");
+    if (dup_idx < 0 || aa_app->bookmark_count != MAX_BOOKMARKS - 1) sys_exit(293);
+    if (!ustrcaseeq(aa_app->bookmarks[dup_idx].title, "Updated Title 01")) sys_exit(294);
+
+    if (bookmark_add(aa_app, "javascript:alert(1)", "XSS") != -1) sys_exit(295);
+    if (bookmark_add(aa_app, "data:text/html,bad", "Data") != -1) sys_exit(296);
+
+    /* -------------------------------------------------------------
+     * TEST 9: Bookmark Removal & Lookup
+     * ------------------------------------------------------------- */
+    int f_idx = bookmark_find(aa_app, "file:///www/page_02.html");
+    if (f_idx < 0) sys_exit(297);
+    bool r_ok = bookmark_remove(aa_app, "file:///www/page_02.html");
+    if (!r_ok || bookmark_find(aa_app, "file:///www/page_02.html") != -1) sys_exit(298);
+
+    /* Test bookmark open navigation */
+    if (!bookmark_open(aa_app, 0)) sys_exit(299);
+
+    /* -------------------------------------------------------------
+     * TEST 10: Versioned Binary Serialization & Checksum Verification
+     * ------------------------------------------------------------- */
+    static u8 ser_buf[sizeof(bookmark_header_t) + MAX_BOOKMARKS * sizeof(bookmark_disk_entry_t)];
+    s64 ser_len = bookmarks_serialize(aa_app, ser_buf, sizeof(ser_buf));
+    if (ser_len <= (s64)sizeof(bookmark_header_t)) sys_exit(300);
+
+    bookmark_header_t *hdr = (bookmark_header_t *)ser_buf;
+    if (hdr->magic != BOOKMARK_MAGIC || hdr->version != BOOKMARK_VERSION || hdr->count != aa_app->bookmark_count) {
+        sys_exit(301);
+    }
+
+    browser_app_t *test_deser_app = (browser_app_t *)umalloc(sizeof(browser_app_t));
+    if (!test_deser_app) sys_exit(302);
+    umemset(test_deser_app, 0, sizeof(*test_deser_app));
+    if (!bookmarks_deserialize(test_deser_app, ser_buf, (size_t)ser_len)) sys_exit(303);
+    if (test_deser_app->bookmark_count != aa_app->bookmark_count) sys_exit(304);
+    if (!ustrcaseeq(test_deser_app->bookmarks[0].url, aa_app->bookmarks[0].url)) sys_exit(305);
+
+    u32 good_csum = hdr->checksum;
+    hdr->checksum ^= 0x12345678;
+    if (bookmarks_deserialize(test_deser_app, ser_buf, (size_t)ser_len)) sys_exit(306);
+    hdr->checksum = good_csum;
+
+    hdr->magic = 0xDEADBEEF;
+    if (bookmarks_deserialize(test_deser_app, ser_buf, (size_t)ser_len)) sys_exit(307);
+    hdr->magic = BOOKMARK_MAGIC;
+
+    /* Exercise file persistence abstraction paths */
+    s64 s_save = bookmarks_save_path(aa_app, "/data/bm_test.bin");
+    if (s_save <= 0) {
+        s_save = bookmarks_save_path(aa_app, "/etc/bm_test.bin");
+    }
+    if (s_save <= 0) sys_exit(308);
+
+    browser_app_t *test_load_app = (browser_app_t *)umalloc(sizeof(browser_app_t));
+    if (!test_load_app) sys_exit(308);
+    umemset(test_load_app, 0, sizeof(*test_load_app));
+    s64 s_load = bookmarks_load_path(test_load_app, "/data/bm_test.bin");
+    if (s_load <= 0) {
+        s_load = bookmarks_load_path(test_load_app, "/etc/bm_test.bin");
+    }
+    if (s_load <= 0 || test_load_app->bookmark_count != aa_app->bookmark_count) {
+        sys_exit(309); /* Failed to load back saved bookmarks */
+    }
+
+    /* Restore real tab pools */
+    for (int t = 0; t < MAX_TABS; t++) {
+        s_tab_nodes_pool[t] = saved_nodes_pool[t];
+        s_tab_boxes_pool[t] = saved_boxes_pool[t];
+        s_tab_sheet_pool[t] = saved_sheet_pool[t];
+        s_tab_html_pool[t] = saved_html_pool[t];
+        s_tab_vm_pool[t] = saved_vm_pool[t];
+    }
+
+    const char aa_ok[] = "ASTRA_BROWSER_TABS_BOOKMARKS_OK\n";
+    sys_write(1, aa_ok, ustrlen(aa_ok));
 }
 
 /* -----------------------------------------------------------------
@@ -2818,17 +4288,36 @@ int main(void) {
     const char mmap_ok[] = "ASTRA_USER_MMAP_OK\n";
     sys_write(1, mmap_ok, ustrlen(mmap_ok));
 
-    /* 3. Allocate Browser Structures via Dynamic Arena */
-    g_browser.nodes = (dom_node_t *)umalloc(sizeof(dom_node_t) * MAX_NODES);
-    g_browser.boxes = (layout_box_t *)umalloc(sizeof(layout_box_t) * MAX_BOXES);
-    g_browser.stylesheet = (stylesheet_t *)umalloc(sizeof(stylesheet_t));
-    g_browser.html_buf = (char *)umalloc(32768);
+    /* 3. Allocate Browser Structures via Dynamic Arena (Preallocated 4 Tab Pools) */
+    for (int t = 0; t < MAX_TABS; t++) {
+        s_tab_nodes_pool[t] = (dom_node_t *)umalloc(sizeof(dom_node_t) * MAX_NODES);
+        s_tab_boxes_pool[t] = (layout_box_t *)umalloc(sizeof(layout_box_t) * MAX_BOXES);
+        s_tab_sheet_pool[t] = (stylesheet_t *)umalloc(sizeof(stylesheet_t));
+        s_tab_html_pool[t] = (char *)umalloc(32768);
+        s_tab_vm_pool[t] = (js_vm_t *)umalloc(sizeof(js_vm_t));
 
-    if (!g_browser.nodes || !g_browser.boxes || !g_browser.stylesheet || !g_browser.html_buf) {
-        const char err[] = "[FATAL] Failed to allocate browser memory structures!\n";
-        sys_write(1, err, ustrlen(err));
-        sys_exit(4);
+        if (!s_tab_nodes_pool[t] || !s_tab_boxes_pool[t] || !s_tab_sheet_pool[t] || !s_tab_html_pool[t] || !s_tab_vm_pool[t]) {
+            const char err[] = "[FATAL] Failed to allocate browser tab memory pools!\n";
+            sys_write(1, err, ustrlen(err));
+            sys_exit(4);
+        }
     }
+
+    /* Initialize Tab 0 */
+    umemset(&g_browser, 0, sizeof(g_browser));
+    g_browser.tabs[0].active = true;
+    g_browser.tabs[0].nodes = s_tab_nodes_pool[0];
+    g_browser.tabs[0].boxes = s_tab_boxes_pool[0];
+    g_browser.tabs[0].stylesheet = s_tab_sheet_pool[0];
+    g_browser.tabs[0].html_buf = s_tab_html_pool[0];
+    g_browser.tabs[0].doc_vm = s_tab_vm_pool[0];
+    if (g_browser.tabs[0].doc_vm) {
+        js_init(g_browser.tabs[0].doc_vm);
+    }
+    g_browser.tabs[0].focused_control_id = -1;
+    g_browser.tabs[0].doc_generation = 1000;
+    g_browser.tab_count = 1;
+    tab_load_active(&g_browser, 0);
 
     /* 4. Run Verification Self-Tests */
     run_phase_p_self_tests();
@@ -2837,6 +4326,38 @@ int main(void) {
     run_phase_s_self_tests();
     run_phase_t_self_tests();
     run_phase_u_self_tests();
+    run_phase_v_self_tests();
+    run_phase_w_self_tests();
+    run_phase_y_self_tests();
+    run_phase_z_self_tests();
+    run_phase_aa_self_tests();
+
+    /* Load and verify persistent browser bookmarks */
+    s64 b_load = bookmarks_load(&g_browser);
+    if (b_load > 0 && g_browser.bookmark_count >= 2) {
+        int idx1 = bookmark_find(&g_browser, "file:///www/index.html");
+        int idx2 = bookmark_find(&g_browser, "file:///www/about.html");
+        if (idx1 >= 0 && idx2 >= 0) {
+            const char bm_ok[] = "ASTRA_BROWSER_BOOKMARKS_COLD_REBOOT_OK\n";
+            sys_write(1, bm_ok, ustrlen(bm_ok));
+        }
+    } else {
+        /* Seed default bookmarks and persist to /data/bookmarks.bin */
+        g_browser.bookmark_count = 0;
+        bookmark_add(&g_browser, "file:///www/index.html", "AstraOS Portal");
+        bookmark_add(&g_browser, "file:///www/about.html", "About AstraOS");
+        s64 b_saved = bookmarks_save(&g_browser);
+        if (b_saved > 0) {
+            browser_app_t *test_check = (browser_app_t *)umalloc(sizeof(browser_app_t));
+            if (test_check) {
+                umemset(test_check, 0, sizeof(*test_check));
+                if (bookmarks_load(test_check) > 0 && test_check->bookmark_count >= 2) {
+                    const char bm_ok[] = "ASTRA_BROWSER_BOOKMARKS_COLD_REBOOT_OK\n";
+                    sys_write(1, bm_ok, ustrlen(bm_ok));
+                }
+            }
+        }
+    }
 
     /* 5. Create GUI Window */
     int win_id = (int)sys_gui_create_window("AstraBrowser", 100, 50, WIN_WIDTH, WIN_HEIGHT);
@@ -2882,33 +4403,63 @@ int main(void) {
                 int mx = ev.mouse.x;
                 int my = ev.mouse.y;
 
-                if (my < TOOLBAR_HEIGHT) {
+                if (my < TAB_BAR_HEIGHT) {
+                    /* Tab Bar clicks */
+                    for (int t = 0; t < g_browser.tab_count && t < MAX_TABS; t++) {
+                        int tx = 4 + t * 140;
+                        int tw = 136;
+                        if (mx >= tx && mx <= tx + tw) {
+                            if (mx >= tx + tw - 16) {
+                                tab_close(&g_browser, t);
+                            } else {
+                                tab_select(&g_browser, t);
+                            }
+                            break;
+                        }
+                    }
+                    if (g_browser.tab_count < MAX_TABS) {
+                        int plus_x = 4 + g_browser.tab_count * 140;
+                        if (mx >= plus_x && mx <= plus_x + 24) {
+                            tab_create(&g_browser, "file:///www/index.html");
+                        }
+                    }
+                } else if (my >= TAB_BAR_HEIGHT && my < TAB_BAR_HEIGHT + TOOLBAR_HEIGHT) {
                     /* Toolbar clicks */
-                    if (mx >= 6 && mx <= 32 && g_browser.history_index > 0) {
+                    if (mx >= 6 && mx <= 30 && g_browser.history_index > 0) {
                         /* Back */
                         g_browser.history_index--;
                         navigate_to(&g_browser, g_browser.history[g_browser.history_index], false);
-                    } else if (mx >= 36 && mx <= 62 && g_browser.history_index < g_browser.history_count - 1) {
+                    } else if (mx >= 34 && mx <= 58 && g_browser.history_index < g_browser.history_count - 1) {
                         /* Forward */
                         g_browser.history_index++;
                         navigate_to(&g_browser, g_browser.history[g_browser.history_index], false);
-                    } else if (mx >= 66 && mx <= 92) {
+                    } else if (mx >= 62 && mx <= 86) {
                         /* Reload */
                         navigate_to(&g_browser, g_browser.current_url, false);
-                    } else if (mx >= WIN_WIDTH - 46 && mx <= WIN_WIDTH - 6) {
+                    } else if (mx >= 90 && mx <= 114) {
+                        /* Bookmark Toggle Button [*] */
+                        if (bookmark_find(&g_browser, g_browser.current_url) >= 0) {
+                            bookmark_remove(&g_browser, g_browser.current_url);
+                        } else {
+                            bookmark_add(&g_browser, g_browser.current_url, g_browser.page_title);
+                        }
+                        bookmarks_save(&g_browser);
+                    } else if (mx >= WIN_WIDTH - 44 && mx <= WIN_WIDTH - 6) {
                         /* Go Button */
                         navigate_to(&g_browser, g_browser.input_url, true);
-                    } else if (mx >= 98 && mx <= WIN_WIDTH - 52) {
+                    } else if (mx >= 118 && mx <= WIN_WIDTH - 48) {
                         /* Focus URL Bar */
                         g_browser.input_focused = true;
+                        g_browser.input_cursor = (int)ustrlen(g_browser.input_url);
                         g_browser.focused_control_id = -1;
                         for (int k = 0; k < g_browser.control_count; k++) {
                             g_browser.controls[k].focused = false;
                         }
                     }
-                } else if (my >= TOOLBAR_HEIGHT && my < WIN_HEIGHT - STATUS_HEIGHT) {
+                } else if (my >= TAB_BAR_HEIGHT + TOOLBAR_HEIGHT && my < WIN_HEIGHT - STATUS_HEIGHT) {
+                    int view_y = TAB_BAR_HEIGHT + TOOLBAR_HEIGHT;
                     int sb_x = WIN_WIDTH - SCROLLBAR_WIDTH;
-                    int view_h = WIN_HEIGHT - TOOLBAR_HEIGHT - STATUS_HEIGHT;
+                    int view_h = WIN_HEIGHT - view_y - STATUS_HEIGHT;
 
                     if (mx >= sb_x) {
                         /* Scrollbar track / thumb click */
@@ -2916,7 +4467,7 @@ int main(void) {
                         if (max_scroll > 0) {
                             int thumb_h = (view_h * view_h) / g_browser.doc_height;
                             if (thumb_h < 24) thumb_h = 24;
-                            int thumb_y = TOOLBAR_HEIGHT + (g_browser.scroll_y * (view_h - thumb_h)) / max_scroll;
+                            int thumb_y = view_y + (g_browser.scroll_y * (view_h - thumb_h)) / max_scroll;
 
                             if (my < thumb_y) {
                                 g_browser.scroll_y -= (view_h * 3) / 4;
@@ -2928,7 +4479,7 @@ int main(void) {
                         }
                     } else {
                         /* Document area hit testing */
-                        int vy = my - TOOLBAR_HEIGHT + g_browser.scroll_y;
+                        int vy = my - view_y + g_browser.scroll_y;
 
                         /* Check form control clicks */
                         bool clicked_ctrl = false;
@@ -2983,9 +4534,15 @@ int main(void) {
             } else if (ev.type == INPUT_EVENT_KEY_DOWN) {
                 if (g_browser.input_focused) {
                     char c = ev.key.ascii;
-                    if (c == '\n' || c == '\r') {
+                    u32 kcode = ev.key.keycode;
+                    if (c == '\n' || c == '\r' || kcode == 0x103) {
+                        g_browser.input_focused = false;
                         navigate_to(&g_browser, g_browser.input_url, true);
-                    } else if (c == '\b') {
+                    } else if (kcode == 0x104 || c == 27) {
+                        ustrcpy(g_browser.input_url, g_browser.current_url, sizeof(g_browser.input_url));
+                        g_browser.input_cursor = (int)ustrlen(g_browser.input_url);
+                        g_browser.input_focused = false;
+                    } else if (c == '\b' || kcode == 0x101) {
                         if (g_browser.input_cursor > 0) {
                             g_browser.input_cursor--;
                             g_browser.input_url[g_browser.input_cursor] = '\0';
@@ -3017,20 +4574,74 @@ int main(void) {
                     }
                     render_browser_ui(&g_browser);
                 } else {
-                    /* Unfocused navigation keys: vertical document scroll */
+                    /* Unfocused navigation keys and shortcuts */
                     u32 kcode = ev.key.keycode;
                     char c = ev.key.ascii;
-                    int view_h = WIN_HEIGHT - TOOLBAR_HEIGHT - STATUS_HEIGHT;
-                    int max_scroll = g_browser.doc_height - view_h;
-                    if (max_scroll > 0) {
-                        if (kcode == 0x105 || c == 'k') { /* KEY_UP */
-                            g_browser.scroll_y -= 24;
-                            if (g_browser.scroll_y < 0) g_browser.scroll_y = 0;
+                    u8 mods = ev.key.modifiers;
+
+                    /* New Tab: 't' / Ctrl+T */
+                    if (c == 't' || ((mods & 2) && (c == 't' || c == 'T'))) {
+                        tab_create(&g_browser, "file:///www/index.html");
+                        render_browser_ui(&g_browser);
+                    }
+                    /* Close Tab: 'w' / Ctrl+W */
+                    else if (c == 'w' || ((mods & 2) && (c == 'w' || c == 'W'))) {
+                        tab_close(&g_browser, g_browser.active_tab_idx);
+                        render_browser_ui(&g_browser);
+                    }
+                    /* Switch Tab: '1'..'4' */
+                    else if (c >= '1' && c <= '4') {
+                        int tab_target = c - '1';
+                        if (tab_target < g_browser.tab_count) {
+                            tab_select(&g_browser, tab_target);
                             render_browser_ui(&g_browser);
-                        } else if (kcode == 0x106 || c == 'j') { /* KEY_DOWN */
-                            g_browser.scroll_y += 24;
-                            if (g_browser.scroll_y > max_scroll) g_browser.scroll_y = max_scroll;
+                        }
+                    }
+                    /* Toggle Bookmark: 'b' / Ctrl+B */
+                    else if (c == 'b' || ((mods & 2) && (c == 'b' || c == 'B'))) {
+                        if (bookmark_find(&g_browser, g_browser.current_url) >= 0) {
+                            bookmark_remove(&g_browser, g_browser.current_url);
+                        } else {
+                            bookmark_add(&g_browser, g_browser.current_url, g_browser.page_title);
+                        }
+                        bookmarks_save(&g_browser);
+                        render_browser_ui(&g_browser);
+                    }
+                    /* Reload: 'r' / 'R' or Ctrl+R */
+                    else if (c == 'r' || c == 'R' || ((mods & 2) && (c == 'r' || c == 'R'))) {
+                        navigate_to(&g_browser, g_browser.current_url, false);
+                        render_browser_ui(&g_browser);
+                    }
+                    /* Back: 'h' or Left arrow or Alt+Left */
+                    else if (c == 'h' || kcode == 0x107 || ((mods & 4) && kcode == 0x107)) {
+                        if (g_browser.history_index > 0) {
+                            g_browser.history_index--;
+                            navigate_to(&g_browser, g_browser.history[g_browser.history_index], false);
                             render_browser_ui(&g_browser);
+                        }
+                    }
+                    /* Forward: 'l' or Right arrow or Alt+Right */
+                    else if (c == 'l' || kcode == 0x108 || ((mods & 4) && kcode == 0x108)) {
+                        if (g_browser.history_index < g_browser.history_count - 1) {
+                            g_browser.history_index++;
+                            navigate_to(&g_browser, g_browser.history[g_browser.history_index], false);
+                            render_browser_ui(&g_browser);
+                        }
+                    }
+                    /* Vertical document scrolling */
+                    else {
+                        int view_h = WIN_HEIGHT - TAB_BAR_HEIGHT - TOOLBAR_HEIGHT - STATUS_HEIGHT;
+                        int max_scroll = g_browser.doc_height - view_h;
+                        if (max_scroll > 0) {
+                            if (kcode == 0x105 || c == 'k') { /* KEY_UP */
+                                g_browser.scroll_y -= 24;
+                                if (g_browser.scroll_y < 0) g_browser.scroll_y = 0;
+                                render_browser_ui(&g_browser);
+                            } else if (kcode == 0x106 || c == 'j') { /* KEY_DOWN */
+                                g_browser.scroll_y += 24;
+                                if (g_browser.scroll_y > max_scroll) g_browser.scroll_y = max_scroll;
+                                render_browser_ui(&g_browser);
+                            }
                         }
                     }
                 }

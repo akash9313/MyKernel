@@ -2,8 +2,10 @@
 #define ASTRA_KERNEL_VMM_H
 
 #include <kernel/types.h>
-
 #include <kernel/boot.h>
+#include <kernel/spinlock.h>
+
+extern spinlock_t g_vmm_lock;
 
 /* Page Table Entry Hardware Bits (x86-64 4-Level Paging) */
 #define PTE_PRESENT        (1ULL << 0)
@@ -15,6 +17,7 @@
 #define PTE_DIRTY          (1ULL << 6)
 #define PTE_HUGE           (1ULL << 7)
 #define PTE_GLOBAL         (1ULL << 8)
+#define PTE_TRANSITION     (1ULL << 9)
 #define PTE_NX             (1ULL << 63)
 
 #define PTE_ADDR_MASK      0x000FFFFFFFFFF000ULL
@@ -69,6 +72,7 @@ extern char __kernel_end[];
 #define VMM_ERR_HUGE_CONFLICT  -6
 #define VMM_ERR_NOT_MAPPED     -7
 #define VMM_ERR_UNSUPPORTED    -8
+#define VMM_ERR_SHOOTDOWN_FAILED -9
 
 struct vmm_mapping {
     bool present;

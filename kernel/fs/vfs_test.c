@@ -69,6 +69,34 @@ static bool kstrstr_contains(const char *haystack, const char *needle) {
     return false;
 }
 
+int vfs_subsystem_init(void) {
+    if (vfs_get_root() != NULL) return VFS_OK;
+
+    vfs_init();
+
+    struct limine_module_response *mod_resp = boot_get_module_response();
+    if (!mod_resp || mod_resp->module_count == 0 || !mod_resp->modules || !mod_resp->modules[0]) {
+        return VFS_ERR_NOT_FOUND;
+    }
+
+    struct limine_file *initramfs_file = mod_resp->modules[0];
+    const void *archive_data = initramfs_file->address;
+    size_t archive_size = (size_t)initramfs_file->size;
+
+    int val_res = initramfs_validate(archive_data, archive_size);
+    if (val_res != INITRAMFS_OK) {
+        return val_res;
+    }
+
+    vfs_node_t *root_node = NULL;
+    int mount_res = initramfs_mount(archive_data, archive_size, &root_node);
+    if (mount_res != VFS_OK || !root_node) {
+        return mount_res;
+    }
+
+    return vfs_mount_root(root_node);
+}
+
 void vfs_initramfs_run_tests(void) {
     kprintf("\n=======================================================\n");
     kprintf("       AstraOS Phase G: Initramfs & VFS Tests          \n");
@@ -78,34 +106,9 @@ void vfs_initramfs_run_tests(void) {
      * TEST 1: Phase G - Archive Validation and VFS Root Mount
      * ------------------------------------------------------------- */
     kprintf("[TEST 1] Initializing VFS subsystem...\n");
-    vfs_init();
-
-    struct limine_module_response *mod_resp = boot_get_module_response();
-    if (!mod_resp || mod_resp->module_count == 0 || !mod_resp->modules || !mod_resp->modules[0]) {
-        panic("TEST 1 FAILED: No initramfs module provided by bootloader!");
-    }
-
-    struct limine_file *initramfs_file = mod_resp->modules[0];
-    const void *archive_data = initramfs_file->address;
-    size_t archive_size = (size_t)initramfs_file->size;
-    kprintf("[TEST 1] Initramfs module loaded at 0x%016llx, size: %llu bytes, path: '%s'\n",
-            (unsigned long long)(uintptr_t)archive_data, (unsigned long long)archive_size,
-            initramfs_file->path ? initramfs_file->path : "<unknown>");
-
-    int val_res = initramfs_validate(archive_data, archive_size);
-    if (val_res != INITRAMFS_OK) {
-        panic("TEST 1 FAILED: Boot initramfs validation failed! Error %d", val_res);
-    }
-
-    vfs_node_t *root_node = NULL;
-    int mount_res = initramfs_mount(archive_data, archive_size, &root_node);
-    if (mount_res != VFS_OK || !root_node) {
-        panic("TEST 1 FAILED: Failed to mount initramfs archive! Error %d", mount_res);
-    }
-
-    int vfs_mnt_res = vfs_mount_root(root_node);
-    if (vfs_mnt_res != VFS_OK) {
-        panic("TEST 1 FAILED: Failed to mount root node to VFS! Error %d", vfs_mnt_res);
+    int init_res = vfs_subsystem_init();
+    if (init_res != VFS_OK) {
+        panic("TEST 1 FAILED: vfs_subsystem_init failed! Error %d", init_res);
     }
 
     kprintf("[TEST 1] PASS: Initramfs verified and mounted at VFS root successfully.\n");
@@ -292,6 +295,10 @@ void vfs_initramfs_run_tests(void) {
      * TEST 4: Phase G - Parser Defense on Corrupted & Malformed Archives
      * ------------------------------------------------------------- */
     kprintf("[TEST 4] Testing parser resilience against corrupted & malformed initramfs archives...\n");
+
+    struct limine_module_response *mod_resp = boot_get_module_response();
+    const void *archive_data = (mod_resp && mod_resp->module_count > 0 && mod_resp->modules[0]) ? mod_resp->modules[0]->address : NULL;
+    size_t archive_size = (mod_resp && mod_resp->module_count > 0 && mod_resp->modules[0]) ? (size_t)mod_resp->modules[0]->size : 0;
 
     size_t scratch_size = archive_size;
     size_t scratch_pages = (scratch_size + 4095) / 4096;

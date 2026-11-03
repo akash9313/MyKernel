@@ -11,8 +11,8 @@ import ctypes
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def find_host_cc():
     candidates = [
-        r'C:\mingw64\bin\gcc.exe',
         os.path.join(BASE_DIR, 'tools', 'llvm-toolchain', 'bin', 'clang.exe'),
+        r'C:\mingw64\bin\gcc.exe',
         r'C:\Program Files\LLVM\bin\clang.exe'
     ]
     for c in candidates:
@@ -28,7 +28,31 @@ def find_host_cc():
 CC = find_host_cc()
 BUILD_DIR = os.path.join(BASE_DIR, 'build')
 DLL_PATH = os.path.join(BUILD_DIR, 'test_crypto.dll')
+EXE_PATH = os.path.join(BUILD_DIR, 'test_crypto.exe')
 TEST_SRC = os.path.join(BASE_DIR, 'tests', 'test_crypto_host.c')
+
+def run_tests_exe():
+    print(f"[HOST TEST] Compiling Cryptographic test executable using {CC}...")
+    os.makedirs(BUILD_DIR, exist_ok=True)
+    cmd = [
+        CC,
+        '-O2',
+        '-DHOST_TEST',
+        '-I', BASE_DIR,
+        '-I', os.path.join(BASE_DIR, 'kernel', 'include'),
+        '-I', os.path.join(BASE_DIR, 'kernel'),
+        '-I', os.path.join(BASE_DIR, 'third_party', 'limine'),
+        TEST_SRC,
+        '-o', EXE_PATH
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"[FAIL] Compilation failed with code {res.returncode}:")
+        print(res.stderr)
+        return False
+    print(f"[HOST TEST] Running {EXE_PATH}...")
+    res = subprocess.run([EXE_PATH])
+    return res.returncode == 0
 
 def build_test_dll():
     print(f"[HOST TEST] Compiling Cryptographic host test runner using {CC}...")
@@ -38,6 +62,7 @@ def build_test_dll():
         '-O2',
         '-shared',
         '-DHOST_TEST',
+        '-DHOST_DLL',
         '-I', BASE_DIR,
         '-I', os.path.join(BASE_DIR, 'kernel', 'include'),
         '-I', os.path.join(BASE_DIR, 'kernel'),
@@ -55,7 +80,7 @@ def build_test_dll():
 
 def run_tests():
     if not build_test_dll():
-        return False
+        return run_tests_exe()
 
     print(f"[HOST TEST] Loading {DLL_PATH}...")
     try:
@@ -70,8 +95,8 @@ def run_tests():
             print(f"[HOST TEST] Cryptographic verification suite FAILED with code {code}.")
             return False
     except Exception as e:
-        print(f"[HOST TEST] Exception running test DLL: {e}")
-        return False
+        print(f"[NOTE] Loading DLL directly blocked by host policy ({e}); falling back to standalone test binary.")
+        return run_tests_exe()
 
 if __name__ == '__main__':
     if not run_tests():

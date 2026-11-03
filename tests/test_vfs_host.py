@@ -28,7 +28,31 @@ def find_host_cc():
 CC = find_host_cc()
 BUILD_DIR = os.path.join(BASE_DIR, 'build')
 DLL_PATH = os.path.join(BUILD_DIR, 'test_vfs.dll')
+EXE_PATH = os.path.join(BUILD_DIR, 'test_vfs.exe')
 TEST_SRC = os.path.join(BASE_DIR, 'tests', 'test_vfs_host.c')
+
+def run_tests_exe():
+    print(f"[HOST TEST] Compiling VFS test executable using {CC}...")
+    os.makedirs(BUILD_DIR, exist_ok=True)
+    cmd = [
+        CC,
+        '-O2',
+        '-DHOST_TEST',
+        '-I', BASE_DIR,
+        '-I', os.path.join(BASE_DIR, 'kernel', 'include'),
+        '-I', os.path.join(BASE_DIR, 'kernel'),
+        '-I', os.path.join(BASE_DIR, 'third_party', 'limine'),
+        TEST_SRC,
+        '-o', EXE_PATH
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"[FAIL] Compilation failed with code {res.returncode}:")
+        print(res.stderr)
+        return False
+    print(f"[HOST TEST] Running {EXE_PATH}...")
+    res = subprocess.run([EXE_PATH])
+    return res.returncode == 0
 
 def build_test_dll():
     print(f"[HOST TEST] Compiling VFS & Initramfs host test runner using {CC}...")
@@ -38,6 +62,7 @@ def build_test_dll():
         '-O2',
         '-shared',
         '-DHOST_TEST',
+        '-DHOST_DLL',
         '-I', BASE_DIR,
         '-I', os.path.join(BASE_DIR, 'kernel', 'include'),
         '-I', os.path.join(BASE_DIR, 'kernel'),
@@ -56,10 +81,10 @@ def build_test_dll():
 def run_tests():
     if not os.path.exists(DLL_PATH):
         if not build_test_dll():
-            return False
+            return run_tests_exe()
     else:
         if not build_test_dll():
-            return False
+            return run_tests_exe()
 
     try:
         vfs_lib = ctypes.CDLL(DLL_PATH)
@@ -71,8 +96,8 @@ def run_tests():
             print(f"\n[FAIL] VFS host tests failed with return code {res}\n")
             return False
     except Exception as e:
-        print(f"[ERROR] Exception running host tests: {e}")
-        return False
+        print(f"[NOTE] Loading DLL directly blocked by host policy ({e}); falling back to standalone test binary.")
+        return run_tests_exe()
 
 if __name__ == '__main__':
     ok = run_tests()

@@ -116,6 +116,7 @@ int elf_validate_reader(elf_reader_t *reader, elf_info_t *out_info) {
     }
 
     size_t load_count = 0;
+    u64 total_memsz = 0;
     virt_addr_t min_va = 0xFFFFFFFFFFFFFFFFULL;
     virt_addr_t max_va = 0;
     bool entry_in_exec_segment = false;
@@ -142,8 +143,14 @@ int elf_validate_reader(elf_reader_t *reader, elf_info_t *out_info) {
             continue;
         }
 
-        /* Enforce p_filesz <= p_memsz */
-        if (phdr.p_filesz > phdr.p_memsz) {
+        /* Enforce non-zero memsz and p_filesz <= p_memsz */
+        if (phdr.p_memsz == 0 || phdr.p_filesz > phdr.p_memsz) {
+            return ELF_ERR_INVALID_SEGMENT;
+        }
+
+        /* Cumulative allocation limit: protect against absurd memory requests */
+        total_memsz += phdr.p_memsz;
+        if (total_memsz < phdr.p_memsz || total_memsz > 64 * 1024 * 1024ULL) {
             return ELF_ERR_INVALID_SEGMENT;
         }
 
@@ -163,7 +170,17 @@ int elf_validate_reader(elf_reader_t *reader, elf_info_t *out_info) {
             return ELF_ERR_INVALID_ADDRESS; /* Reserved for user stack and guard */
         }
 
-        /* Alignment check */
+        /* Alignment validation: p_align must be 0, 1, or power of two */
+        if (phdr.p_align > 1) {
+            if ((phdr.p_align & (phdr.p_align - 1)) != 0) {
+                return ELF_ERR_ALIGNMENT;
+            }
+            if ((phdr.p_vaddr % phdr.p_align) != (phdr.p_offset % phdr.p_align)) {
+                return ELF_ERR_ALIGNMENT;
+            }
+        }
+
+        /* Enforce 4096-byte page offset congruence */
         if ((phdr.p_vaddr & 0xFFFULL) != (phdr.p_offset & 0xFFFULL)) {
             return ELF_ERR_ALIGNMENT;
         }

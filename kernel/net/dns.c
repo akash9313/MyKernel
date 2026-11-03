@@ -2,6 +2,7 @@
 #include <kernel/kprintf.h>
 #include <kernel/mem.h>
 #include <kernel/arch/x86_64/cpu.h>
+#include <kernel/drivers/apic.h>
 
 typedef struct dns_header {
     u16 id;
@@ -170,11 +171,13 @@ bool dns_resolve(const char *hostname, ip_addr_t *out_ip, u32 timeout_ms) {
     /* Send DNS query */
     udp_send(netif->dns, g_dns_client_port, 53, packet, query_len);
 
-    /* Poll for DNS reply */
-    u32 loops = (timeout_ms > 0) ? (timeout_ms * 100) : 50000;
-    while (loops-- && !g_dns_resolved) {
+    /* Poll for DNS reply with bounded APIC tick polling (10ms/tick) */
+    u64 start_ticks = apic_get_ticks();
+    u64 max_ticks = (timeout_ms + 9) / 10;
+    if (max_ticks == 0) max_ticks = 1;
+    while ((apic_get_ticks() - start_ticks < max_ticks) && !g_dns_resolved) {
         net_poll();
-        for (volatile int d = 0; d < 100; d++) io_wait();
+        cpu_pause();
     }
 
     udp_unbind(g_dns_client_port);

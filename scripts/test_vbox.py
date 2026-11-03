@@ -84,6 +84,16 @@ def main():
                       '--type', 'dvddrive',
                       '--medium', ISO_PATH])
 
+        # 3b. Start local test servers for browser networking
+        https_server, http_server = None, None
+        try:
+            if BASE_DIR not in sys.path:
+                sys.path.insert(0, BASE_DIR)
+            from tests.https_test_server import run_server_thread
+            https_server, http_server = run_server_thread(8443, http_port=8000)
+        except Exception as e:
+            print(f"[VBOX WARN] Could not start local test servers: {e}")
+
         # 4. Start VM headless
         print(f"[VBOX] Starting VM headless...")
         run_vbox_cmd(['startvm', VM_NAME, '--type', 'headless'])
@@ -148,6 +158,7 @@ def main():
             "ASTRA_DNS_OK",
             "ASTRA_TCP_OK",
             "ASTRA_HTTP_CLIENT_OK",
+            "ASTRA_HTTP_HARDENING_OK",
             "ASTRA_BROWSER_RENDER_OK",
             "ASTRA_BROWSER_HTTP_OK",
             "ASTRA_TLS_CERT_VALIDATION_OK",
@@ -173,14 +184,107 @@ def main():
             "ASTRA_BROWSER_INTERACTIVE_OK",
             "ASTRA_JS_ADVERSARIAL_OK",
             "ASTRA_BROWSER_SECURITY_OK",
+            "ASTRA_BROWSER_NET_ISOLATION_OK",
+            "ASTRA_BROWSER_HTTP_HARDENING_OK",
+            "ASTRA_BROWSER_UX_OK",
+            "ASTRA_BROWSER_RELIABILITY_OK",
+            "ASTRA_BROWSER_TABS_BOOKMARKS_OK",
+            "ASTRA_BLOCK_DEVICE_OK",
             "ASTRA_USER_BROWSER_OK",
             "ASTRA_USER_BROWSER_EXEC_OK",
             "ASTRA_BROWSER_ISOLATION_OK",
+            "ASTRA_PREEMPT_RING3_OK",
+            "ASTRA_MULTI_PROCESS_OK",
+            "ASTRA_BLOCK_WAKEUP_OK",
+            "ASTRA_WAITPID_LIFECYCLE_OK",
+            "ASTRA_PROCESS_CLEANUP_OK",
+            "ASTRA_SCHED_FAIRNESS_OK",
+            "ASTRA_SMP_AUDIT_OK",
+            "ASTRA_SMP_BSP_READY",
+            "ASTRA_SMP_ALL_CPUS_READY",
+            "ASTRA_SMP_SINGLE_CPU_OK",
+            "ASTRA_SMP_LIFECYCLE_OK",
+            "ASTRA_SMP_TLB_SHOOTDOWN_OK",
+            "ASTRA_SMP_PROCESS_TEARDOWN_OK",
+            "ASTRA_SMP_MEMORY_STRESS_OK",
+            "ASTRA_SMP_SCHEDULER_STRESS_OK",
+            "ASTRA_SMP_STORAGE_STRESS_OK",
+            "ASTRA_SMP_ASPACE_ACTIVATION_RACE_OK",
+            "ASTRA_SMP_CONCURRENT_TLB_OK",
+            "ASTRA_SMP_STALE_TLB_REUSE_OK",
+            "ASTRA_SMP_DEFERRED_RECLAIM_OK",
+            "ASTRA_SMP_LOCK_ORDER_OK",
+            "ASTRA_SMP_PERCPU_ISOLATION_OK",
+            "ASTRA_SMP_ALLOCATOR_FAULT_TEST_OK",
+            "ASTRA_SMP_STORAGE_FAULT_TEST_OK",
+            "ASTRA_AP_ASPACE_PROTOCOL_OK",
+            "ASTRA_AP_TLB_PROTOCOL_AUDIT_OK",
+            "ASTRA_AP_FRAME_RECLAMATION_OK",
+            "ASTRA_AP_LOCK_HIERARCHY_OK",
+            "ASTRA_AP_TEST_HARNESS_INTEGRITY_OK",
+            "ASTRA_AP_NEGATIVE_TESTS_OK",
+            "ASTRA_AQ_CONCURRENT_SHOOTDOWN_OK",
+            "ASTRA_AQ_TLB_FAULT_INJECTION_OK",
+            "ASTRA_AQ_FRAME_REUSE_ORDERING_OK",
+            "ASTRA_AQ_ASPACE_ADVERSARIAL_OK",
+            "ASTRA_AQ_LOCK_DEADLOCK_AUDIT_OK",
+            "ASTRA_AQ_HARNESS_CLASSIFICATION_OK",
+            "ASTRA_AR_CONCURRENT_INITIATORS_OK",
+            "ASTRA_AR_DELAYED_IPI_LIFETIME_OK",
+            "ASTRA_AR_STALE_ACK_REJECTION_OK",
+            "ASTRA_AR_TIMEOUT_FRAME_RETENTION_OK",
+            "ASTRA_AR_UNMAP_CALLER_SAFETY_OK",
+            "ASTRA_AR_END_TO_END_PROOF_OK",
+            "ASTRA_AS_QUEUE_LIFECYCLE_OK",
+            "ASTRA_AS_GENERATION_ACK_ATOMICS_OK",
+            "ASTRA_AS_TIMEDOUT_SLOT_DRAIN_OK",
+            "ASTRA_AS_REENTRANT_SERVICING_OK",
+            "ASTRA_AS_PTE_ROLLBACK_CONCURRENCY_OK",
+            "ASTRA_AS_END_TO_END_FAILURE_QUAL_OK",
+            "ASTRA_AT_MEMORY_MODEL_ATOMICS_OK",
+            "ASTRA_AT_REMOTE_HANDLER_LIFETIME_OK",
+            "ASTRA_AT_DOUBLE_GEN_VERIFY_OK",
+            "ASTRA_AT_LOCKFREE_SERVICING_OK",
+            "ASTRA_AT_PTE_TRANSITION_ISOLATION_OK",
+            "ASTRA_AT_END_TO_END_MEM_MODEL_OK",
+            "ASTRA_AU_READER_PAUSE_BEFORE_REG_OK",
+            "ASTRA_AU_READER_REG_BEFORE_RETIRE_OK",
+            "ASTRA_AU_RETIRE_RACE_REGISTRATION_OK",
+            "ASTRA_AU_DELAYED_IPI_TIMEOUT_DRAIN_OK",
+            "ASTRA_AU_SLOT_REUSE_STRESS_OK",
+            "ASTRA_AU_QUEUE_EXHAUSTION_OK",
+            "ASTRA_AV_REG_VS_RETIRE_OK",
+            "ASTRA_AV_READER_BLOCKS_REUSE_OK",
+            "ASTRA_AV_SIMULTANEOUS_RACE_OK",
+            "ASTRA_AV_GENERATION_ABA_OK",
+            "ASTRA_AV_DELAYED_IPI_TIMEOUT_OK",
+            "ASTRA_AV_CONCURRENT_SENDERS_OK",
+            "ASTRA_AV_QUEUE_EXHAUSTION_OK",
+            "ASTRA_AW_MUNMAP_OVERFLOW_DEFENSE_OK",
+            "ASTRA_AW_FD_CROSS_PRIV_DEFENSE_OK",
+            "ASTRA_AW_GUI_CROSS_PRIV_DEFENSE_OK",
+            "ASTRA_AW_NET_FETCH_CONCURRENCY_OK",
+            "ASTRA_AW_SOCKET_OWNER_CLEANUP_OK",
+            "ASTRA_AW_IPV4_UNDERFLOW_DEFENSE_OK",
+            "ASTRA_AW_ARP_SIZE_VALIDATION_OK",
+            "ASTRA_AW_PATH_SECURITY_DEFENSE_OK",
+            "ASTRA_AX_BLOCK_BOUNDS_OK",
+            "ASTRA_AX_METADATA_INTEGRITY_OK",
+            "ASTRA_AX_CRASH_RECOVERY_OK",
+            "ASTRA_AX_PRECOMMIT_FLUSH_OK",
+            "ASTRA_AX_RENAME_FD_PRESERVATION_OK",
+            "ASTRA_AX_CONCURRENT_LIFECYCLE_OK",
+            "ASTRA_AY_UEFI_BOOT_INFO_OK",
+            "ASTRA_AY_HARDWARE_TIMER_OK",
+            "ASTRA_AY_STORAGE_DISCOVERY_OK",
+            "ASTRA_AY_CPU_TOPOLOGY_OK",
+            "ASTRA_AY_BOOT_MEDIA_PROTECTION_OK",
+            "ASTRA_AY_SUBSYSTEM_CONTAINMENT_OK",
         ]
         
         found_markers = set()
         start_time = time.time()
-        timeout = 240  # seconds
+        timeout = 600  # seconds
         
         while time.time() - start_time < timeout:
             if os.path.exists(SERIAL_LOG):
@@ -232,6 +336,16 @@ def main():
             return 0
 
     finally:
+        if http_server:
+            try:
+                http_server.shutdown()
+            except Exception:
+                pass
+        if https_server:
+            try:
+                https_server.shutdown()
+            except Exception:
+                pass
         cleanup_vm()
 
 if __name__ == '__main__':

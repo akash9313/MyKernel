@@ -31,6 +31,19 @@ void kernel_panic(const char *file, int line, const char *fmt, ...) {
 
 #include "../kernel/include/kernel/vfs.h"
 #include "../kernel/include/kernel/initramfs.h"
+#include "../kernel/include/kernel/astrafs.h"
+
+/* AstraFS stubs for VFS host tests (unmounted state) */
+bool astrafs_is_mounted(void) { return false; }
+vfs_node_t *astrafs_get_root_node(void) { return NULL; }
+const vfs_ops_t *astrafs_get_ops(void) { return NULL; }
+int astrafs_lookup(const char *name, vfs_node_t **out_node) { (void)name; (void)out_node; return VFS_ERR_NOT_FOUND; }
+int astrafs_create(const char *name, u32 flags, vfs_node_t **out_node) { (void)name; (void)flags; (void)out_node; return VFS_ERR_UNSUPPORTED; }
+int astrafs_truncate(vfs_node_t *node, size_t new_size) { (void)node; (void)new_size; return VFS_ERR_UNSUPPORTED; }
+int astrafs_sync(void) { return VFS_OK; }
+int astrafs_rename(const char *old_name, const char *new_name) { (void)old_name; (void)new_name; return VFS_ERR_UNSUPPORTED; }
+int block_get_device_count(void) { return 0; }
+block_device_t *block_get_device(int idx) { (void)idx; return NULL; }
 
 /* Include implementations directly for host test translation unit */
 #include "../kernel/fs/vfs.c"
@@ -263,6 +276,114 @@ __declspec(dllexport) int run_all_vfs_host_tests(void) {
     assert(initramfs_validate(bad_buf, arch_size) == INITRAMFS_ERR_CONFLICT);
 
     printf("  PASS: All malformed archive variants safely caught and rejected.\n");
+
+    /* 6. Phase AC: Mutable RAM Filesystem (Creation, Write, Read, Append, Truncation, Limits) */
+    printf("[HOST TEST] 6. Phase AC: Mutable RAM Filesystem (Creation, Write, Read, Append, Truncation, Limits)...\n");
+
+    /* 6A: Opening nonexistent mutable file without VFS_O_CREAT returns NOT_FOUND */
+    assert(vfs_open("/data/test.txt", VFS_O_WRONLY) == VFS_ERR_NOT_FOUND);
+
+    /* 6B: File creation with VFS_O_CREAT | VFS_O_WRONLY */
+    vfs_fd_t mfd = vfs_open("/data/test.txt", VFS_O_WRONLY | VFS_O_CREAT);
+    assert(mfd >= 3);
+
+    /* Zero-length write returns 0 */
+    assert(vfs_write(mfd, "test", 0) == 0);
+
+    /* Write 13 bytes */
+    const char *msg1 = "Hello Mutable";
+    ssize_t w1 = vfs_write(mfd, msg1, 13);
+    assert(w1 == 13);
+    assert(vfs_close(mfd) == VFS_OK);
+
+    /* 6C: Stat verification */
+    vfs_stat_t mst;
+    assert(vfs_stat("/data/test.txt", &mst) == VFS_OK);
+    assert(mst.type == VFS_NODE_FILE);
+    assert(mst.size == 13);
+
+    /* 6D: Read back written data */
+    vfs_fd_t rfd = vfs_open("/data/test.txt", VFS_O_RDONLY);
+    assert(rfd >= 3);
+    char m_buf[64];
+    memset(m_buf, 0, sizeof(m_buf));
+    assert(vfs_read(rfd, m_buf, 0) == 0); /* Zero length read */
+    assert(vfs_read(rfd, m_buf, sizeof(m_buf)) == 13);
+    assert(memcmp(m_buf, "Hello Mutable", 13) == 0);
+    assert(vfs_read(rfd, m_buf, sizeof(m_buf)) == 0); /* EOF */
+    assert(vfs_close(rfd) == VFS_OK);
+
+    /* 6E: Append mode (VFS_O_APPEND) */
+    vfs_fd_t afd = vfs_open("/data/test.txt", VFS_O_WRONLY | VFS_O_APPEND);
+    assert(afd >= 3);
+    const char *msg2 = " Appended!";
+    assert(vfs_write(afd, msg2, 10) == 10);
+    assert(vfs_close(afd) == VFS_OK);
+
+    assert(vfs_stat("/data/test.txt", &mst) == VFS_OK);
+    assert(mst.size == 23);
+
+    rfd = vfs_open("/data/test.txt", VFS_O_RDONLY);
+    assert(rfd >= 3);
+    memset(m_buf, 0, sizeof(m_buf));
+    assert(vfs_read(rfd, m_buf, sizeof(m_buf)) == 23);
+    assert(memcmp(m_buf, "Hello Mutable Appended!", 23) == 0);
+    assert(vfs_close(rfd) == VFS_OK);
+
+    /* 6F: Truncate mode (VFS_O_TRUNC) */
+    vfs_fd_t tfd = vfs_open("/data/test.txt", VFS_O_WRONLY | VFS_O_TRUNC);
+    assert(tfd >= 3);
+    assert(vfs_stat("/data/test.txt", &mst) == VFS_OK);
+    assert(mst.size == 0);
+    assert(vfs_write(tfd, "Truncated", 9) == 9);
+    assert(vfs_close(tfd) == VFS_OK);
+
+    assert(vfs_stat("/data/test.txt", &mst) == VFS_OK);
+    assert(mst.size == 9);
+
+    /* 6G: Protection: Initramfs files reject VFS_O_TRUNC and VFS_O_WRONLY */
+    assert(vfs_open("/test.txt", VFS_O_WRONLY | VFS_O_TRUNC) == VFS_ERR_READ_ONLY);
+
+    /* 6H: Max file size enforcement (16384 bytes) */
+    vfs_fd_t cap_fd = vfs_open("/data/cap.bin", VFS_O_WRONLY | VFS_O_CREAT);
+    assert(cap_fd >= 3);
+    /* Writing beyond VFS_MAX_FILE_SIZE (16384) */
+    u8 dummy[1024];
+    memset(dummy, 0xAA, sizeof(dummy));
+    /* Write 16 chunks of 1024 = 16384 bytes */
+    for (int c = 0; c < 16; c++) {
+        assert(vfs_write(cap_fd, dummy, 1024) == 1024);
+    }
+    /* 17th chunk exceeds 16384 limit -> VFS_ERR_NOSPC */
+    assert(vfs_write(cap_fd, dummy, 1) == VFS_ERR_NOSPC);
+    assert(vfs_close(cap_fd) == VFS_OK);
+
+    /* 6I: Max file count enforcement (VFS_MAX_MUTABLE_FILES = 8) */
+    /* We currently have 2 files (/data/test.txt and /data/cap.bin). Create 6 more */
+    for (int f = 2; f < VFS_MAX_MUTABLE_FILES; f++) {
+        char fname[32];
+        snprintf(fname, sizeof(fname), "/data/file%d.bin", f);
+        vfs_fd_t dfd = vfs_open(fname, VFS_O_WRONLY | VFS_O_CREAT);
+        assert(dfd >= 3);
+        assert(vfs_close(dfd) == VFS_OK);
+    }
+    /* 9th file creation exceeds file count -> VFS_ERR_NOSPC */
+    assert(vfs_open("/data/overflow.bin", VFS_O_WRONLY | VFS_O_CREAT) == VFS_ERR_NOSPC);
+
+    /* 6J: Durability & rename operations in ramfs */
+    vfs_fd_t sync_fd = vfs_open("/data/test.txt", VFS_O_RDWR);
+    assert(sync_fd >= 3);
+    assert(vfs_fsync(sync_fd) == VFS_OK);
+    assert(vfs_close(sync_fd) == VFS_OK);
+    assert(vfs_sync() == VFS_OK);
+
+    assert(vfs_rename("/data/test.txt", "/data/test_renamed.txt") == VFS_OK);
+    vfs_node_t *ren_node = NULL;
+    assert(vfs_lookup("/data/test_renamed.txt", &ren_node) == VFS_OK && ren_node != NULL);
+    assert(ren_node->size == 9);
+    assert(vfs_lookup("/data/test.txt", &ren_node) == VFS_ERR_NOT_FOUND);
+
+    printf("  PASS: Mutable RAM filesystem creation, write, read, append, truncation, bounds, fsync, and rename verified.\n");
     printf("------------------------------------------------------\n");
     printf("[SUCCESS] All host-side VFS & Initramfs tests passed!\n");
     printf("======================================================\n");
@@ -270,5 +391,11 @@ __declspec(dllexport) int run_all_vfs_host_tests(void) {
     free(arch_data);
     return 0;
 }
+
+#ifndef HOST_DLL
+int main(void) {
+    return run_all_vfs_host_tests();
+}
+#endif
 
 #endif /* HOST_TEST */

@@ -1,6 +1,9 @@
 #include <kernel/kprintf.h>
 #include <kernel/serial.h>
 #include <kernel/framebuffer.h>
+#include <kernel/sync.h>
+
+static spinlock_t g_kprintf_lock = SPINLOCK_INIT;
 
 static void out_char(char c) {
     serial_putchar(c);
@@ -48,6 +51,7 @@ static void print_int(s64 val) {
 
 void kvprintf(const char *fmt, va_list args) {
     if (!fmt) return;
+    u64 flags = spinlock_acquire_irqsave(&g_kprintf_lock);
 
     for (size_t i = 0; fmt[i] != '\0'; i++) {
         if (fmt[i] != '%') {
@@ -129,6 +133,7 @@ void kvprintf(const char *fmt, va_list args) {
             }
         }
     }
+    spinlock_release_irqrestore(&g_kprintf_lock, flags);
 }
 
 void kprintf(const char *fmt, ...) {
