@@ -74,6 +74,9 @@ static size_t create_valid_test_elf(u8 *buf, size_t buf_max, u64 entry_va, u64 c
 #ifdef _WIN32
 __declspec(dllexport)
 #endif
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
 int run_all_elf_host_tests(void) {
     printf("\n=================================================================\n");
     printf("   AstraOS Phase AK: ELF64 Loader Security & Validation Tests    \n");

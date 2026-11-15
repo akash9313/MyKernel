@@ -4,6 +4,7 @@
 #include <kernel/vfs.h>
 #include <kernel/kprintf.h>
 #include <kernel/mem.h>
+#include <kernel/heap.h>
 
 #define TOOLBAR_HEIGHT  34
 #define STATUS_HEIGHT   22
@@ -229,52 +230,56 @@ static void browser_on_paint(wm_window_t *win, gfx_surface_t *s) {
     /* ------------------------------------------------------------- */
     /* 1. Toolbar Bar (Height: TOOLBAR_HEIGHT)                        */
     /* ------------------------------------------------------------- */
-    gfx_fill_rect(s, 0, 0, s->width, TOOLBAR_HEIGHT, GFX_COLOR_PANEL_BG);
-    gfx_draw_line(s, 0, TOOLBAR_HEIGHT - 1, s->width, TOOLBAR_HEIGHT - 1, GFX_COLOR_PANEL_BORDER);
+    /* Modern Dark Header Toolbar */
+    gfx_fill_rect(s, 0, 0, s->width, TOOLBAR_HEIGHT, 0x0F172A);
+    gfx_draw_line(s, 0, TOOLBAR_HEIGHT - 1, s->width, TOOLBAR_HEIGHT - 1, 0x1E293B);
 
-    /* Back Button [<-] */
+    /* Back Button [<-] (Rounded Pill) */
     bool can_back = (g_browser.history_index > 0);
-    u32 btn_back_bg = can_back ? GFX_COLOR_TITLEBAR_ACTIVE : GFX_COLOR_PANEL_BG;
-    u32 btn_back_fg = can_back ? GFX_COLOR_TEXT_PRIMARY : GFX_COLOR_TEXT_MUTED;
-    gfx_fill_rect(s, 6, 5, 26, 24, btn_back_bg);
-    gfx_draw_rect(s, 6, 5, 26, 24, can_back ? GFX_COLOR_ACCENT_BLUE : GFX_COLOR_WINDOW_BORDER);
+    u32 btn_back_bg = can_back ? 0x1E293B : 0x0B0F19;
+    u32 btn_back_fg = can_back ? 0xF8FAFC : 0x64748B;
+    gfx_fill_rounded_rect(s, 6, 5, 26, 24, 4, btn_back_bg);
+    gfx_draw_rounded_rect(s, 6, 5, 26, 24, 4, can_back ? 0x334155 : 0x1E293B);
     gfx_draw_string(s, 11, 9, "<-", btn_back_fg, 0, true);
 
-    /* Forward Button [->] */
+    /* Forward Button [->] (Rounded Pill) */
     bool can_fwd = (g_browser.history_index < g_browser.history_count - 1);
-    u32 btn_fwd_bg = can_fwd ? GFX_COLOR_TITLEBAR_ACTIVE : GFX_COLOR_PANEL_BG;
-    u32 btn_fwd_fg = can_fwd ? GFX_COLOR_TEXT_PRIMARY : GFX_COLOR_TEXT_MUTED;
-    gfx_fill_rect(s, 36, 5, 26, 24, btn_fwd_bg);
-    gfx_draw_rect(s, 36, 5, 26, 24, can_fwd ? GFX_COLOR_ACCENT_BLUE : GFX_COLOR_WINDOW_BORDER);
+    u32 btn_fwd_bg = can_fwd ? 0x1E293B : 0x0B0F19;
+    u32 btn_fwd_fg = can_fwd ? 0xF8FAFC : 0x64748B;
+    gfx_fill_rounded_rect(s, 36, 5, 26, 24, 4, btn_fwd_bg);
+    gfx_draw_rounded_rect(s, 36, 5, 26, 24, 4, can_fwd ? 0x334155 : 0x1E293B);
     gfx_draw_string(s, 41, 9, "->", btn_fwd_fg, 0, true);
 
-    /* Reload Button [R] */
-    gfx_fill_rect(s, 66, 5, 26, 24, GFX_COLOR_TITLEBAR_ACTIVE);
-    gfx_draw_rect(s, 66, 5, 26, 24, GFX_COLOR_ACCENT_BLUE);
-    gfx_draw_string(s, 74, 9, "R", GFX_COLOR_TEXT_PRIMARY, 0, true);
+    /* Reload Button [R] (Rounded Pill) */
+    gfx_fill_rounded_rect(s, 66, 5, 26, 24, 4, 0x1E293B);
+    gfx_draw_rounded_rect(s, 66, 5, 26, 24, 4, 0x334155);
+    gfx_draw_string(s, 74, 9, "R", 0xF8FAFC, 0, true);
 
-    /* Address / URL Input Field */
+    /* Omnibox Address / URL Input Capsule */
     int url_x = 98;
     int url_w = s->width - url_x - 52;
     if (url_w < 100) url_w = 100;
-    gfx_fill_rect(s, url_x, 5, url_w, 24, 0xFF080C16);
-    u32 url_border = g_browser.input_focused ? GFX_COLOR_ACCENT_BLUE : GFX_COLOR_WINDOW_BORDER;
-    gfx_draw_rect(s, url_x, 5, url_w, 24, url_border);
+    gfx_fill_rounded_rect(s, url_x, 5, url_w, 24, 5, 0x0B0F19);
+    u32 url_border = g_browser.input_focused ? 0x38BDF8 : 0x1E293B;
+    gfx_draw_rounded_rect(s, url_x, 5, url_w, 24, 5, url_border);
+
+    /* Security Green Shield/Lock indicator dot */
+    gfx_fill_rounded_rect(s, url_x + 8, 13, 8, 8, 4, 0x10B981);
 
     /* Render Address Text & Cursor */
-    gfx_draw_string(s, url_x + 6, 9, g_browser.input_url, GFX_COLOR_TEXT_PRIMARY, 0, true);
+    gfx_draw_string(s, url_x + 22, 9, g_browser.input_url, 0xF8FAFC, 0, true);
     if (g_browser.input_focused) {
-        int cur_px = url_x + 6 + (g_browser.input_cursor * FONT_WIDTH);
+        int cur_px = url_x + 22 + (g_browser.input_cursor * FONT_WIDTH);
         if (cur_px < url_x + url_w - 4) {
-            gfx_fill_rect(s, cur_px, 8, 2, 16, GFX_COLOR_ACCENT_BLUE);
+            gfx_fill_rect(s, cur_px, 8, 2, 16, 0x38BDF8);
         }
     }
 
-    /* Go Button [Go] */
+    /* Go Button [Go] (Sleek Blue Pill) */
     int go_x = s->width - 46;
-    gfx_fill_rect(s, go_x, 5, 40, 24, GFX_COLOR_TITLEBAR_ACTIVE);
-    gfx_draw_rect(s, go_x, 5, 40, 24, GFX_COLOR_ACCENT_BLUE);
-    gfx_draw_string(s, go_x + 12, 9, "Go", GFX_COLOR_ACCENT_CYAN, 0, true);
+    gfx_fill_rounded_rect(s, go_x, 5, 40, 24, 4, 0x2563EB);
+    gfx_draw_rounded_rect(s, go_x, 5, 40, 24, 4, 0x3B82F6);
+    gfx_draw_string(s, go_x + 12, 9, "Go", 0xFFFFFF, 0, true);
 
     /* ------------------------------------------------------------- */
     /* 2. Main Viewport & Rendered HTML Content                      */
@@ -694,13 +699,18 @@ bool browser_self_test(void) {
         "<html><body><div><div><div><div><div><div><div><div>"
         "<h1>Robust Header</h1><p>Nested structure content.</p>"
         "</div></div></div></div></div></div></div></div></body></html>";
-    static html_node_t nested_nodes[BROWSER_MAX_NODES];
+    html_node_t *nested_nodes = (html_node_t *)kmalloc(sizeof(html_node_t) * BROWSER_MAX_NODES);
+    if (!nested_nodes) {
+        kprintf("[BROWSER TEST FAIL] Out of memory for nested_nodes!\n");
+        return false;
+    }
     static css_stylesheet_t nested_sheet;
     char parsed_title[32];
     int parsed_count = html_parse(nested_kernel_html, k_strlen(nested_kernel_html),
                                   nested_nodes, BROWSER_MAX_NODES,
                                   parsed_title, sizeof(parsed_title),
                                   &nested_sheet);
+    kfree(nested_nodes);
     if (parsed_count <= 0 || parsed_count > BROWSER_MAX_NODES) {
         kprintf("[BROWSER TEST FAIL] HTML parser failed on nested markup!\n");
         return false;
@@ -787,11 +797,22 @@ bool browser_self_test(void) {
                             "<a href=\"file:///www/about.html\">About Link</a>"
                             "<ul><li>Item 1</li><li>Item 2</li></ul>"
                             "<hr></body></html>";
-    static html_node_t test_nodes[32];
+    html_node_t *test_nodes = (html_node_t *)kmalloc(sizeof(html_node_t) * 32);
+    html_node_t *bad_nodes = (html_node_t *)kmalloc(sizeof(html_node_t) * 16);
+    render_box_t *test_boxes = (render_box_t *)kmalloc(sizeof(render_box_t) * 64);
+    if (!test_nodes || !bad_nodes || !test_boxes) {
+        if (test_nodes) kfree(test_nodes);
+        if (bad_nodes) kfree(bad_nodes);
+        if (test_boxes) kfree(test_boxes);
+        kprintf("[BROWSER TEST FAIL] Out of memory for test node/box buffers!\n");
+        return false;
+    }
+
     static css_stylesheet_t test_sheet;
     char page_title[32] = {0};
     int ncount = html_parse(test_html, k_strlen(test_html), test_nodes, 32, page_title, sizeof(page_title), &test_sheet);
     if (ncount < 5 || kmemcmp(page_title, "Test Page", 9) != 0 || test_sheet.rule_count < 2) {
+        kfree(test_nodes); kfree(bad_nodes); kfree(test_boxes);
         kprintf("[BROWSER TEST FAIL] HTML parser failed to extract title, CSS, or nodes (got %d nodes, %d rules)!\n",
                 ncount, test_sheet.rule_count);
         return false;
@@ -799,17 +820,16 @@ bool browser_self_test(void) {
 
     /* Test parser robustness against malformed/unclosed HTML */
     const char *malformed_html = "<badtag attr=\"unclosed><h1Unclosed tag<p>No closing tag<b><i>nested";
-    static html_node_t bad_nodes[16];
     int bn = html_parse(malformed_html, k_strlen(malformed_html), bad_nodes, 16, NULL, 0, NULL);
     (void)bn; /* Asserts no crashes, infinite loops, or buffer overflows */
     kprintf("  PASS: HTML tokenizer, entity decoder, CSS extraction, and malformed input recovery verified.\n");
 
     /* 3. Layout Engine Tests with CSS */
     kprintf("[BROWSER TEST] 3. Testing CSS Box Model Layout, Alignment & Link Hitboxes...\n");
-    static render_box_t test_boxes[64];
     int doc_h = 0;
     int bcount = browser_layout(test_nodes, ncount, 600, test_boxes, 64, &test_sheet, &doc_h);
     if (bcount < 5 || doc_h <= 0) {
+        kfree(test_nodes); kfree(bad_nodes); kfree(test_boxes);
         kprintf("[BROWSER TEST FAIL] Layout engine returned invalid boxes (%d) or height (%d)!\n", bcount, doc_h);
         return false;
     }
@@ -821,6 +841,9 @@ bool browser_self_test(void) {
             break;
         }
     }
+    kfree(test_nodes);
+    kfree(bad_nodes);
+    kfree(test_boxes);
     if (!found_link_box) {
         kprintf("[BROWSER TEST FAIL] Layout engine failed to create clickable hyperlink box!\n");
         return false;

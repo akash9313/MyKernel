@@ -101,6 +101,8 @@ int vfs_fsync(vfs_fd_t fd);
 int vfs_sync(void);
 int vfs_rename(const char *old_path, const char *new_path);
 int vfs_unlink(const char *path);
+int vfs_mkdir(const char *path);
+int vfs_rmdir(const char *path);
 int vfs_stat(const char *path, vfs_stat_t *st);
 int vfs_fstat(vfs_fd_t fd, vfs_stat_t *st);
 int vfs_readdir(const char *path, size_t index, vfs_dirent_t *dirent);

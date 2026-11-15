@@ -383,6 +383,31 @@ __declspec(dllexport) int run_all_vfs_host_tests(void) {
     assert(ren_node->size == 9);
     assert(vfs_lookup("/data/test.txt", &ren_node) == VFS_ERR_NOT_FOUND);
 
+    /* Free a mutable slot by unlinking renamed file */
+    assert(vfs_unlink("/data/test_renamed.txt") == VFS_OK);
+
+    /* 6I: Copy-On-Write promotion of initramfs file with VFS_O_CREAT | VFS_O_TRUNC */
+    vfs_fd_t cow_fd = vfs_open("/test.txt", VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC);
+    assert(cow_fd >= 3);
+    const char *new_text = "Updated text content";
+    size_t new_len = strlen(new_text);
+    assert(vfs_write(cow_fd, new_text, new_len) == (ssize_t)new_len);
+    assert(vfs_close(cow_fd) == VFS_OK);
+
+    vfs_node_t *cow_node = NULL;
+    assert(vfs_lookup("/test.txt", &cow_node) == VFS_OK && cow_node != NULL);
+    assert(cow_node->size == new_len);
+
+    /* Deduct content (shorten file and verify size truncation) */
+    vfs_fd_t ded_fd = vfs_open("/test.txt", VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC);
+    assert(ded_fd >= 3);
+    const char *short_text = "Short";
+    assert(vfs_write(ded_fd, short_text, 5) == 5);
+    assert(vfs_close(ded_fd) == VFS_OK);
+
+    assert(vfs_lookup("/test.txt", &cow_node) == VFS_OK);
+    assert(cow_node->size == 5);
+
     printf("  PASS: Mutable RAM filesystem creation, write, read, append, truncation, bounds, fsync, and rename verified.\n");
     printf("------------------------------------------------------\n");
     printf("[SUCCESS] All host-side VFS & Initramfs tests passed!\n");

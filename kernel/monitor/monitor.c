@@ -16,8 +16,26 @@
 #include <kernel/browser.h>
 #include <kernel/block.h>
 #include <kernel/astrafs.h>
+#include <kernel/shell.h>
 
 #define MONITOR_MAX_LINE 128
+
+static shell_context_t *s_monitor_shell_ctx = NULL;
+
+static void monitor_shell_out(void *ctx, const char *str, u32 color) {
+    (void)ctx;
+    (void)color;
+    kprintf("%s", str);
+}
+
+static void ensure_monitor_shell(void) {
+    if (!s_monitor_shell_ctx) {
+        s_monitor_shell_ctx = (shell_context_t *)kmalloc(sizeof(shell_context_t));
+        if (s_monitor_shell_ctx) {
+            shell_init(s_monitor_shell_ctx, monitor_shell_out, NULL);
+        }
+    }
+}
 
 static int kstrcmp(const char *s1, const char *s2) {
     while (*s1 && (*s1 == *s2)) {
@@ -35,6 +53,16 @@ static int kstrncmp(const char *s1, const char *s2, size_t n) {
     }
     if (n == 0) return 0;
     return *(const unsigned char *)s1 - *(const unsigned char *)s2;
+}
+
+static void kstrncpy(char *dst, const char *src, size_t n) {
+    if (!dst || n == 0) return;
+    size_t i = 0;
+    while (i + 1 < n && src && src[i]) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
 }
 
 static bool parse_hex(const char *str, u64 *out_val) {
@@ -291,7 +319,27 @@ static void cmd_vmap(const char *arg) {
 
 static void cmd_ls(const char *arg) {
     while (*arg == ' ' || *arg == '\t') arg++;
-    const char *path = (*arg == '\0') ? "/" : arg;
+    char norm_path[256];
+    ensure_monitor_shell();
+    const char *base = s_monitor_shell_ctx ? s_monitor_shell_ctx->cwd : "/";
+    if (*arg == '\0') {
+        kstrncpy(norm_path, base, sizeof(norm_path));
+    } else if (arg[0] == '/') {
+        kstrncpy(norm_path, arg, sizeof(norm_path));
+    } else {
+        kstrncpy(norm_path, base, sizeof(norm_path));
+        int blen = 0; while (norm_path[blen]) blen++;
+        if (blen > 0 && norm_path[blen - 1] != '/' && blen < (int)sizeof(norm_path) - 1) {
+            norm_path[blen++] = '/';
+            norm_path[blen] = '\0';
+        }
+        int ai = 0;
+        while (arg[ai] && blen < (int)sizeof(norm_path) - 1) {
+            norm_path[blen++] = arg[ai++];
+        }
+        norm_path[blen] = '\0';
+    }
+    const char *path = norm_path;
 
     kprintf("\nDirectory listing for '%s':\n", path);
     kprintf("%s\t%s\t%s\n", "TYPE", "SIZE", "NAME");
@@ -317,7 +365,26 @@ static void cmd_cat(const char *arg) {
         return;
     }
 
-    int fd = vfs_open(arg, VFS_O_RDONLY);
+    char norm_path[256];
+    ensure_monitor_shell();
+    const char *base = s_monitor_shell_ctx ? s_monitor_shell_ctx->cwd : "/";
+    if (arg[0] == '/') {
+        kstrncpy(norm_path, arg, sizeof(norm_path));
+    } else {
+        kstrncpy(norm_path, base, sizeof(norm_path));
+        int blen = 0; while (norm_path[blen]) blen++;
+        if (blen > 0 && norm_path[blen - 1] != '/' && blen < (int)sizeof(norm_path) - 1) {
+            norm_path[blen++] = '/';
+            norm_path[blen] = '\0';
+        }
+        int ai = 0;
+        while (arg[ai] && blen < (int)sizeof(norm_path) - 1) {
+            norm_path[blen++] = arg[ai++];
+        }
+        norm_path[blen] = '\0';
+    }
+
+    int fd = vfs_open(norm_path, VFS_O_RDONLY);
     if (fd < 0) {
         kprintf("cat: cannot open '%s': %s (err %d)\n", arg, vfs_strerror(fd), fd);
         return;
@@ -424,6 +491,30 @@ static void monitor_execute(char *line) {
         return;
     }
 
+    /* Check if line contains shell pipeline, redirection, or chaining operators */
+    bool has_shell_ops = false;
+    for (int i = 0; line[i]; i++) {
+        if (line[i] == '|' || line[i] == '>' || line[i] == '<' || line[i] == ';' || line[i] == '&') {
+            has_shell_ops = true;
+            break;
+        }
+    }
+    if (has_shell_ops) {
+        ensure_monitor_shell();
+        if (s_monitor_shell_ctx) {
+            shell_execute(s_monitor_shell_ctx, line);
+        }
+        return;
+    }
+
+    if (kstrncmp(line, "ls -", 4) == 0) {
+        ensure_monitor_shell();
+        if (s_monitor_shell_ctx) {
+            shell_execute(s_monitor_shell_ctx, line);
+        }
+        return;
+    }
+
     if (kstrcmp(line, "help") == 0) {
         cmd_help();
     } else if (kstrcmp(line, "version") == 0) {
@@ -474,7 +565,10 @@ static void monitor_execute(char *line) {
     } else if (kstrcmp(line, "halt") == 0) {
         cmd_halt();
     } else {
-        kprintf("Unknown command: '%s'. Type 'help' for available commands.\n", line);
+        ensure_monitor_shell();
+        if (s_monitor_shell_ctx) {
+            shell_execute(s_monitor_shell_ctx, line);
+        }
     }
 }
 
@@ -487,6 +581,7 @@ void monitor_run(void) {
     kprintf("AstraOS>\n");
 
     bool last_was_cr = false;
+    u64 last_tick_render = apic_get_ticks();
     for (;;) {
         /* 1. Poll PS/2 keyboard/mouse hardware */
         ps2_poll();
@@ -501,6 +596,14 @@ void monitor_run(void) {
             desktop_handle_event(&ev);
             need_render = true;
         }
+
+        /* 2b. Periodic timer re-render (1.0s APIC tick cadence) to advance live clock and system telemetry */
+        u64 now_ticks = apic_get_ticks();
+        if (now_ticks - last_tick_render >= 100) {
+            need_render = true;
+            last_tick_render = now_ticks;
+        }
+
         if (need_render && !serial_has_rx()) {
             desktop_render();
         }

@@ -66,4 +66,9 @@ void *heap_core_realloc(void *ptr, size_t size);
 bool heap_core_validate(void);
 void heap_core_get_stats(struct heap_stats *out_stats);
 
+#ifdef HOST_TEST
+void heap_host_set_initialized(bool init);
+void heap_host_reset_lock(void);
+#endif
+
 #endif /* ASTRA_KERNEL_HEAP_H */

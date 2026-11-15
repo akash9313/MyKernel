@@ -7,6 +7,17 @@
 #include <setjmp.h>
 #include <assert.h>
 
+#ifdef assert
+#undef assert
+#endif
+#define assert(expr) do { \
+    if (!(expr)) { \
+        fprintf(stderr, "\n[ASSERTION FAILED] %s at %s:%d\n", #expr, __FILE__, __LINE__); \
+        fflush(stderr); \
+        abort(); \
+    } \
+} while (0)
+
 #include <kernel/types.h>
 #include <kernel/heap.h>
 
@@ -33,6 +44,7 @@ void kernel_panic(const char *file, int line, const char *fmt, ...) {
 
     if (g_expect_panic) {
         g_panics_caught++;
+        heap_host_reset_lock();
         longjmp(g_panic_jmp, 1);
     } else {
         fprintf(stderr, "\n[FATAL PANIC at %s:%d] %s\n", file, line, g_last_panic_msg);
@@ -66,6 +78,7 @@ static void setup_fresh_arena(void) {
     g_aligned_arena = (void *)addr;
     memset(g_aligned_arena, 0xA5, HEAP_ARENA_SIZE);
     bool ok = heap_core_init(g_aligned_arena, HEAP_ARENA_SIZE);
+    heap_host_set_initialized(true);
     assert(ok);
     assert(heap_validate());
 }

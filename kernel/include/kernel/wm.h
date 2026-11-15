@@ -28,9 +28,19 @@ typedef struct wm_window {
     bool visible;
     bool focused;
     bool minimized;
+    bool maximized;
+    int saved_x;
+    int saved_y;
+    int saved_w;
+    int saved_h;
     bool is_dragging;
     int drag_offset_x;
     int drag_offset_y;
+    bool is_resizing;
+    int resize_start_x;
+    int resize_start_y;
+    int resize_orig_w;
+    int resize_orig_h;
 
     u32 *client_buffer;
     gfx_surface_t client_surf;
@@ -58,7 +68,12 @@ void wm_bring_to_front(wm_window_t *win);
 void wm_set_focus(wm_window_t *win);
 wm_window_t *wm_get_focused(void);
 wm_window_t *wm_find_by_id(int id);
+wm_window_t *wm_find_by_title_substring(const char *sub);
 wm_window_t *wm_window_at(int x, int y);
+void wm_resize_window(wm_window_t *win, int new_w, int new_h);
+void wm_maximize_window(wm_window_t *win);
+void wm_restore_window(wm_window_t *win);
+void wm_toggle_maximize(wm_window_t *win);
 
 /* Compositor and Event Dispatch */
 void wm_render(void);
@@ -88,9 +103,17 @@ void desktop_handle_event(const input_event_t *ev);
 bool desktop_self_test(void);
 bool desktop_test_user_launch(void);
 
+/* Global GUI Clipboard */
+void clipboard_set_text(const char *text, size_t len);
+const char *clipboard_get_text(size_t *out_len);
+
 /* GUI Applications Launchers */
 void app_editor_launch(const char *filepath);
 void app_filemgr_launch(const char *initial_path);
+void app_settings_launch(void);
+void app_calc_launch(void);
+void app_sysmon_launch(void);
+void app_pkgmgr_launch(void);
 bool app_gui_self_test(void);
 
 #endif /* ASTRA_KERNEL_WM_H */

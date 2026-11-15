@@ -2,6 +2,26 @@
 #include <kernel/arch/x86_64/cpu.h>
 #include <kernel/kprintf.h>
 
+#ifdef HOST_TEST
+
+bool crypto_has_secure_entropy(void) {
+    return true;
+}
+
+bool crypto_get_random(void *buf, size_t len) {
+    if (!buf || len == 0) return false;
+    /* Host test environment: deterministic 64-bit LCG entropy source */
+    static u64 s_seed = 0x853c49e6748fea9bULL;
+    u8 *p = (u8 *)buf;
+    for (size_t i = 0; i < len; i++) {
+        s_seed = s_seed * 6364136223846793005ULL + 1442695040888963407ULL;
+        p[i] = (u8)(s_seed >> 56);
+    }
+    return true;
+}
+
+#else
+
 static int g_has_rdrand = -1;
 
 bool crypto_has_secure_entropy(void) {
@@ -75,6 +95,8 @@ bool crypto_get_random(void *buf, size_t len) {
 
     return true;
 }
+
+#endif /* !HOST_TEST */
 
 bool crypto_memcmp_eq(const void *a, const void *b, size_t len) {
     if (!a || !b) return false;

@@ -140,6 +140,114 @@ void gfx_draw_rect(gfx_surface_t *s, int x, int y, int w, int h, u32 color) {
     gfx_fill_rect(s, x + w - 1, y, 1, h, color);     /* Right border */
 }
 
+void gfx_fill_rounded_rect(gfx_surface_t *s, int x, int y, int w, int h, int r, u32 color) {
+    if (!s || !s->buffer || w <= 0 || h <= 0) return;
+    if (r <= 0) {
+        gfx_fill_rect(s, x, y, w, h, color);
+        return;
+    }
+    if (r * 2 > w) r = w / 2;
+    if (r * 2 > h) r = h / 2;
+
+    int r2 = r * r;
+    for (int cy = y; cy < y + h; cy++) {
+        int dy = 0;
+        if (cy < y + r) {
+            dy = (y + r) - cy;
+        } else if (cy >= y + h - r) {
+            dy = cy - (y + h - 1 - r);
+        }
+
+        int dx = 0;
+        if (dy > 0) {
+            int d2 = r2 - dy * dy;
+            while ((dx + 1) * (dx + 1) <= d2) {
+                dx++;
+            }
+            int row_x = x + r - dx;
+            int row_w = w - 2 * (r - dx);
+            if (row_w > 0) {
+                gfx_fill_rect(s, row_x, cy, row_w, 1, color);
+            }
+        } else {
+            gfx_fill_rect(s, x, cy, w, 1, color);
+        }
+    }
+}
+
+void gfx_draw_rounded_rect(gfx_surface_t *s, int x, int y, int w, int h, int r, u32 color) {
+    if (!s || !s->buffer || w <= 0 || h <= 0) return;
+    if (r <= 0) {
+        gfx_draw_rect(s, x, y, w, h, color);
+        return;
+    }
+    if (r * 2 > w) r = w / 2;
+    if (r * 2 > h) r = h / 2;
+
+    int r2 = r * r;
+    /* Straight segments */
+    gfx_fill_rect(s, x + r, y, w - 2 * r, 1, color);
+    gfx_fill_rect(s, x + r, y + h - 1, w - 2 * r, 1, color);
+    gfx_fill_rect(s, x, y + r, 1, h - 2 * r, color);
+    gfx_fill_rect(s, x + w - 1, y + r, 1, h - 2 * r, color);
+
+    /* Rounded corners */
+    for (int dy = 1; dy <= r; dy++) {
+        int dx = 0;
+        int d2 = r2 - dy * dy;
+        while ((dx + 1) * (dx + 1) <= d2) {
+            dx++;
+        }
+        gfx_put_pixel(s, x + r - dx, y + r - dy, color);
+        gfx_put_pixel(s, x + w - 1 - r + dx, y + r - dy, color);
+        gfx_put_pixel(s, x + r - dx, y + h - 1 - r + dy, color);
+        gfx_put_pixel(s, x + w - 1 - r + dx, y + h - 1 - r + dy, color);
+    }
+}
+
+void gfx_restore_wallpaper(gfx_surface_t *s) {
+    if (!s || !s->buffer) return;
+
+    u32 src_w = 0, src_h = 0;
+    const u32 *src_pixels = (const u32 *)fb_get_wallpaper_payload(&src_w, &src_h);
+    if (!src_pixels || src_w == 0 || src_h == 0) {
+        gfx_fill_rect(s, 0, 0, s->width, s->height, GFX_COLOR_DESKTOP_BG);
+        return;
+    }
+
+    int fb_w = s->width;
+    int fb_h = s->height;
+
+    int crop_w, crop_h;
+    if (fb_w * (int)src_h <= fb_h * (int)src_w) {
+        crop_w = (fb_w * (int)src_h) / fb_h;
+        crop_h = (int)src_h;
+    } else {
+        crop_w = (int)src_w;
+        crop_h = (fb_h * (int)src_w) / fb_w;
+    }
+
+    int start_x = ((int)src_w > crop_w) ? ((int)src_w - crop_w) / 2 : 0;
+    int start_y = ((int)src_h > crop_h) ? ((int)src_h - crop_h) / 2 : 0;
+
+    for (int y = 0; y < fb_h; y++) {
+        int sy = start_y + (y * crop_h) / fb_h;
+        if (sy >= (int)src_h) sy = (int)src_h - 1;
+        const u32 *src_row = &src_pixels[sy * src_w];
+        u32 *dst_row = &s->buffer[y * s->pitch_pixels];
+
+        if (crop_w == fb_w && start_x == 0) {
+            kmemcpy(dst_row, src_row, fb_w * sizeof(u32));
+        } else {
+            for (int x = 0; x < fb_w; x++) {
+                int sx = start_x + (x * crop_w) / fb_w;
+                if (sx >= (int)src_w) sx = (int)src_w - 1;
+                dst_row[x] = src_row[sx];
+            }
+        }
+    }
+}
+
 void gfx_draw_line(gfx_surface_t *s, int x0, int y0, int x1, int y1, u32 color) {
     if (!s || !s->buffer) return;
 
@@ -385,7 +493,11 @@ int gfx_init(void) {
     u32 *backbuffer_va = (u32 *)(bb_pa + hhdm->offset);
 
     gfx_init_surface(&g_gfx.backbuffer_surf, backbuffer_va, g_gfx.width, g_gfx.height, g_gfx.pitch_pixels);
-    kmemset(backbuffer_va, 0, fb_size_bytes);
+    if (g_gfx.hw_buffer) {
+        kmemcpy(backbuffer_va, g_gfx.hw_buffer, fb_size_bytes);
+    } else {
+        kmemset(backbuffer_va, 0, fb_size_bytes);
+    }
 
     g_gfx.initialized = true;
 

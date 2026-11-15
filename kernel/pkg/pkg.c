@@ -119,6 +119,17 @@ void pkg_subsystem_init(void) {
     g_repo[idx].in_use = true;
     idx++;
 
+    /* Package 5: htop */
+    pkg_strcpy(g_repo[idx].name, "htop", APKG_NAME_MAX);
+    pkg_strcpy(g_repo[idx].version, "1.0.0", APKG_VER_MAX);
+    pkg_strcpy(g_repo[idx].arch, "x86_64", APKG_ARCH_MAX);
+    pkg_strcpy(g_repo[idx].description, "Interactive process viewer and system activity monitor", APKG_DESC_MAX);
+    pkg_strcpy(g_repo[idx].depends, "", APKG_DEPS_MAX);
+    g_repo[idx].size = 120 * 1024;
+    pkg_strcpy(g_repo[idx].location, "/repo/htop.apkg", sizeof(g_repo[idx].location));
+    g_repo[idx].in_use = true;
+    idx++;
+
     /* Register base system packages as pre-installed */
     pkg_strcpy(g_installed[0].name, "coreutils", APKG_NAME_MAX);
     pkg_strcpy(g_installed[0].version, "1.0.0", APKG_VER_MAX);
@@ -189,7 +200,7 @@ int pkg_search(const char *query, shell_out_fn out_fn, void *ctx) {
             while (p < 40) line[p++] = ' ';
             
             const char *desc = g_repo[i].description;
-            while (*desc && p < sizeof(line) - 2) line[p++] = *desc++;
+            while (*desc && p < (int)sizeof(line) - 2) line[p++] = *desc++;
             line[p++] = '\n';
             line[p] = '\0';
             
@@ -257,7 +268,6 @@ int pkg_info(const char *name, shell_out_fn out_fn, void *ctx) {
     out_fn(ctx, name, 0xFF50FA7B);
     out_fn(ctx, "\n", 0xFFE0E4F0);
 
-    char buf[128];
     if (inst_pkg) {
         out_fn(ctx, "Status: Installed (version ", 0xFFE0E4F0);
         out_fn(ctx, inst_pkg->version, 0xFF50FA7B);
@@ -648,8 +658,10 @@ int pkg_update(shell_out_fn out_fn, void *ctx) {
     pkg_subsystem_init();
 
     out_fn(ctx, "Updating repository metadata...\n", 0xFF8BE9FD);
-    out_fn(ctx, "Checking remote index https://repo.astraos.org/v1/packages.idx...\n", 0xFF8088A0);
-    out_fn(ctx, "All 4 repository package indices synchronized.\n", 0xFF50FA7B);
+    out_fn(ctx, "Checking local repository index file:///repo/ ... [OK]\n", 0xFF50FA7B);
+    out_fn(ctx, "Checking remote index https://repo.astraos.org/v1/packages.idx ...\n", 0xFF8088A0);
+    out_fn(ctx, "Status: BLOCKED (Offline freestanding environment; remote host unreachable).\n", 0xFFF1FA8C);
+    out_fn(ctx, "Note: Configure an active network gateway and TLS root certificates for remote sync.\n", 0xFF8088A0);
     return PKG_OK;
 }
 
@@ -657,8 +669,9 @@ int pkg_upgrade(shell_out_fn out_fn, void *ctx) {
     if (!out_fn) return PKG_ERR_NOT_FOUND;
     pkg_subsystem_init();
 
-    out_fn(ctx, "Checking for available package upgrades...\n", 0xFF8BE9FD);
-    out_fn(ctx, "All installed packages are up to date.\n", 0xFF50FA7B);
+    out_fn(ctx, "Checking for available package upgrades across all repositories...\n", 0xFF8BE9FD);
+    out_fn(ctx, "Remote repository: BLOCKED (Offline freestanding environment; remote host unreachable).\n", 0xFFF1FA8C);
+    out_fn(ctx, "Local packages: All base packages are up to date.\n", 0xFF50FA7B);
     return PKG_OK;
 }
 
@@ -666,6 +679,16 @@ int pkg_clean(shell_out_fn out_fn, void *ctx) {
     if (!out_fn) return PKG_ERR_NOT_FOUND;
     out_fn(ctx, "Purging package staging caches and temporary download buffers...\n", 0xFF8088A0);
     out_fn(ctx, "Cache cleaned successfully.\n", 0xFF50FA7B);
+    return PKG_OK;
+}
+
+int pkg_repo_list(shell_out_fn out_fn, void *ctx) {
+    if (!out_fn) return PKG_ERR_NOT_FOUND;
+    pkg_subsystem_init();
+
+    out_fn(ctx, "=== Configured AstraOS Package Repositories ===\n", 0xFF8BE9FD);
+    out_fn(ctx, "  [1] local-initramfs   file:///repo/                         [ENABLED, TRUSTED, RSA-2048]\n", 0xFF50FA7B);
+    out_fn(ctx, "  [2] official-core     https://repo.astraos.org/v1/core      [BLOCKED: Offline freestanding]\n", 0xFFF1FA8C);
     return PKG_OK;
 }
 
@@ -678,6 +701,25 @@ bool pkg_find_package_for_command(const char *cmd, char *out_pkg, char *out_ver)
         if (pkg_strcmp(g_repo[i].name, cmd) == 0) {
             if (out_pkg) pkg_strcpy(out_pkg, g_repo[i].name, APKG_NAME_MAX);
             if (out_ver) pkg_strcpy(out_ver, g_repo[i].version, APKG_VER_MAX);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool pkg_find_package_details(const char *cmd, char *out_name, char *out_ver,
+                              char *out_desc, u32 *out_size, char *out_deps) {
+    if (!cmd) return false;
+    pkg_subsystem_init();
+
+    for (int i = 0; i < PKG_MAX_REPO_ENTRIES; i++) {
+        if (!g_repo[i].in_use) continue;
+        if (pkg_strcmp(g_repo[i].name, cmd) == 0) {
+            if (out_name) pkg_strcpy(out_name, g_repo[i].name, APKG_NAME_MAX);
+            if (out_ver)  pkg_strcpy(out_ver,  g_repo[i].version, APKG_VER_MAX);
+            if (out_desc) pkg_strcpy(out_desc, g_repo[i].description, APKG_DESC_MAX);
+            if (out_size) *out_size = g_repo[i].size;
+            if (out_deps) pkg_strcpy(out_deps, g_repo[i].depends, APKG_DEPS_MAX);
             return true;
         }
     }
@@ -806,6 +848,20 @@ bool pkg_self_test(void) {
 
     /* Clean up unit test binary */
     vfs_unlink("/bin/testapp.elf");
+
+    /* 6. Test Package Details Lookup and Repo List */
+    kprintf("[PKG TEST] 6. Testing package details lookup and repo list...\n");
+    char d_name[32], d_ver[16], d_desc[64], d_deps[64];
+    u32 d_sz = 0;
+    if (!pkg_find_package_details("htop", d_name, d_ver, d_desc, &d_sz, d_deps)) {
+        kprintf("[PKG TEST FAIL] pkg_find_package_details for 'htop' failed!\n");
+        return false;
+    }
+    if (pkg_repo_list(test_output, NULL) != PKG_OK) {
+        kprintf("[PKG TEST FAIL] pkg_repo_list failed!\n");
+        return false;
+    }
+    kprintf("  PASS: Package details lookup and repo list verified.\n");
 
     kprintf("[PKG TEST] All Package Manager tests passed successfully!\n");
     kprintf("ASTRA_PKG_MANAGER_OK\n\n");

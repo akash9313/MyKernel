@@ -1,6 +1,54 @@
 import os
 import struct
 import sys
+import hashlib
+import base64
+
+def build_signed_apkg(name, version, desc, depends, files_dict, key_path):
+    if not os.path.exists(key_path):
+        return b''
+    with open(key_path, 'r') as f:
+        key_pem = f.read()
+    lines = [l for l in key_pem.splitlines() if not l.startswith('-----')]
+    der = base64.b64decode(''.join(lines))
+    idx = der.find(b'\x02\x01\x00\x02\x82\x01\x01\x00')
+    if idx == -1:
+        return b''
+    n = int.from_bytes(der[idx+8 : idx+8+256], 'big')
+    e_idx = idx + 8 + 256
+    d_idx = e_idx + 5
+    d_start = d_idx + 4
+    if der[d_start] == 0:
+        d_start += 1
+    d = int.from_bytes(der[d_start : d_start + 256], 'big')
+
+    payload_parts = []
+    file_entries = []
+    offset = 0
+    for path, data in files_dict.items():
+        payload_parts.append(data)
+        file_entries.append(struct.pack('<64sIII', path.encode('utf-8')[:63], len(data), 0o755, offset))
+        offset += len(data)
+    payload = b''.join(payload_parts)
+    sha = hashlib.sha256(payload).digest()
+
+    digest_info = bytes.fromhex('3031300d060960864801650304020105000420') + sha
+    pad_len = 256 - 3 - len(digest_info)
+    em = b'\x00\x01' + (b'\xFF' * pad_len) + b'\x00' + digest_info
+    sig = pow(int.from_bytes(em, 'big'), d, n).to_bytes(256, 'big')
+
+    hdr = struct.pack('<IHH32s16s16s64s64sII32s256s',
+                      0x474B5041, 1, 0,
+                      name.encode('utf-8')[:31],
+                      version.encode('utf-8')[:15],
+                      b'x86_64',
+                      desc.encode('utf-8')[:63],
+                      depends.encode('utf-8')[:63],
+                      len(files_dict),
+                      len(payload),
+                      sha,
+                      sig)
+    return hdr + b''.join(file_entries) + payload
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD_DIR = os.path.join(BASE_DIR, 'build')
@@ -54,6 +102,22 @@ def build_initramfs():
     if os.path.exists(normal_app_elf_path):
         with open(normal_app_elf_path, 'rb') as f:
             normal_app_elf_bytes = f.read()
+
+    # Cosmic Vista Wallpaper Preprocessed Binary Asset
+    wallpaper_raw_path = os.path.join(BASE_DIR, 'assets', 'wallpapers', 'cosmic_vista.raw')
+    if not os.path.exists(wallpaper_raw_path):
+        import importlib.util
+        cvt_path = os.path.join(BASE_DIR, 'tools', 'convert_wallpaper.py')
+        if os.path.exists(cvt_path):
+            spec = importlib.util.spec_from_file_location("convert_wallpaper", cvt_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mod.convert_wallpaper()
+
+    wallpaper_raw_bytes = b''
+    if os.path.exists(wallpaper_raw_path):
+        with open(wallpaper_raw_path, 'rb') as f:
+            wallpaper_raw_bytes = f.read()
 
     faulting_app_elf_path = os.path.join(BUILD_DIR, 'faulting_app.elf')
     faulting_app_elf_bytes = b''
@@ -281,6 +345,16 @@ p { color: white; }
     if os.path.exists(ca_crt_path):
         with open(ca_crt_path, 'rb') as f:
             ca_crt_bytes = f.read()
+
+    ca_key_path = os.path.join(BUILD_DIR, 'certs', 'ca.key')
+    calc_apkg_bytes = build_signed_apkg(
+        'calc', '1.0.0', 'Scientific expression calculator for AstraOS', '',
+        {'/bin/calc.elf': user_app_elf_bytes}, ca_key_path
+    )
+    htop_apkg_bytes = build_signed_apkg(
+        'htop', '1.0.0', 'Interactive process viewer and system activity monitor', '',
+        {'/bin/htop.elf': user_app_elf_bytes}, ca_key_path
+    )
 
     # Phase P: 16x16 valid 24-bit uncompressed BMP image
     bmp_w, bmp_h = 16, 16
@@ -627,10 +701,15 @@ function recoverSecAction() {
         ('/nested', NODE_DIR, b''),
         ('/nested/deep', NODE_DIR, b''),
         ('/nested/deep/secret.txt', NODE_FILE, b'AstraOS nested filesystem secret 0x4153545241\n'),
+        ('/assets', NODE_DIR, b''),
+        ('/assets/cosmic_vista.raw', NODE_FILE, wallpaper_raw_bytes),
         ('/etc', NODE_DIR, b''),
         ('/etc/ssl', NODE_DIR, b''),
         ('/etc/ssl/certs', NODE_DIR, b''),
         ('/etc/ssl/certs/ca.crt', NODE_FILE, ca_crt_bytes),
+        ('/repo', NODE_DIR, b''),
+        ('/repo/calc.apkg', NODE_FILE, calc_apkg_bytes),
+        ('/repo/htop.apkg', NODE_FILE, htop_apkg_bytes),
         ('/bin', NODE_DIR, b''),
         ('/bin/user_app.elf', NODE_FILE, user_app_elf_bytes),
         ('/bin/net_client.elf', NODE_FILE, net_client_elf_bytes),

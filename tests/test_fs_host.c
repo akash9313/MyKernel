@@ -1274,7 +1274,7 @@ int run_all_fs_host_tests(void) {
     return 0;
 }
 
-#if defined(HOST_TEST_MAIN) || !defined(HOST_TEST_DLL)
+#ifndef HOST_DLL
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;

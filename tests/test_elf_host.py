@@ -36,6 +36,7 @@ def build_test_dll():
     os.makedirs(BUILD_DIR, exist_ok=True)
     cmd = [
         CC,
+        '-fno-lto',
         '-O2',
         '-shared',
         '-DHOST_TEST',
@@ -62,6 +63,7 @@ def run_tests_exe():
     os.makedirs(BUILD_DIR, exist_ok=True)
     cmd = [
         CC,
+        '-fno-lto',
         '-O2',
         '-DHOST_TEST',
         '-I', BASE_DIR,
@@ -77,8 +79,14 @@ def run_tests_exe():
         print(res.stderr)
         return False
     print(f"[HOST TEST] Running {EXE_PATH}...")
-    res = subprocess.run([EXE_PATH])
-    return res.returncode == 0
+    try:
+        res = subprocess.run([EXE_PATH])
+        return res.returncode == 0
+    except OSError as e:
+        if getattr(e, 'winerror', None) == 4551:
+            print(f"[BLOCKED] Binary execution blocked by host OS security policy ({e})")
+            sys.exit(2)
+        raise
 
 def run_tests():
     if not build_test_dll():

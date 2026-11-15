@@ -138,7 +138,12 @@ static void setup_mock_device(block_device_t *dev, const char *name, bool ro, bo
     dev->ops = &s_mock_ops;
 }
 
-__attribute__((visibility("default"))) int run_all_block_host_tests(void) {
+#ifdef _WIN32
+__declspec(dllexport)
+#else
+__attribute__((visibility("default")))
+#endif
+int run_all_block_host_tests(void) {
     printf("=================================================================\n");
     printf("     AstraOS Phase AD: Block Device Subsystem Host Unit Tests    \n");
     printf("=================================================================\n");
@@ -431,5 +436,13 @@ __attribute__((visibility("default"))) int run_all_block_host_tests(void) {
     printf("=================================================================\n");
     return 0;
 }
+
+#ifndef HOST_DLL
+int main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    return run_all_block_host_tests();
+}
+#endif
 
 #endif /* HOST_TEST */

@@ -45,5 +45,9 @@ void fb_draw_char(u64 x, u64 y, char c, u32 fg, u32 bg);
 void fb_putchar(char c);
 void fb_puts(const char *s);
 void fb_get_resolution(u64 *width, u64 *height);
+bool fb_render_wallpaper_early(const void *initramfs_data, size_t initramfs_size);
+void fb_set_console_enabled(bool enabled);
+bool fb_is_console_enabled(void);
+const void *fb_get_wallpaper_payload(u32 *out_w, u32 *out_h);
 
 #endif /* ASTRA_KERNEL_FRAMEBUFFER_H */

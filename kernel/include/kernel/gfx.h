@@ -63,6 +63,9 @@ void gfx_draw_string_scale(gfx_surface_t *s, int x, int y, const char *str, u32 
 void gfx_blit(gfx_surface_t *dst, int dst_x, int dst_y, const gfx_surface_t *src, int src_x, int src_y, int w, int h);
 void gfx_draw_bitmap(gfx_surface_t *s, int x, int y, int w, int h, const u32 *pixels);
 void gfx_draw_cursor(gfx_surface_t *s, int x, int y);
+void gfx_fill_rounded_rect(gfx_surface_t *s, int x, int y, int w, int h, int r, u32 color);
+void gfx_draw_rounded_rect(gfx_surface_t *s, int x, int y, int w, int h, int r, u32 color);
+void gfx_restore_wallpaper(gfx_surface_t *s);
 
 /* Core Graphics Subsystem & Double Buffering */
 int gfx_init(void);

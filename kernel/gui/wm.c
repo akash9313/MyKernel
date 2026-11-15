@@ -4,6 +4,7 @@
 #include <kernel/boot.h>
 #include <kernel/kprintf.h>
 #include <kernel/mem.h>
+#include <kernel/drivers/apic.h>
 
 static struct {
     wm_window_t windows[WM_MAX_WINDOWS];
@@ -11,6 +12,32 @@ static struct {
     int next_id;
     int focused_id;
 } g_wm = {0};
+
+static struct {
+    char text[2048];
+    size_t len;
+} g_clipboard = {0};
+
+void clipboard_set_text(const char *text, size_t len) {
+    if (!text || len == 0) {
+        g_clipboard.text[0] = '\0';
+        g_clipboard.len = 0;
+        return;
+    }
+    if (len >= sizeof(g_clipboard.text)) {
+        len = sizeof(g_clipboard.text) - 1;
+    }
+    for (size_t i = 0; i < len; i++) {
+        g_clipboard.text[i] = text[i];
+    }
+    g_clipboard.text[len] = '\0';
+    g_clipboard.len = len;
+}
+
+const char *clipboard_get_text(size_t *out_len) {
+    if (out_len) *out_len = g_clipboard.len;
+    return g_clipboard.text;
+}
 
 static bool g_wm_initialized = false;
 
@@ -37,6 +64,19 @@ wm_window_t *wm_find_by_id(int id) {
     for (int i = 0; i < g_wm.window_count; i++) {
         if (g_wm.windows[i].id == id) {
             return &g_wm.windows[i];
+        }
+    }
+    return NULL;
+}
+
+wm_window_t *wm_find_by_title_substring(const char *sub) {
+    if (!sub || !*sub) return NULL;
+    for (int i = 0; i < g_wm.window_count; i++) {
+        const char *h = g_wm.windows[i].title;
+        for (int j = 0; h[j]; j++) {
+            int k = 0;
+            while (sub[k] && h[j + k] == sub[k]) k++;
+            if (!sub[k]) return &g_wm.windows[i];
         }
     }
     return NULL;
@@ -175,6 +215,105 @@ wm_window_t *wm_create_window(const char *title, int x, int y, int w, int h) {
     return wm_create_window_owner(title, x, y, w, h, 0);
 }
 
+void wm_resize_window(wm_window_t *win, int new_w, int new_h) {
+    if (!win) return;
+    if (new_w < 200) new_w = 200;
+    if (new_h < 120) new_h = 120;
+
+    gfx_surface_t *bb = gfx_get_backbuffer();
+    if (bb) {
+        if (new_w > bb->width) new_w = bb->width;
+        if (new_h > bb->height - WM_TITLEBAR_HEIGHT) new_h = bb->height - WM_TITLEBAR_HEIGHT;
+    }
+
+    int new_client_w = new_w - 2 * WM_BORDER_WIDTH;
+    int new_client_h = new_h - WM_TITLEBAR_HEIGHT - WM_BORDER_WIDTH;
+
+    size_t old_bytes = (size_t)win->client_w * win->client_h * sizeof(u32);
+    size_t old_pages = (old_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    size_t new_bytes = (size_t)new_client_w * new_client_h * sizeof(u32);
+    size_t new_pages = (new_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    struct limine_hhdm_response *hhdm = boot_get_hhdm_response();
+
+    if (new_pages != old_pages || !win->client_buffer) {
+        phys_addr_t new_pa = 0;
+        int pmm_res = pmm_alloc_contiguous(new_pages, &new_pa);
+        if (pmm_res != PMM_SUCCESS) {
+            kprintf("[WM ERROR] Failed to reallocate client surface for resize\n");
+            return;
+        }
+
+        u32 *new_va = (u32 *)(new_pa + hhdm->offset);
+        kmemset(new_va, 0, new_bytes);
+
+        if (win->client_buffer && hhdm) {
+            phys_addr_t old_pa = (phys_addr_t)((uintptr_t)win->client_buffer - hhdm->offset);
+            pmm_free_contiguous(old_pa, old_pages);
+        }
+
+        win->client_buffer = new_va;
+    } else {
+        kmemset(win->client_buffer, 0, new_bytes);
+    }
+
+    win->width = new_w;
+    win->height = new_h;
+    win->client_w = new_client_w;
+    win->client_h = new_client_h;
+    win->client_x = win->x + WM_BORDER_WIDTH;
+    win->client_y = win->y + WM_TITLEBAR_HEIGHT;
+
+    gfx_init_surface(&win->client_surf, win->client_buffer, win->client_w, win->client_h, win->client_w);
+
+    if (win->on_paint) {
+        win->on_paint(win, &win->client_surf);
+    }
+}
+
+void wm_maximize_window(wm_window_t *win) {
+    if (!win || win->maximized) return;
+
+    win->saved_x = win->x;
+    win->saved_y = win->y;
+    win->saved_w = win->width;
+    win->saved_h = win->height;
+    win->maximized = true;
+
+    gfx_surface_t *bb = gfx_get_backbuffer();
+    int scr_w = bb ? bb->width : 1024;
+    int scr_h = bb ? bb->height : 768;
+
+    win->x = 0;
+    win->y = 32; /* Below top panel */
+    int max_h = scr_h - 32 - 58; /* Above bottom dock */
+    if (max_h < 200) max_h = scr_h - 32;
+
+    wm_resize_window(win, scr_w, max_h);
+}
+
+void wm_restore_window(wm_window_t *win) {
+    if (!win || !win->maximized) return;
+
+    win->maximized = false;
+    win->x = win->saved_x;
+    win->y = win->saved_y;
+    int w = win->saved_w > 0 ? win->saved_w : 520;
+    int h = win->saved_h > 0 ? win->saved_h : 340;
+
+    wm_resize_window(win, w, h);
+}
+
+void wm_toggle_maximize(wm_window_t *win) {
+    if (!win) return;
+    if (win->maximized) {
+        wm_restore_window(win);
+    } else {
+        wm_maximize_window(win);
+    }
+}
+
 bool wm_window_push_event(wm_window_t *win, const input_event_t *ev) {
     if (!win || !ev) return false;
     if (win->event_count >= WM_EVENT_QUEUE_CAPACITY) {
@@ -249,6 +388,19 @@ void wm_handle_input_event(const input_event_t *ev) {
     if (!ev) return;
 
     if (ev->type == INPUT_EVENT_MOUSE_MOVE) {
+        /* Check if any window is being resized */
+        for (int i = 0; i < g_wm.window_count; i++) {
+            wm_window_t *w = &g_wm.windows[i];
+            if (w->is_resizing) {
+                int dx = ev->mouse.x - w->resize_start_x;
+                int dy = ev->mouse.y - w->resize_start_y;
+                int nw = w->resize_orig_w + dx;
+                int nh = w->resize_orig_h + dy;
+                wm_resize_window(w, nw, nh);
+                return;
+            }
+        }
+
         /* Check if any window is being dragged */
         for (int i = 0; i < g_wm.window_count; i++) {
             wm_window_t *w = &g_wm.windows[i];
@@ -309,8 +461,16 @@ void wm_handle_input_event(const input_event_t *ev) {
                 return;
             }
 
-            /* Check Minimize button [-] */
-            int min_x = w->x + w->width - 44;
+            /* Check Maximize / Restore button [+] (Green circle) */
+            int max_btn_x = w->x + w->width - 44;
+            if (ev->mouse.x >= max_btn_x && ev->mouse.x < max_btn_x + 18 &&
+                ev->mouse.y >= btn_y && ev->mouse.y < btn_y + 18) {
+                wm_toggle_maximize(w);
+                return;
+            }
+
+            /* Check Minimize button [-] (Amber circle) */
+            int min_x = w->x + w->width - 66;
             if (ev->mouse.x >= min_x && ev->mouse.x < min_x + 18 &&
                 ev->mouse.y >= btn_y && ev->mouse.y < btn_y + 18) {
                 w->minimized = true;
@@ -321,11 +481,37 @@ void wm_handle_input_event(const input_event_t *ev) {
                 return;
             }
 
-            /* Check Titlebar Drag */
+            /* Check Resize Grip in bottom-right 16x16 corner */
+            if (!w->maximized &&
+                ev->mouse.x >= w->x + w->width - 16 && ev->mouse.x <= w->x + w->width &&
+                ev->mouse.y >= w->y + w->height - 16 && ev->mouse.y <= w->y + w->height) {
+                w->is_resizing = true;
+                w->resize_start_x = ev->mouse.x;
+                w->resize_start_y = ev->mouse.y;
+                w->resize_orig_w = w->width;
+                w->resize_orig_h = w->height;
+                return;
+            }
+
+            /* Check Titlebar Click & Drag */
             if (ev->mouse.y >= w->y && ev->mouse.y < w->y + WM_TITLEBAR_HEIGHT) {
-                w->is_dragging = true;
-                w->drag_offset_x = ev->mouse.x - w->x;
-                w->drag_offset_y = ev->mouse.y - w->y;
+                static u64 s_last_title_click = 0;
+                static int s_last_win_id = 0;
+                u64 now_tick = apic_get_ticks();
+                if (s_last_win_id == w->id && (now_tick - s_last_title_click < 40)) {
+                    /* Double click on titlebar -> toggle maximize */
+                    wm_toggle_maximize(w);
+                    s_last_title_click = 0;
+                    return;
+                }
+                s_last_title_click = now_tick;
+                s_last_win_id = w->id;
+
+                if (!w->maximized) {
+                    w->is_dragging = true;
+                    w->drag_offset_x = ev->mouse.x - w->x;
+                    w->drag_offset_y = ev->mouse.y - w->y;
+                }
                 return;
             }
 
@@ -346,6 +532,7 @@ void wm_handle_input_event(const input_event_t *ev) {
     } else if (ev->type == INPUT_EVENT_MOUSE_UP) {
         for (int i = 0; i < g_wm.window_count; i++) {
             g_wm.windows[i].is_dragging = false;
+            g_wm.windows[i].is_resizing = false;
         }
         wm_window_t *foc = wm_get_focused();
         if (foc) {
@@ -382,30 +569,57 @@ void wm_render(void) {
         if (!w->visible || w->minimized) continue;
 
         /* Window Outline and Outer Frame */
-        u32 border_color = w->focused ? GFX_COLOR_ACCENT_BLUE : GFX_COLOR_WINDOW_BORDER;
+        u32 border_color = w->focused ? 0x38BDF8 : 0x223048;
         gfx_draw_rect(bb, w->x, w->y, w->width, w->height, border_color);
 
-        /* Title Bar */
-        u32 tb_color = w->focused ? GFX_COLOR_TITLEBAR_ACTIVE : GFX_COLOR_TITLEBAR_INACTIVE;
+        /* Modern Title Bar (Sleek Dark Glass) */
+        u32 tb_color = w->focused ? 0x0F172A : 0x182030;
         gfx_fill_rect(bb, w->x + 1, w->y + 1, w->width - 2, WM_TITLEBAR_HEIGHT - 1, tb_color);
+        /* Subtle divider line between titlebar and client area */
+        gfx_draw_line(bb, w->x + 1, w->y + WM_TITLEBAR_HEIGHT - 1, w->x + w->width - 2, w->y + WM_TITLEBAR_HEIGHT - 1, 0x1E293B);
 
-        /* Title text */
-        u32 title_text_color = w->focused ? GFX_COLOR_TEXT_PRIMARY : GFX_COLOR_TEXT_MUTED;
-        gfx_draw_string(bb, w->x + 8, w->y + 5, w->title, title_text_color, tb_color, true);
+        /* App mini-badge icon & title text */
+        u32 badge_color = w->focused ? 0x38BDF8 : 0x64748B;
+        gfx_fill_rounded_rect(bb, w->x + 8, w->y + 7, 10, 10, 3, badge_color);
+        u32 title_text_color = w->focused ? 0xF8FAFC : 0x94A3B8;
+        gfx_draw_string(bb, w->x + 24, w->y + 5, w->title, title_text_color, tb_color, true);
 
-        /* Minimize Button [-] */
-        int min_x = w->x + w->width - 44;
+        /* Modern Traffic-Light Circular Window Controls */
+        /* 1. Minimize Button (Amber Gold Circle with minus) */
+        int min_x = w->x + w->width - 66;
         int min_y = w->y + 4;
-        gfx_fill_rect(bb, min_x, min_y, 18, 18, GFX_COLOR_TITLEBAR_INACTIVE);
-        gfx_draw_rect(bb, min_x, min_y, 18, 18, GFX_COLOR_WINDOW_BORDER);
-        gfx_draw_line(bb, min_x + 4, min_y + 9, min_x + 13, min_y + 9, GFX_COLOR_TEXT_MUTED);
+        gfx_fill_rounded_rect(bb, min_x + 2, min_y + 2, 14, 14, 7, 0xF59E0B);
+        gfx_draw_rounded_rect(bb, min_x + 2, min_y + 2, 14, 14, 7, 0xD97706);
+        gfx_draw_line(bb, min_x + 5, min_y + 9, min_x + 13, min_y + 9, 0x78350F);
 
-        /* Close Button [X] */
+        /* 2. Maximize / Restore Button (Emerald Green Circle with square) */
+        int max_btn_x = w->x + w->width - 44;
+        int max_btn_y = w->y + 4;
+        gfx_fill_rounded_rect(bb, max_btn_x + 2, max_btn_y + 2, 14, 14, 7, 0x10B981);
+        gfx_draw_rounded_rect(bb, max_btn_x + 2, max_btn_y + 2, 14, 14, 7, 0x059669);
+        if (w->maximized) {
+            gfx_draw_rect(bb, max_btn_x + 6, max_btn_y + 6, 6, 6, 0x064E3B);
+        } else {
+            gfx_draw_rect(bb, max_btn_x + 5, max_btn_y + 5, 8, 8, 0x064E3B);
+        }
+
+        /* 3. Close Button (Coral Red Circle with cross) */
         int close_x = w->x + w->width - 22;
         int close_y = w->y + 4;
-        gfx_fill_rect(bb, close_x, close_y, 18, 18, GFX_COLOR_BTN_CLOSE);
-        gfx_draw_line(bb, close_x + 4, close_y + 4, close_x + 13, close_y + 13, GFX_COLOR_WHITE);
-        gfx_draw_line(bb, close_x + 13, close_y + 4, close_x + 4, close_y + 13, GFX_COLOR_WHITE);
+        gfx_fill_rounded_rect(bb, close_x + 2, close_y + 2, 14, 14, 7, 0xEF4444);
+        gfx_draw_rounded_rect(bb, close_x + 2, close_y + 2, 14, 14, 7, 0xDC2626);
+        gfx_draw_line(bb, close_x + 6, close_y + 6, close_x + 12, close_y + 12, 0x7F1D1D);
+        gfx_draw_line(bb, close_x + 12, close_y + 6, close_x + 6, close_y + 12, 0x7F1D1D);
+
+        /* Resize Grip in bottom-right corner when not maximized */
+        if (!w->maximized) {
+            int rx = w->x + w->width - 12;
+            int ry = w->y + w->height - 12;
+            u32 grip_col = w->focused ? 0x64748B : 0x334155;
+            gfx_draw_line(bb, rx + 8, ry + 2, rx + 2, ry + 8, grip_col);
+            gfx_draw_line(bb, rx + 8, ry + 5, rx + 5, ry + 8, grip_col);
+            gfx_draw_line(bb, rx + 8, ry + 8, rx + 8, ry + 8, grip_col);
+        }
 
         /* Paint client content */
         if (w->on_paint) {
@@ -502,6 +716,25 @@ bool wm_self_test(void) {
         return false;
     }
     kprintf("  PASS: Titlebar window dragging and coordinate translation verified.\n");
+
+    /* 4b. Test Window Resize and Maximize / Restore */
+    kprintf("[WM TEST] 4b. Testing window resize, maximize, and restore...\n");
+    wm_resize_window(w1, 350, 220);
+    if (!w1 || w1->width != 350 || w1->height != 220) {
+        kprintf("[WM TEST FAIL] Window resize failed!\n");
+        return false;
+    }
+    wm_maximize_window(w1);
+    if (!w1 || !w1->maximized) {
+        kprintf("[WM TEST FAIL] Window maximize failed!\n");
+        return false;
+    }
+    wm_restore_window(w1);
+    if (!w1 || w1->maximized || w1->width != 350 || w1->height != 220) {
+        kprintf("[WM TEST FAIL] Window restore failed!\n");
+        return false;
+    }
+    kprintf("  PASS: Window resize, maximize, and restore verified.\n");
 
     /* 5. Test Window Destruction & Resource Cleanup */
     kprintf("[WM TEST] 5. Testing window destruction and resource cleanup...\n");

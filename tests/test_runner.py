@@ -629,6 +629,9 @@ def run_integration_test(ram_size="512M", test_mode="normal", vga_mode="std", sm
     ay_cpu_topology_ok = False
     ay_boot_media_protection_ok = False
     ay_subsystem_containment_ok = False
+    term_cursor_ok = False
+    native_shell_ok = False
+    pkg_manager_ok = False
 
     while time.time() - start_time < timeout_sec:
         line = proc.stdout.readline()
@@ -1383,6 +1386,18 @@ def run_integration_test(ram_size="512M", test_mode="normal", vga_mode="std", sm
             ay_subsystem_containment_ok = True
             print("\n[TEST] PASS: Detected 'ASTRA_AY_SUBSYSTEM_CONTAINMENT_OK' marker (Subsystem failure containment & diagnostics verified)!\n")
 
+        if "ASTRA_TERMINAL_CURSOR_OK" in line:
+            term_cursor_ok = True
+            print("\n[TEST] PASS: Detected 'ASTRA_TERMINAL_CURSOR_OK' marker (Terminal dynamic cursor positioning & key navigation verified)!\n")
+
+        if "ASTRA_NATIVE_SHELL_OK" in line:
+            native_shell_ok = True
+            print("\n[TEST] PASS: Detected 'ASTRA_NATIVE_SHELL_OK' marker (Universal native shell, pipes, redirection & command chains verified)!\n")
+
+        if "ASTRA_PKG_MANAGER_OK" in line:
+            pkg_manager_ok = True
+            print("\n[TEST] PASS: Detected 'ASTRA_PKG_MANAGER_OK' marker (Package manager, digital signatures, dependency graph & honest repo verified)!\n")
+
         if test_mode == "nofb" and ("operating in safe serial-only console mode" in line or "serial-only mode" in line):
             nofb_verified = True
 
@@ -1432,6 +1447,7 @@ def run_integration_test(ram_size="512M", test_mode="normal", vga_mode="std", sm
         phase_ay_conditions = (ay_uefi_boot_info_ok and ay_hardware_timer_ok and
                                ay_storage_discovery_ok and ay_cpu_topology_ok and
                                ay_boot_media_protection_ok and ay_subsystem_containment_ok)
+        terminal_conditions = (term_cursor_ok and native_shell_ok and pkg_manager_ok) if test_mode != "nofb" else (native_shell_ok and pkg_manager_ok)
 
         if (boot_ok and pmm_ok and vmm_ok and own_paging_ok and heap_ok and 
             tss_ok and idt_ok and apic_timer_ok and ctx_switch_ok and coop_sched_ok and thread_lifecycle_ok and
@@ -1442,7 +1458,7 @@ def run_integration_test(ram_size="512M", test_mode="normal", vga_mode="std", sm
             initramfs_ok and vfs_lookup_ok and vfs_read_ok and vfs_invalid_archive_ok and vfs_elf_exec_ok and
             net_dev_ok and net_drv_ok and arp_ok and ipv4_ok and dhcp_ok and dns_ok and tcp_ok and http_client_ok and
             browser_render_ok and browser_http_ok and tls_cert_ok and
-            css_parser_ok and css_cascade_ok and css_layout_ok and block_device_ok and fs_ok and gui_conditions and phase_o_conditions and phase_ak_conditions and phase_al_conditions and phase_am_conditions and phase_an_conditions and phase_ao_conditions and phase_ap_conditions and phase_aq_conditions and phase_ar_conditions and phase_as_conditions and phase_at_conditions and phase_au_conditions and phase_av_conditions and phase_aw_conditions and phase_ax_conditions and phase_ay_conditions):
+            css_parser_ok and css_cascade_ok and css_layout_ok and block_device_ok and fs_ok and gui_conditions and phase_o_conditions and phase_ak_conditions and phase_al_conditions and phase_am_conditions and phase_an_conditions and phase_ao_conditions and phase_ap_conditions and phase_aq_conditions and phase_ar_conditions and phase_as_conditions and phase_at_conditions and phase_au_conditions and phase_av_conditions and phase_aw_conditions and phase_ax_conditions and phase_ay_conditions and terminal_conditions):
             break
 
     gui_conditions = (user_gui_ok and multi_process_gui_ok and gui_isolation_ok) if test_mode != "nofb" else True
@@ -1472,7 +1488,7 @@ def run_integration_test(ram_size="512M", test_mode="normal", vga_mode="std", sm
             initramfs_ok and vfs_lookup_ok and vfs_read_ok and vfs_invalid_archive_ok and vfs_elf_exec_ok and
             net_dev_ok and net_drv_ok and arp_ok and ipv4_ok and dhcp_ok and dns_ok and tcp_ok and http_client_ok and
             browser_render_ok and browser_http_ok and tls_cert_ok and
-            css_parser_ok and css_cascade_ok and css_layout_ok and block_device_ok and fs_ok and gui_conditions and phase_o_conditions and phase_ak_conditions and phase_al_conditions and phase_am_conditions and phase_an_conditions and phase_ao_conditions and phase_ap_conditions and phase_aq_conditions and phase_ar_conditions and phase_as_conditions and phase_at_conditions and phase_au_conditions and phase_av_conditions and phase_aw_conditions and phase_ax_conditions and phase_ay_conditions):
+            css_parser_ok and css_cascade_ok and css_layout_ok and block_device_ok and fs_ok and gui_conditions and phase_o_conditions and phase_ak_conditions and phase_al_conditions and phase_am_conditions and phase_an_conditions and phase_ao_conditions and phase_ap_conditions and phase_aq_conditions and phase_ar_conditions and phase_as_conditions and phase_at_conditions and phase_au_conditions and phase_av_conditions and phase_aw_conditions and phase_ax_conditions and phase_ay_conditions and terminal_conditions):
         proc.kill()
         if https_server:
             https_server.shutdown()
@@ -1717,6 +1733,62 @@ def run_integration_test(ram_size="512M", test_mode="normal", vga_mode="std", sm
         if not send_cmd_and_wait("browser file:///www/about.html", "Launching AstraBrowser"):
             return abort_monitor_fail()
 
+    # =========================================================================
+    # Terminal Real-World Acceptance & Package Qualification Commands
+    # =========================================================================
+    acceptance_commands = [
+        ("pwd", "/"),
+        ("whoami", "root"),
+        ("uname -a", "AstraOS"),
+        ("echo hello", "hello"),
+        ("which ls", "ls"),
+        ("type grep", "builtin"),
+        ("mkdir /data/testdir", ""),
+        ("cd /data/testdir", ""),
+        ("pwd", "data"),
+        ("touch sample.txt", ""),
+        ("echo hello-world > sample.txt", ""),
+        ("cat sample.txt", "hello-world"),
+        ("cp sample.txt copy.txt", ""),
+        ("mv copy.txt renamed.txt", ""),
+        ("ls -la", "sample.txt"),
+        ("grep hello sample.txt", "hello-world"),
+        ("wc -l sample.txt", "1"),
+        ("head -n 1 sample.txt", "hello-world"),
+        ("tail -n 1 sample.txt", "hello-world"),
+        ("find /data -name sample.txt", "sample.txt"),
+        ("stat sample.txt", "sample.txt"),
+        ("df", "AstraFS"),
+        ("du -sh /data", "data"),
+        ("rm renamed.txt", ""),
+        ("rm sample.txt", ""),
+        ("cd /", ""),
+        ("rmdir /data/testdir", ""),
+        ("echo hello | wc -c", "6"),
+        ("echo first > /data/output.txt", ""),
+        ("echo second >> /data/output.txt", ""),
+        ("cat < /data/output.txt", "first"),
+        ("false || echo fallback", "fallback"),
+        ("echo one ; echo two", "one"),
+        ("pkg list", "Installed"),
+        ("pkg search calc", "calc"),
+        ("pkg info calc", "calc"),
+        ("pkg install calc", "calc"),
+        ("which calc", "calc"),
+        ("pkg remove calc", "removed"),
+        ("pkg search htop", "htop"),
+        ("pkg info htop", "htop"),
+        ("pkg install htop", "htop"),
+        ("which htop", "htop"),
+        ("pkg remove htop", "removed"),
+        ("pkg install nonexistent_pkg", "not found")
+    ]
+
+    print("\n[ACCEPTANCE] Executing Real Terminal Command & Package Verification Suite...")
+    for ac_cmd, ac_expect in acceptance_commands:
+        if not send_cmd_and_wait(ac_cmd, ac_expect):
+            return abort_monitor_fail()
+
     # Test 'halt'
     print("[TEST] Sending 'halt' command...")
     proc.stdin.write("halt\n")
@@ -1909,6 +1981,9 @@ def main():
         print("  - CPU topology and per-CPU isolation qualified (ASTRA_AY_CPU_TOPOLOGY_OK)")
         print("  - Boot media write-protection & live hierarchy qualified (ASTRA_AY_BOOT_MEDIA_PROTECTION_OK)")
         print("  - Subsystem failure containment & diagnostics qualified (ASTRA_AY_SUBSYSTEM_CONTAINMENT_OK)")
+        print("  - Terminal dynamic cursor positioning & navigation qualified (ASTRA_TERMINAL_CURSOR_OK)")
+        print("  - Universal native shell, pipes, redirection & chains qualified (ASTRA_NATIVE_SHELL_OK)")
+        print("  - Package manager, digital signatures, dependency graph & honest repo qualified (ASTRA_PKG_MANAGER_OK)")
         print("==================================================================")
         sys.exit(0)
     else:

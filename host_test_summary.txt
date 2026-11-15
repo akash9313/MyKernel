@@ -1,0 +1,9 @@
+AstraOS Host Verification Test Suite Final Summary
+======================================================================
+[BLOCKED] VFS & Initramfs (code 2, 2.07s): Blocked by host OS security policy (SAC WinError 4551)
+[PASS] AstraFS Persistent Filesystem (code 0, 3.42s): All unit assertions succeeded
+[PASS] ELF64 Loader Security (code 0, 0.88s): All unit assertions succeeded
+[BLOCKED] Bookmark Storage & Persistence (code 2, 1.79s): Blocked by host OS security policy (SAC WinError 4551)
+[BLOCKED] Block Device & ATA Flush (code 2, 2.41s): Blocked by host OS security policy (SAC WinError 4551)
+[BLOCKED] Cryptographic Subsystem & TLS (code 2, 2.14s): Blocked by host OS security policy (SAC WinError 4551)
+[BLOCKED] Kernel Heap Allocator (code 2, 2.39s): Blocked by host OS security policy (SAC WinError 4551)

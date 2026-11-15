@@ -2,6 +2,7 @@
 #include <kernel/arch/x86_64/cpu.h>
 #include <kernel/kprintf.h>
 #include <kernel/drivers/apic.h>
+#include <kernel/gfx.h>
 
 #define PS2_DATA_PORT    0x60
 #define PS2_STATUS_PORT  0x64
@@ -88,14 +89,36 @@ static void ps2_process_keyboard_byte(u8 scancode) {
 
     if (g_extended) {
         g_extended = false;
+        if (code == 0x1D) {
+            g_ctrl = !key_up;
+            return;
+        } else if (code == 0x38) {
+            g_alt = !key_up;
+            return;
+        }
+
         input_event_t ev = {
             .type = key_up ? INPUT_EVENT_KEY_UP : INPUT_EVENT_KEY_DOWN
         };
+        u8 mods = 0;
+        if (g_shift) mods |= KEY_MOD_SHIFT;
+        if (g_ctrl)  mods |= KEY_MOD_CTRL;
+        if (g_alt)   mods |= KEY_MOD_ALT;
+        if (g_caps)  mods |= KEY_MOD_CAPS;
+        ev.key.modifiers = mods;
+
         switch (code) {
             case 0x48: ev.key.keycode = KEY_UP; break;
             case 0x50: ev.key.keycode = KEY_DOWN; break;
             case 0x4B: ev.key.keycode = KEY_LEFT; break;
             case 0x4D: ev.key.keycode = KEY_RIGHT; break;
+            case 0x47: ev.key.keycode = KEY_HOME; break;
+            case 0x4F: ev.key.keycode = KEY_END; break;
+            case 0x49: ev.key.keycode = KEY_PAGE_UP; break;
+            case 0x51: ev.key.keycode = KEY_PAGE_DOWN; break;
+            case 0x53: ev.key.keycode = KEY_DELETE; break;
+            case 0x1C: ev.key.keycode = KEY_ENTER; ev.key.ascii = '\n'; break;
+            case 0x35: ev.key.keycode = (u32)'/'; ev.key.ascii = '/'; break;
             default: return;
         }
         input_push_event(&ev);
@@ -144,6 +167,12 @@ static void ps2_process_keyboard_byte(u8 scancode) {
         } else if (code == 0x1C) {
             ev.key.keycode = KEY_ENTER;
             ev.key.ascii = '\n';
+        } else if (code >= 0x3B && code <= 0x44) {
+            ev.key.keycode = KEY_F1 + (code - 0x3B);
+        } else if (code == 0x57) {
+            ev.key.keycode = KEY_F11;
+        } else if (code == 0x58) {
+            ev.key.keycode = KEY_F12;
         } else {
             ev.key.keycode = (u32)code;
         }
@@ -158,6 +187,10 @@ static void ps2_process_mouse_byte(u8 data) {
         if ((data & 0x08) == 0) {
             return; /* Out of sync, wait for next byte */
         }
+        /* Discard overflow packets */
+        if (data & 0xC0) {
+            return;
+        }
         g_mouse_packet[0] = data;
         g_mouse_cycle = 1;
     } else if (g_mouse_cycle == 1) {
@@ -168,6 +201,10 @@ static void ps2_process_mouse_byte(u8 data) {
         g_mouse_cycle = 0;
 
         u8 flags = g_mouse_packet[0];
+        if ((flags & 0x08) == 0 || (flags & 0xC0)) {
+            return; /* Out of sync or hardware overflow */
+        }
+
         s32 dx = (s32)g_mouse_packet[1];
         s32 dy = (s32)g_mouse_packet[2];
 
@@ -177,6 +214,11 @@ static void ps2_process_mouse_byte(u8 data) {
 
         /* Invert dy for standard screen coordinates (positive Y is down) */
         dy = -dy;
+
+        /* Discard corrupt delta spikes (> 400 pixels in a single tick) */
+        if (dx < -400 || dx > 400 || dy < -400 || dy > 400) {
+            return;
+        }
 
         /* Extract buttons */
         u8 buttons = 0;
@@ -190,11 +232,19 @@ static void ps2_process_mouse_byte(u8 data) {
         mx += dx;
         my += dy;
 
-        /* Clamp to screen boundary (1024x768 default) */
+        /* Clamp to actual screen boundary */
+        int max_x = 1919;
+        int max_y = 1079;
+        gfx_surface_t *bb = gfx_get_backbuffer();
+        if (bb && bb->width > 0 && bb->height > 0) {
+            max_x = bb->width - 1;
+            max_y = bb->height - 1;
+        }
+
         if (mx < 0) mx = 0;
-        if (mx > 1023) mx = 1023;
+        if (mx > max_x) mx = max_x;
         if (my < 0) my = 0;
-        if (my > 767) my = 767;
+        if (my > max_y) my = max_y;
 
         /* Check for button press / release events */
         if ((buttons & MOUSE_BTN_LEFT) && !(g_prev_buttons & MOUSE_BTN_LEFT)) {
@@ -224,6 +274,21 @@ static void ps2_process_mouse_byte(u8 data) {
 }
 
 void ps2_poll(void) {
+    u64 flags = irq_save();
+    u8 status = inb(PS2_STATUS_PORT);
+    while (status & PS2_STATUS_OUTPUT_FULL) {
+        u8 data = inb(PS2_DATA_PORT);
+        if (status & PS2_STATUS_MOUSE_DATA) {
+            ps2_process_mouse_byte(data);
+        } else {
+            ps2_process_keyboard_byte(data);
+        }
+        status = inb(PS2_STATUS_PORT);
+    }
+    irq_restore(flags);
+}
+
+void ps2_handle_keyboard_irq(void) {
     u8 status = inb(PS2_STATUS_PORT);
     while (status & PS2_STATUS_OUTPUT_FULL) {
         u8 data = inb(PS2_DATA_PORT);
@@ -236,23 +301,16 @@ void ps2_poll(void) {
     }
 }
 
-void ps2_handle_keyboard_irq(void) {
-    u8 status = inb(PS2_STATUS_PORT);
-    if (status & PS2_STATUS_OUTPUT_FULL) {
-        u8 data = inb(PS2_DATA_PORT);
-        if (!(status & PS2_STATUS_MOUSE_DATA)) {
-            ps2_process_keyboard_byte(data);
-        }
-    }
-}
-
 void ps2_handle_mouse_irq(void) {
     u8 status = inb(PS2_STATUS_PORT);
-    if (status & PS2_STATUS_OUTPUT_FULL) {
+    while (status & PS2_STATUS_OUTPUT_FULL) {
         u8 data = inb(PS2_DATA_PORT);
         if (status & PS2_STATUS_MOUSE_DATA) {
             ps2_process_mouse_byte(data);
+        } else {
+            ps2_process_keyboard_byte(data);
         }
+        status = inb(PS2_STATUS_PORT);
     }
 }
 

@@ -127,6 +127,40 @@ void terminal_prompt(terminal_state_t *term) {
     terminal_print(term, "$ ", TERM_COLOR_SYMBOL);
 }
 
+void terminal_get_cursor_coords(const terminal_state_t *term, int screen_h, int *out_x, int *out_y) {
+    if (!term || !out_x || !out_y) return;
+
+    int visible_rows = screen_h / TERM_FONT_HEIGHT;
+    if (visible_rows > TERM_DEFAULT_ROWS) visible_rows = TERM_DEFAULT_ROWS;
+
+    int cur_line_idx = term->total_lines % TERM_SCROLLBACK_LINES;
+    const term_line_t *cur_line = &term->scrollback[cur_line_idx];
+    int prompt_chars = cur_line->len;
+
+    int total_chars = prompt_chars + term->input_len;
+    int extra_rows = total_chars / TERM_DEFAULT_COLS;
+
+    int start_line = 1;
+    if (term->scroll_offset > 0) {
+        start_line = term->total_lines - (visible_rows - 1) - term->scroll_offset;
+    } else {
+        if ((term->total_lines + extra_rows) >= visible_rows) {
+            start_line = (term->total_lines + extra_rows) - (visible_rows - 1);
+        }
+    }
+    if (start_line < 1) start_line = 1;
+
+    int prompt_row = term->total_lines - start_line;
+    int base_y = 4 + (prompt_row * TERM_FONT_HEIGHT);
+
+    int cur_char_idx = prompt_chars + term->cursor_pos;
+    int cur_row = cur_char_idx / TERM_DEFAULT_COLS;
+    int cur_col = cur_char_idx % TERM_DEFAULT_COLS;
+
+    *out_x = 8 + (cur_col * TERM_FONT_WIDTH);
+    *out_y = base_y + (cur_row * TERM_FONT_HEIGHT);
+}
+
 static void terminal_on_paint(wm_window_t *win, gfx_surface_t *s) {
     if (!win || !s) return;
     terminal_state_t *term = (terminal_state_t *)win->user_data;
@@ -135,15 +169,37 @@ static void terminal_on_paint(wm_window_t *win, gfx_surface_t *s) {
     /* 1. Deep slate background */
     gfx_fill_rect(s, 0, 0, s->width, s->height, TERM_COLOR_BG);
 
-    /* 2. Render scrollback lines */
+    /* 2. Determine visible rows & dynamic start line */
     int visible_rows = s->height / TERM_FONT_HEIGHT;
     if (visible_rows > TERM_DEFAULT_ROWS) visible_rows = TERM_DEFAULT_ROWS;
 
-    int start_line = term->total_lines - (visible_rows - 1) - term->scroll_offset;
+    int cur_line_idx = term->total_lines % TERM_SCROLLBACK_LINES;
+    term_line_t *cur_line = &term->scrollback[cur_line_idx];
+    int prompt_chars = cur_line->len;
+
+    int total_chars = prompt_chars + term->input_len;
+    int extra_rows = total_chars / TERM_DEFAULT_COLS;
+
+    int start_line = 1;
+    if (term->scroll_offset > 0) {
+        start_line = term->total_lines - (visible_rows - 1) - term->scroll_offset;
+    } else {
+        if ((term->total_lines + extra_rows) >= visible_rows) {
+            start_line = (term->total_lines + extra_rows) - (visible_rows - 1);
+        }
+    }
     if (start_line < 1) start_line = 1;
 
-    int y = 4;
-    for (int l = start_line; l <= term->total_lines - term->scroll_offset && y < s->height - TERM_FONT_HEIGHT; l++) {
+    /* 3. Render scrollback lines */
+    int max_line_to_draw = (term->scroll_offset > 0)
+        ? (term->total_lines - term->scroll_offset)
+        : term->total_lines;
+
+    for (int l = start_line; l <= max_line_to_draw; l++) {
+        int row = l - start_line;
+        int y = 4 + (row * TERM_FONT_HEIGHT);
+        if (y >= s->height - TERM_FONT_HEIGHT) break;
+
         int idx = l % TERM_SCROLLBACK_LINES;
         term_line_t *tl = &term->scrollback[idx];
 
@@ -152,32 +208,45 @@ static void terminal_on_paint(wm_window_t *win, gfx_surface_t *s) {
             gfx_draw_char(s, x, y, tl->chars[c], term_idx_to_color(tl->colors[c]), 0, true);
             x += TERM_FONT_WIDTH;
         }
-        y += TERM_FONT_HEIGHT;
     }
 
-    /* 3. Render active input line at bottom row if not scrolled back */
+    /* 4. Render active input text and cursor if at bottom (scroll_offset == 0) */
     if (term->scroll_offset == 0) {
-        int cur_line_idx = term->total_lines % TERM_SCROLLBACK_LINES;
-        term_line_t *cur_line = &term->scrollback[cur_line_idx];
+        int base_row = term->total_lines - start_line;
+        int base_y = 4 + (base_row * TERM_FONT_HEIGHT);
 
-        int prompt_chars = cur_line->len;
-        int input_start_x = 8 + (prompt_chars * TERM_FONT_WIDTH);
-        int cur_y = 4 + (visible_rows - 1) * TERM_FONT_HEIGHT;
+        /* Draw entered input buffer text */
+        for (int i = 0; i < term->input_len; i++) {
+            int char_idx = prompt_chars + i;
+            int char_row = char_idx / TERM_DEFAULT_COLS;
+            int char_col = char_idx % TERM_DEFAULT_COLS;
+            int char_x = 8 + (char_col * TERM_FONT_WIDTH);
+            int char_y = base_y + (char_row * TERM_FONT_HEIGHT);
 
-        /* Draw entered input text */
-        int x = input_start_x;
-        for (int i = 0; i < term->input_len && x < s->width - TERM_FONT_WIDTH; i++) {
-            gfx_draw_char(s, x, cur_y, term->input_buf[i], TERM_COLOR_FG, 0, true);
-            x += TERM_FONT_WIDTH;
+            if (char_y >= 4 && char_y < s->height - TERM_FONT_HEIGHT && char_x < s->width - TERM_FONT_WIDTH) {
+                gfx_draw_char(s, char_x, char_y, term->input_buf[i], TERM_COLOR_FG, 0, true);
+            }
         }
 
-        /* 4. Render blinking cursor */
+        /* Draw blinking cursor */
+        int cur_x = 8, cur_y = 4;
+        terminal_get_cursor_coords(term, s->height, &cur_x, &cur_y);
         u64 ticks = apic_get_ticks();
         if ((ticks / 50) % 2 == 0) {
-            int cursor_x = input_start_x + (term->cursor_pos * TERM_FONT_WIDTH);
-            if (cursor_x < s->width - 4) {
-                gfx_fill_rect(s, cursor_x, cur_y, 2, TERM_FONT_HEIGHT - 2, TERM_COLOR_CURSOR);
+            if (cur_y >= 4 && cur_y <= s->height - TERM_FONT_HEIGHT && cur_x < s->width - 4) {
+                gfx_fill_rect(s, cur_x, cur_y, 2, TERM_FONT_HEIGHT - 2, TERM_COLOR_CURSOR);
             }
+        }
+    } else {
+        /* Render scrollback indicator at top right */
+        char scroll_ind[32] = "[SCROLL -00]";
+        int off = term->scroll_offset;
+        scroll_ind[9] = '0' + ((off / 10) % 10);
+        scroll_ind[10] = '0' + (off % 10);
+        int sx = s->width - (13 * TERM_FONT_WIDTH);
+        for (int i = 0; scroll_ind[i] && sx < s->width - TERM_FONT_WIDTH; i++) {
+            gfx_draw_char(s, sx, 4, scroll_ind[i], TERM_COLOR_MUTED, 0, true);
+            sx += TERM_FONT_WIDTH;
         }
     }
 }
@@ -193,16 +262,52 @@ static void terminal_on_event(wm_window_t *win, const input_event_t *ev) {
 
         /* Check Ctrl shortcuts */
         if (ev->key.modifiers & KEY_MOD_CTRL) {
-            if (ascii == 'c' || ascii == 'C') {
+            if (ascii == 'c' || ascii == 'C' || ascii == 3) {
                 terminal_println(term, "^C", TERM_COLOR_ERROR);
                 term->input_len = 0;
                 term->cursor_pos = 0;
                 term->input_buf[0] = '\0';
                 terminal_prompt(term);
                 return;
-            } else if (ascii == 'l' || ascii == 'L') {
+            } else if (ascii == 'l' || ascii == 'L' || ascii == 12) {
                 terminal_clear(term);
                 terminal_prompt(term);
+                return;
+            } else if (ascii == 'v' || ascii == 'V' || ascii == 22) {
+                size_t clen = 0;
+                const char *clip = clipboard_get_text(&clen);
+                if (clip && clen > 0) {
+                    for (size_t i = 0; i < clen && term->input_len < TERM_INPUT_MAX - 2; i++) {
+                        if (clip[i] == '\r' || clip[i] == '\n') break;
+                        for (int k = term->input_len; k > term->cursor_pos; k--) {
+                            term->input_buf[k] = term->input_buf[k - 1];
+                        }
+                        term->input_buf[term->cursor_pos] = clip[i];
+                        term->input_len++;
+                        term->cursor_pos++;
+                    }
+                    term->input_buf[term->input_len] = '\0';
+                }
+                return;
+            } else if (ascii == 'u' || ascii == 'U' || ascii == 21) {
+                if (term->cursor_pos > 0) {
+                    for (int i = 0; i <= term->input_len - term->cursor_pos; i++) {
+                        term->input_buf[i] = term->input_buf[term->cursor_pos + i];
+                    }
+                    term->input_len -= term->cursor_pos;
+                    term->cursor_pos = 0;
+                    term->input_buf[term->input_len] = '\0';
+                }
+                return;
+            } else if (ascii == 'k' || ascii == 'K' || ascii == 11) {
+                term->input_len = term->cursor_pos;
+                term->input_buf[term->input_len] = '\0';
+                return;
+            } else if (ascii == 'a' || ascii == 'A' || ascii == 1) {
+                term->cursor_pos = 0;
+                return;
+            } else if (ascii == 'e' || ascii == 'E' || ascii == 5) {
+                term->cursor_pos = term->input_len;
                 return;
             }
         }
@@ -243,6 +348,7 @@ static void terminal_on_event(wm_window_t *win, const input_event_t *ev) {
             term->scroll_offset = 0;
 
         } else if (keycode == KEY_BACKSPACE || ascii == '\b' || ascii == 127) {
+            term->scroll_offset = 0;
             if (term->cursor_pos > 0) {
                 for (int i = term->cursor_pos - 1; i < term->input_len - 1; i++) {
                     term->input_buf[i] = term->input_buf[i + 1];
@@ -251,11 +357,29 @@ static void terminal_on_event(wm_window_t *win, const input_event_t *ev) {
                 term->cursor_pos--;
                 term->input_buf[term->input_len] = '\0';
             }
+        } else if (keycode == KEY_DELETE) {
+            term->scroll_offset = 0;
+            if (term->cursor_pos < term->input_len) {
+                for (int i = term->cursor_pos; i < term->input_len - 1; i++) {
+                    term->input_buf[i] = term->input_buf[i + 1];
+                }
+                term->input_len--;
+                term->input_buf[term->input_len] = '\0';
+            }
+        } else if (keycode == KEY_HOME) {
+            term->scroll_offset = 0;
+            term->cursor_pos = 0;
+        } else if (keycode == KEY_END) {
+            term->scroll_offset = 0;
+            term->cursor_pos = term->input_len;
         } else if (keycode == KEY_LEFT) {
+            term->scroll_offset = 0;
             if (term->cursor_pos > 0) term->cursor_pos--;
         } else if (keycode == KEY_RIGHT) {
+            term->scroll_offset = 0;
             if (term->cursor_pos < term->input_len) term->cursor_pos++;
         } else if (keycode == KEY_UP) {
+            term->scroll_offset = 0;
             /* Navigate back in history */
             if (term->history_count > 0 && term->history_idx > 0) {
                 if (term->history_idx == term->history_count) {
@@ -267,6 +391,7 @@ static void terminal_on_event(wm_window_t *win, const input_event_t *ev) {
                 term->cursor_pos = term->input_len;
             }
         } else if (keycode == KEY_DOWN) {
+            term->scroll_offset = 0;
             /* Navigate forward in history */
             if (term->history_idx < term->history_count) {
                 term->history_idx++;
@@ -288,6 +413,7 @@ static void terminal_on_event(wm_window_t *win, const input_event_t *ev) {
                 if (term->scroll_offset < 0) term->scroll_offset = 0;
             }
         } else if (ascii >= ' ' && ascii <= '~') {
+            term->scroll_offset = 0;
             if (term->input_len < TERM_INPUT_MAX - 2) {
                 for (int i = term->input_len; i > term->cursor_pos; i--) {
                     term->input_buf[i] = term->input_buf[i - 1];
@@ -366,41 +492,110 @@ bool terminal_self_test(void) {
     terminal_state_t *term = (terminal_state_t *)w->user_data;
     kprintf("  PASS: Terminal window created and initialized with active shell.\n");
 
-    /* 2. Feed simulated key event to terminal */
-    input_event_t ev_key = {
-        .type = INPUT_EVENT_KEY_DOWN,
-        .key = { .ascii = 'l', .keycode = 0, .modifiers = 0 }
-    };
-    terminal_on_event(w, &ev_key);
-
-    ev_key.key.ascii = 's';
-    terminal_on_event(w, &ev_key);
-
-    if (term->input_len != 2 || term->input_buf[0] != 'l' || term->input_buf[1] != 's') {
-        kprintf("[TERMINAL TEST FAIL] Keystroke handling failed! Input='%s'\n", term->input_buf);
+    /* 2. Test initial cursor position immediately after prompt */
+    int cur_line_idx = term->total_lines % TERM_SCROLLBACK_LINES;
+    int prompt_len = term->scrollback[cur_line_idx].len;
+    int cur_x = 0, cur_y = 0;
+    terminal_get_cursor_coords(term, 384, &cur_x, &cur_y);
+    int expected_x = 8 + (prompt_len * TERM_FONT_WIDTH);
+    if (cur_x != expected_x) {
+        kprintf("[TERMINAL TEST FAIL] Initial cursor X mismatch! Got %d, expected %d\n", cur_x, expected_x);
         return false;
     }
-    kprintf("  PASS: Interactive keystroke handling verified ('ls').\n");
+    kprintf("  PASS: Initial cursor position verified at prompt boundary (X=%d, Y=%d).\n", cur_x, cur_y);
 
-    /* 3. Simulate Enter key */
+    /* 3. Feed simulated key event to terminal ('echo hi') */
+    const char *test_cmd = "echo hi";
+    for (int i = 0; test_cmd[i]; i++) {
+        input_event_t ev_key = {
+            .type = INPUT_EVENT_KEY_DOWN,
+            .key = { .ascii = test_cmd[i], .keycode = 0, .modifiers = 0 }
+        };
+        terminal_on_event(w, &ev_key);
+    }
+
+    if (term->input_len != 7 || term->cursor_pos != 7) {
+        kprintf("[TERMINAL TEST FAIL] Keystroke handling failed! Input='%s', len=%d\n", term->input_buf, term->input_len);
+        return false;
+    }
+    terminal_get_cursor_coords(term, 384, &cur_x, &cur_y);
+    if (cur_x != expected_x + (7 * TERM_FONT_WIDTH)) {
+        kprintf("[TERMINAL TEST FAIL] Cursor X after typing mismatch! Got %d, expected %d\n",
+                cur_x, expected_x + (7 * TERM_FONT_WIDTH));
+        return false;
+    }
+    kprintf("  PASS: Cursor movement following typed characters verified.\n");
+
+    /* 4. Test Left/Right arrows, Home, End, Delete, Backspace */
+    input_event_t ev_left = { .type = INPUT_EVENT_KEY_DOWN, .key = { .keycode = KEY_LEFT } };
+    terminal_on_event(w, &ev_left); /* cursor_pos 6 */
+    terminal_on_event(w, &ev_left); /* cursor_pos 5 */
+    if (term->cursor_pos != 5) {
+        kprintf("[TERMINAL TEST FAIL] Left arrow failed! cursor_pos=%d\n", term->cursor_pos);
+        return false;
+    }
+
+    input_event_t ev_home = { .type = INPUT_EVENT_KEY_DOWN, .key = { .keycode = KEY_HOME } };
+    terminal_on_event(w, &ev_home);
+    if (term->cursor_pos != 0) {
+        kprintf("[TERMINAL TEST FAIL] Home key failed! cursor_pos=%d\n", term->cursor_pos);
+        return false;
+    }
+    terminal_get_cursor_coords(term, 384, &cur_x, &cur_y);
+    if (cur_x != expected_x) {
+        kprintf("[TERMINAL TEST FAIL] Home cursor X mismatch! Got %d, expected %d\n", cur_x, expected_x);
+        return false;
+    }
+
+    input_event_t ev_del = { .type = INPUT_EVENT_KEY_DOWN, .key = { .keycode = KEY_DELETE } };
+    terminal_on_event(w, &ev_del); /* deletes 'e', buffer -> "cho hi" */
+    if (term->input_len != 6 || term->input_buf[0] != 'c') {
+        kprintf("[TERMINAL TEST FAIL] Delete key failed! buf='%s'\n", term->input_buf);
+        return false;
+    }
+
+    input_event_t ev_end = { .type = INPUT_EVENT_KEY_DOWN, .key = { .keycode = KEY_END } };
+    terminal_on_event(w, &ev_end);
+    if (term->cursor_pos != 6) {
+        kprintf("[TERMINAL TEST FAIL] End key failed! cursor_pos=%d\n", term->cursor_pos);
+        return false;
+    }
+
+    input_event_t ev_bs = { .type = INPUT_EVENT_KEY_DOWN, .key = { .keycode = KEY_BACKSPACE } };
+    terminal_on_event(w, &ev_bs); /* deletes 'i', buffer -> "cho h" */
+    if (term->input_len != 5 || term->cursor_pos != 5) {
+        kprintf("[TERMINAL TEST FAIL] Backspace key failed! buf='%s'\n", term->input_buf);
+        return false;
+    }
+    kprintf("  PASS: In-line editing & navigation keys (Home, End, Left, Right, Del, Backspace) verified.\n");
+
+    /* 5. Simulate Enter key to execute command */
     input_event_t ev_enter = {
         .type = INPUT_EVENT_KEY_DOWN,
         .key = { .ascii = '\n', .keycode = KEY_ENTER, .modifiers = 0 }
     };
     terminal_on_event(w, &ev_enter);
 
-    if (term->input_len != 0) {
+    if (term->input_len != 0 || term->cursor_pos != 0) {
         kprintf("[TERMINAL TEST FAIL] Enter key did not reset active input line!\n");
         return false;
     }
-    kprintf("  PASS: Command execution on Enter verified.\n");
+    terminal_get_cursor_coords(term, 384, &cur_x, &cur_y);
+    int new_line_idx = term->total_lines % TERM_SCROLLBACK_LINES;
+    int new_prompt_len = term->scrollback[new_line_idx].len;
+    if (cur_x != 8 + (new_prompt_len * TERM_FONT_WIDTH)) {
+        kprintf("[TERMINAL TEST FAIL] Cursor position after Enter prompt mismatch! Got X=%d\n", cur_x);
+        return false;
+    }
+    kprintf("  PASS: Command execution on Enter & new prompt cursor reset verified.\n");
 
-    /* 4. Close terminal window */
+    /* 6. Close terminal window */
     wm_destroy_window(w);
     term->active = false;
     kprintf("  PASS: Terminal window clean teardown verified.\n");
 
     kprintf("[TERMINAL TEST] All Terminal Subsystem tests passed successfully!\n");
-    kprintf("ASTRA_TERMINAL_APP_OK\n\n");
+    kprintf("ASTRA_TERMINAL_APP_OK\n");
+    kprintf("ASTRA_TERMINAL_CURSOR_OK\n\n");
     return true;
 }

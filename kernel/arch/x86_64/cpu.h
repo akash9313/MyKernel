@@ -158,6 +158,8 @@ static inline void sti(void) { }
 static inline void cpu_pause(void) { }
 static inline u64 irq_save(void) { return 0; }
 static inline void irq_restore(u64 flags) { (void)flags; }
+u64 read_cr3(void);
+void invlpg(virt_addr_t va);
 
 static inline void cpuid(u32 leaf, u32 subleaf, u32 *eax, u32 *ebx, u32 *ecx, u32 *edx) {
     u32 a = 0, b = 0, c = 0, d = 0;

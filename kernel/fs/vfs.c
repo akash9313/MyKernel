@@ -140,9 +140,40 @@ static int ramfs_op_stat(vfs_node_t *node, vfs_stat_t *st) {
     if (!mf || !mf->in_use) return VFS_ERR_NOT_FOUND;
 
     str_copy(st->name, node->name, sizeof(st->name));
-    st->type = VFS_NODE_FILE;
+    st->type = node->type;
     st->size = mf->size;
     return VFS_OK;
+}
+
+static int ramfs_op_readdir(vfs_node_t *node, size_t index, vfs_dirent_t *dirent) {
+    if (!node || !dirent) return VFS_ERR_INVAL;
+    if (node->type != VFS_NODE_DIR) return VFS_ERR_NOT_DIR;
+
+    const char *parent_path = node->name;
+    size_t plen = str_len(parent_path);
+    size_t match_idx = 0;
+
+    for (int i = 0; i < VFS_MAX_MUTABLE_FILES; i++) {
+        if (!g_mutable_files[i].in_use) continue;
+        const char *p = g_mutable_files[i].name;
+        if (str_ncmp(p, parent_path, plen) == 0 && p[plen] == '/') {
+            const char *sub = p + plen + 1;
+            bool direct = true;
+            for (size_t s = 0; sub[s]; s++) {
+                if (sub[s] == '/') { direct = false; break; }
+            }
+            if (direct) {
+                if (match_idx == index) {
+                    str_copy(dirent->name, sub, sizeof(dirent->name));
+                    dirent->type = g_mutable_files[i].node.type;
+                    dirent->size = g_mutable_files[i].size;
+                    return VFS_OK;
+                }
+                match_idx++;
+            }
+        }
+    }
+    return VFS_ERR_EOF;
 }
 
 static const vfs_ops_t g_ramfs_ops = {
@@ -151,7 +182,7 @@ static const vfs_ops_t g_ramfs_ops = {
     .read    = ramfs_op_read,
     .write   = ramfs_op_write,
     .stat    = ramfs_op_stat,
-    .readdir = NULL,
+    .readdir = ramfs_op_readdir,
     .lookup  = NULL,
 };
 
@@ -262,7 +293,10 @@ int vfs_lookup(const char *path, vfs_node_t **out_node) {
             return VFS_OK;
         }
         if (str_ncmp(path, "/data/", 6) == 0) {
-            return astrafs_lookup(path + 6, out_node);
+            int a_err = astrafs_lookup(path + 6, out_node);
+            if (a_err == VFS_OK) {
+                return VFS_OK;
+            }
         }
     }
 
@@ -300,10 +334,52 @@ vfs_fd_t vfs_open(const char *path, u32 flags) {
             return VFS_ERR_IS_DIR;
         }
 
-        /* Write operations are explicitly rejected if the node does not support write */
+        /* Write operations are explicitly rejected if the node does not support write,
+         * unless VFS_O_CREAT is requested, which promotes read-only initramfs files to mutable ramfs (Copy-On-Write) */
         if (flags & (VFS_O_WRONLY | VFS_O_RDWR | VFS_O_TRUNC)) {
             if (!node->ops || !node->ops->write) {
-                return VFS_ERR_READ_ONLY;
+                if (flags & VFS_O_CREAT) {
+                    /* Allocate a new mutable ramfs file to shadow/overlay the read-only node */
+                    int slot = -1;
+                    for (int i = 0; i < VFS_MAX_MUTABLE_FILES; i++) {
+                        if (!g_mutable_files[i].in_use) {
+                            slot = i;
+                            break;
+                        }
+                    }
+                    if (slot < 0) {
+                        return VFS_ERR_NOSPC;
+                    }
+
+                    vfs_mutable_file_t *mf = &g_mutable_files[slot];
+                    mf->in_use = true;
+                    str_copy(mf->name, path, sizeof(mf->name));
+                    mf->size = 0;
+                    for (size_t b = 0; b < VFS_MAX_FILE_SIZE; b++) {
+                        mf->data[b] = 0;
+                    }
+
+                    /* If not truncating, copy existing contents */
+                    if (!(flags & VFS_O_TRUNC) && node->ops && node->ops->read) {
+                        size_t to_copy = (node->size < VFS_MAX_FILE_SIZE) ? node->size : VFS_MAX_FILE_SIZE;
+                        ssize_t rd = node->ops->read(node, mf->data, to_copy, 0);
+                        if (rd > 0) {
+                            mf->size = (size_t)rd;
+                            g_total_mutable_allocated += mf->size;
+                        }
+                    }
+
+                    str_copy(mf->node.name, path, sizeof(mf->node.name));
+                    mf->node.type = VFS_NODE_FILE;
+                    mf->node.size = mf->size;
+                    mf->node.ops = &g_ramfs_ops;
+                    mf->node.fs_data = mf;
+                    mf->node.parent = g_root_node;
+
+                    node = &mf->node;
+                } else {
+                    return VFS_ERR_READ_ONLY;
+                }
             }
         }
 
@@ -323,12 +399,22 @@ vfs_fd_t vfs_open(const char *path, u32 flags) {
             }
         }
     } else if (err == VFS_ERR_NOT_FOUND && (flags & VFS_O_CREAT)) {
+        bool created_astrafs = false;
         if (astrafs_is_mounted() && str_ncmp(path, "/data/", 6) == 0) {
-            int cr_err = astrafs_create(path + 6, flags, &node);
-            if (cr_err != VFS_OK) {
-                return cr_err;
+            bool has_sub = false;
+            for (const char *s = path + 6; *s; s++) {
+                if (*s == '/') { has_sub = true; break; }
             }
-        } else {
+            if (!has_sub) {
+                int cr_err = astrafs_create(path + 6, flags, &node);
+                if (cr_err == VFS_OK) {
+                    created_astrafs = true;
+                } else {
+                    return cr_err;
+                }
+            }
+        }
+        if (!created_astrafs) {
             /* Allocate a new mutable file in ramfs */
             int slot = -1;
             for (int i = 0; i < VFS_MAX_MUTABLE_FILES; i++) {
@@ -562,24 +648,34 @@ int vfs_rename(const char *old_path, const char *new_path) {
             return VFS_ERR_UNSUPPORTED; /* Cannot rename cross-filesystem */
         }
         if (old_is_data && new_is_data) {
-            vfs_node_t *old_node = NULL;
-            (void)astrafs_lookup(old_path + 6, &old_node);
-            int res = astrafs_rename(old_path + 6, new_path + 6);
-            if (res == VFS_OK) {
-                /* Update any open file descriptor referencing the renamed file */
-                vfs_node_t *renamed_node = NULL;
-                if (astrafs_lookup(new_path + 6, &renamed_node) == VFS_OK && renamed_node) {
-                    for (int i = 0; i < VFS_MAX_FDS; i++) {
-                        if (g_file_table[i].in_use) {
-                            if (g_file_table[i].node == renamed_node || (old_node && g_file_table[i].node == old_node)) {
-                                g_file_table[i].node = renamed_node;
-                                str_copy(renamed_node->name, new_path + 6, sizeof(renamed_node->name));
+            bool old_has_sub = false;
+            for (const char *s = old_path + 6; *s; s++) {
+                if (*s == '/') { old_has_sub = true; break; }
+            }
+            bool new_has_sub = false;
+            for (const char *s = new_path + 6; *s; s++) {
+                if (*s == '/') { new_has_sub = true; break; }
+            }
+            if (!old_has_sub && !new_has_sub) {
+                vfs_node_t *old_node = NULL;
+                (void)astrafs_lookup(old_path + 6, &old_node);
+                int res = astrafs_rename(old_path + 6, new_path + 6);
+                if (res == VFS_OK) {
+                    /* Update any open file descriptor referencing the renamed file */
+                    vfs_node_t *renamed_node = NULL;
+                    if (astrafs_lookup(new_path + 6, &renamed_node) == VFS_OK && renamed_node) {
+                        for (int i = 0; i < VFS_MAX_FDS; i++) {
+                            if (g_file_table[i].in_use) {
+                                if (g_file_table[i].node == renamed_node || (old_node && g_file_table[i].node == old_node)) {
+                                    g_file_table[i].node = renamed_node;
+                                    str_copy(renamed_node->name, new_path + 6, sizeof(renamed_node->name));
+                                }
                             }
                         }
                     }
                 }
+                return res;
             }
-            return res;
         }
     }
 
@@ -623,7 +719,6 @@ int vfs_unlink(const char *path) {
         if (astrafs_lookup(path + 6, &anode) == VFS_OK && anode) {
             return astrafs_truncate(anode, 0);
         }
-        return VFS_ERR_NOT_FOUND;
     }
 
     /* Check mutable ramfs files */
@@ -659,6 +754,86 @@ int vfs_unlink(const char *path) {
     }
 
     return VFS_ERR_NOT_FOUND;
+}
+
+int vfs_mkdir(const char *path) {
+    if (!path) return VFS_ERR_INVAL;
+    int syn_err = validate_path_syntax(path);
+    if (syn_err != VFS_OK) return syn_err;
+
+    /* Check if node already exists */
+    vfs_node_t *existing = NULL;
+    if (vfs_lookup(path, &existing) == VFS_OK && existing) {
+        return VFS_ERR_EXISTS;
+    }
+
+    /* Find empty slot in g_mutable_files */
+    int slot = -1;
+    for (int i = 0; i < VFS_MAX_MUTABLE_FILES; i++) {
+        if (!g_mutable_files[i].in_use) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return VFS_ERR_NOSPC;
+
+    vfs_mutable_file_t *mf = &g_mutable_files[slot];
+    mf->in_use = true;
+    str_copy(mf->name, path, sizeof(mf->name));
+    mf->size = 0;
+    for (size_t b = 0; b < VFS_MAX_FILE_SIZE; b++) {
+        mf->data[b] = 0;
+    }
+
+    str_copy(mf->node.name, path, sizeof(mf->node.name));
+    mf->node.type = VFS_NODE_DIR;
+    mf->node.size = 0;
+    mf->node.ops = &g_ramfs_ops;
+    mf->node.fs_data = mf;
+    mf->node.parent = g_root_node;
+
+    return VFS_OK;
+}
+
+int vfs_rmdir(const char *path) {
+    if (!path) return VFS_ERR_INVAL;
+    int syn_err = validate_path_syntax(path);
+    if (syn_err != VFS_OK) return syn_err;
+
+    /* Find mutable directory node */
+    int slot = -1;
+    for (int i = 0; i < VFS_MAX_MUTABLE_FILES; i++) {
+        if (g_mutable_files[i].in_use && str_cmp(g_mutable_files[i].name, path) == 0) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        /* Check if exists in initramfs */
+        vfs_node_t *node = NULL;
+        if (vfs_lookup(path, &node) == VFS_OK && node) {
+            return VFS_ERR_READ_ONLY;
+        }
+        return VFS_ERR_NOT_FOUND;
+    }
+
+    if (g_mutable_files[slot].node.type != VFS_NODE_DIR) {
+        return VFS_ERR_NOT_DIR;
+    }
+
+    /* Check if directory is empty */
+    size_t plen = str_len(path);
+    for (int i = 0; i < VFS_MAX_MUTABLE_FILES; i++) {
+        if (!g_mutable_files[i].in_use || i == slot) continue;
+        if (str_ncmp(g_mutable_files[i].name, path, plen) == 0 && g_mutable_files[i].name[plen] == '/') {
+            return VFS_ERR_BUSY; /* Directory not empty */
+        }
+    }
+
+    g_mutable_files[slot].in_use = false;
+    g_mutable_files[slot].name[0] = '\0';
+    g_mutable_files[slot].size = 0;
+    return VFS_OK;
 }
 
 int vfs_stat(const char *path, vfs_stat_t *st) {
@@ -706,9 +881,56 @@ int vfs_readdir(const char *path, size_t index, vfs_dirent_t *dirent) {
     if (!node) return VFS_ERR_NOT_FOUND;
     if (node->type != VFS_NODE_DIR) return VFS_ERR_NOT_DIR;
 
+    size_t base_count = 0;
     if (node->ops && node->ops->readdir) {
-        return node->ops->readdir(node, index, dirent);
+        vfs_dirent_t dummy;
+        while (node->ops->readdir(node, base_count, &dummy) == VFS_OK) {
+            base_count++;
+        }
+        if (index < base_count) {
+            return node->ops->readdir(node, index, dirent);
+        }
     }
 
-    return VFS_ERR_UNSUPPORTED;
+    /* Enumerate mutable ramfs files for this directory */
+    size_t target_mutable_idx = index - base_count;
+    size_t mutable_match = 0;
+    bool is_root = (str_cmp(path, "/") == 0);
+    size_t plen = str_len(path);
+
+    for (int i = 0; i < VFS_MAX_MUTABLE_FILES; i++) {
+        if (!g_mutable_files[i].in_use) continue;
+        const char *p = g_mutable_files[i].name;
+        const char *rel = NULL;
+        if (is_root) {
+            if (p[0] == '/' && p[1] != '\0') {
+                const char *cand = p + 1;
+                bool direct = true;
+                for (size_t s = 0; cand[s]; s++) {
+                    if (cand[s] == '/') { direct = false; break; }
+                }
+                if (direct) rel = cand;
+            }
+        } else {
+            if (str_ncmp(p, path, plen) == 0 && p[plen] == '/') {
+                const char *cand = p + plen + 1;
+                bool direct = true;
+                for (size_t s = 0; cand[s]; s++) {
+                    if (cand[s] == '/') { direct = false; break; }
+                }
+                if (direct) rel = cand;
+            }
+        }
+        if (rel) {
+            if (mutable_match == target_mutable_idx) {
+                str_copy(dirent->name, rel, sizeof(dirent->name));
+                dirent->type = g_mutable_files[i].node.type;
+                dirent->size = g_mutable_files[i].size;
+                return VFS_OK;
+            }
+            mutable_match++;
+        }
+    }
+
+    return VFS_ERR_EOF;
 }

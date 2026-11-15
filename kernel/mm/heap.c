@@ -614,6 +614,16 @@ rollback:
     return -1;
 }
 
+#ifdef HOST_TEST
+void heap_host_set_initialized(bool init) {
+    g_heap_initialized = init;
+}
+
+void heap_host_reset_lock(void) {
+    spinlock_init(&g_heap_lock);
+}
+#endif
+
 /* In-Kernel Self-Test Suite */
 bool heap_self_test(void) {
     kprintf("[HEAP] Starting Kernel Heap Self-Test Suite...\n");

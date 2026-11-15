@@ -90,7 +90,7 @@ def build_fat16_image(files_dict):
     files_dict is a mapping of path (e.g. 'EFI/BOOT/BOOTX64.EFI') to file bytes.
     Returns the binary image as bytes.
     """
-    total_size = 16 * 1024 * 1024  # 16 MB
+    total_size = 32 * 1024 * 1024  # 32 MB ESP Partition
     sector_size = 512
     total_sectors = total_size // sector_size  # 32768 sectors
     sectors_per_cluster = 4  # 2048 bytes per cluster

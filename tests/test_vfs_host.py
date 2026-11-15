@@ -36,6 +36,7 @@ def run_tests_exe():
     os.makedirs(BUILD_DIR, exist_ok=True)
     cmd = [
         CC,
+        '-fno-lto',
         '-O2',
         '-DHOST_TEST',
         '-I', BASE_DIR,
@@ -51,14 +52,26 @@ def run_tests_exe():
         print(res.stderr)
         return False
     print(f"[HOST TEST] Running {EXE_PATH}...")
-    res = subprocess.run([EXE_PATH])
-    return res.returncode == 0
+    try:
+        res = subprocess.run([EXE_PATH], capture_output=True, text=True, timeout=15)
+        print(res.stdout)
+        if res.returncode != 0:
+            print(f"[FAIL] Executable exited with code {res.returncode}:\n{res.stderr}")
+            return 1
+        return 0
+    except OSError as e:
+        if "4551" in str(e):
+            print(f"[BLOCKED] Binary execution blocked by host OS security policy ({e})")
+            return 2
+        print(f"[FAIL] Failed to execute {EXE_PATH}: {e}")
+        return 1
 
 def build_test_dll():
     print(f"[HOST TEST] Compiling VFS & Initramfs host test runner using {CC}...")
     os.makedirs(BUILD_DIR, exist_ok=True)
     cmd = [
         CC,
+        '-fno-lto',
         '-O2',
         '-shared',
         '-DHOST_TEST',
@@ -91,14 +104,17 @@ def run_tests():
         res = vfs_lib.run_all_vfs_host_tests()
         if res == 0:
             print("\n[PASS] All AstraOS VFS & Initramfs Host Tests Succeeded!\n")
-            return True
+            return 0
         else:
             print(f"\n[FAIL] VFS host tests failed with return code {res}\n")
-            return False
+            return 1
     except Exception as e:
-        print(f"[NOTE] Loading DLL directly blocked by host policy ({e}); falling back to standalone test binary.")
+        if "4551" in str(e):
+            print(f"[NOTE] Loading DLL directly blocked by host policy ({e}); trying standalone test binary.")
+        else:
+            print(f"[NOTE] Loading DLL failed ({e}); trying standalone test binary.")
         return run_tests_exe()
 
 if __name__ == '__main__':
-    ok = run_tests()
-    sys.exit(0 if ok else 1)
+    code = run_tests()
+    sys.exit(code)

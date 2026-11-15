@@ -586,7 +586,10 @@ __attribute__((noreturn)) void kernel_continuation(void) {
     /* 18. Initialize Graphical Desktop Foundation (GUI_INITIALIZING) */
     kprintf("\n[BOOT] Initializing Graphics, Input, Window Manager & Desktop...\n");
     if (gfx_init() == 0) {
-        input_init(1024, 768);
+        gfx_surface_t *bb = gfx_get_backbuffer();
+        int scr_w = (bb && bb->width > 0) ? bb->width : 1024;
+        int scr_h = (bb && bb->height > 0) ? bb->height : 768;
+        input_init(scr_w, scr_h);
         ps2_init();
         wm_init();
         desktop_init();

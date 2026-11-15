@@ -254,6 +254,9 @@ static bool bookmarks_deserialize(mock_browser_t *b, const void *buf, size_t len
 #ifdef _WIN32
 __declspec(dllexport)
 #endif
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
 int run_all_bookmark_tests(void) {
     printf("=================================================================\n");
     printf("   AstraOS Phase AB: Bookmark Storage & Persistence Host Tests   \n");
@@ -782,4 +785,12 @@ int run_all_bookmark_tests(void) {
     printf("=================================================================\n");
     return 0;
 }
+
+#ifndef HOST_DLL
+int main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    return run_all_bookmark_tests();
+}
+#endif
 

@@ -9,6 +9,7 @@
 #define SHELL_ARGS_MAX     32
 #define SHELL_PATH_MAX     128
 #define SHELL_LINE_MAX     256
+#define SHELL_ALIAS_MAX    16
 
 typedef void (*shell_out_fn)(void *ctx, const char *str, u32 color);
 
@@ -18,15 +19,24 @@ typedef struct {
     bool in_use;
 } shell_env_entry_t;
 
+typedef struct {
+    char name[32];
+    char value[128];
+    bool in_use;
+} shell_alias_t;
+
 typedef struct shell_context {
     char              cwd[SHELL_PATH_MAX];
+    char              old_pwd[SHELL_PATH_MAX];
     shell_env_entry_t env[SHELL_ENV_MAX];
+    shell_alias_t     aliases[SHELL_ALIAS_MAX];
     int               last_exit_code;
     shell_out_fn      out_fn;
     void             *out_ctx;
     
     /* Interactive command-not-found pending installation prompt state */
     bool              pending_install;
+    int               pending_stage; /* 1: initial menu [1][2][3], 2: post-info menu [1][3] */
     char              pending_pkg[32];
 } shell_context_t;
 

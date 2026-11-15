@@ -1,0 +1,294 @@
+[ACCEPTANCE] Executing Real Terminal Command & Package Verification Suite...
+[TEST] Sending monitor command: 'pwd'
+pwd
+/
+AstraOS>
+[TEST] PASS: 'pwd' yielded '/'
+
+[TEST] Sending monitor command: 'whoami'
+whoami
+root
+AstraOS>
+[TEST] PASS: 'whoami' yielded 'root'
+
+[TEST] Sending monitor command: 'uname -a'
+uname -a
+AstraOS 1.0.0-rc1 #1 SMP PREEMPT Wed Nov 12 2026 x86_64 freestanding UEFI/Limine
+AstraOS>
+[TEST] PASS: 'uname -a' yielded 'AstraOS'
+
+[TEST] Sending monitor command: 'echo hello'
+echo hello
+hello
+AstraOS>
+[TEST] PASS: 'echo hello' yielded 'hello'
+
+[TEST] Sending monitor command: 'which ls'
+which ls
+ls: shell built-in command
+AstraOS>
+[TEST] PASS: 'which ls' yielded 'ls'
+
+[TEST] Sending monitor command: 'type grep'
+type grep
+grep is a shell builtin
+AstraOS>
+[TEST] PASS: 'type grep' yielded 'builtin'
+
+[TEST] Sending monitor command: 'mkdir /data/testdir'
+mkdir /data/testdir
+AstraOS>
+[TEST] PASS: 'mkdir /data/testdir' yielded ''
+
+[TEST] Sending monitor command: 'cd /data/testdir'
+cd /data/testdir
+AstraOS>
+[TEST] PASS: 'cd /data/testdir' yielded ''
+
+[TEST] Sending monitor command: 'pwd'
+pwd
+/data/testdir
+AstraOS>
+[TEST] PASS: 'pwd' yielded 'data'
+
+[TEST] Sending monitor command: 'touch sample.txt'
+touch sample.txt
+AstraOS>
+[TEST] PASS: 'touch sample.txt' yielded ''
+
+[TEST] Sending monitor command: 'echo hello-world > sample.txt'
+echo hello-world > sample.txt
+AstraOS>
+[TEST] PASS: 'echo hello-world > sample.txt' yielded ''
+
+[TEST] Sending monitor command: 'cat sample.txt'
+cat sample.txt
+hello-world
+
+AstraOS>
+[TEST] PASS: 'cat sample.txt' yielded 'hello-world'
+
+[TEST] Sending monitor command: 'cp sample.txt copy.txt'
+cp sample.txt copy.txt
+AstraOS>
+[TEST] PASS: 'cp sample.txt copy.txt' yielded ''
+
+[TEST] Sending monitor command: 'mv copy.txt renamed.txt'
+mv copy.txt renamed.txt
+AstraOS>
+[TEST] PASS: 'mv copy.txt renamed.txt' yielded ''
+
+[TEST] Sending monitor command: 'ls -la'
+ls -la
+drwxr-xr-x  2 root root     4096 .
+drwxr-xr-x  2 root root     4096 ..
+-rw-r--r--  1 root root       12 sample.txt
+-rw-r--r--  1 root root       12 renamed.txt
+AstraOS>
+[TEST] PASS: 'ls -la' yielded 'sample.txt'
+
+[TEST] Sending monitor command: 'grep hello sample.txt'
+grep hello sample.txt
+hello-world
+AstraOS>
+[TEST] PASS: 'grep hello sample.txt' yielded 'hello-world'
+
+[TEST] Sending monitor command: 'wc -l sample.txt'
+wc -l sample.txt
+1 sample.txt
+AstraOS>
+[TEST] PASS: 'wc -l sample.txt' yielded '1'
+
+[TEST] Sending monitor command: 'head -n 1 sample.txt'
+head -n 1 sample.txt
+hello-world
+AstraOS>
+[TEST] PASS: 'head -n 1 sample.txt' yielded 'hello-world'
+
+[TEST] Sending monitor command: 'tail -n 1 sample.txt'
+tail -n 1 sample.txt
+hello-world
+AstraOS>
+[TEST] PASS: 'tail -n 1 sample.txt' yielded 'hello-world'
+
+[TEST] Sending monitor command: 'find /data -name sample.txt'
+find /data -name sample.txt
+AstraOS>
+[TEST] PASS: 'find /data -name sample.txt' yielded 'sample.txt'
+
+[TEST] Sending monitor command: 'stat sample.txt'
+stat sample.txt
+  File: /data/testdir/sample.txt
+  Type: Regular File
+  Size: 12 bytes
+AstraOS>
+[TEST] PASS: 'stat sample.txt' yielded 'sample.txt'
+
+[TEST] Sending monitor command: 'df'
+df
+Filesystem     Type       1K-blocks      Used Available Use%
+rootfs         initramfs      16384      4096     12288  25%
+/data          AstraFS        65536      1024     64512   2%
+ramfs (pmm)    tmpfs      512136        6496      505640     ok
+AstraOS>
+[TEST] PASS: 'df' yielded 'AstraFS'
+
+[TEST] Sending monitor command: 'du -sh /data'
+du -sh /data
+11K	/data
+AstraOS>
+[TEST] PASS: 'du -sh /data' yielded 'data'
+
+[TEST] Sending monitor command: 'rm renamed.txt'
+rm renamed.txt
+AstraOS>
+[TEST] PASS: 'rm renamed.txt' yielded ''
+
+[TEST] Sending monitor command: 'rm sample.txt'
+rm sample.txt
+AstraOS>
+[TEST] PASS: 'rm sample.txt' yielded ''
+
+[TEST] Sending monitor command: 'cd /'
+cd /
+AstraOS>
+[TEST] PASS: 'cd /' yielded ''
+
+[TEST] Sending monitor command: 'rmdir /data/testdir'
+rmdir /data/testdir
+AstraOS>
+[TEST] PASS: 'rmdir /data/testdir' yielded ''
+
+[TEST] Sending monitor command: 'echo hello | wc -c'
+echo hello | wc -c
+6 
+AstraOS>
+[TEST] PASS: 'echo hello | wc -c' yielded '6'
+
+[TEST] Sending monitor command: 'echo first > /data/output.txt'
+echo first > /data/output.txt
+AstraOS>
+[TEST] PASS: 'echo first > /data/output.txt' yielded ''
+
+[TEST] Sending monitor command: 'echo second >> /data/output.txt'
+echo second >> /data/output.txt
+AstraOS>
+[TEST] PASS: 'echo second >> /data/output.txt' yielded ''
+
+[TEST] Sending monitor command: 'cat < /data/output.txt'
+cat < /data/output.txt
+first
+second
+AstraOS>
+[TEST] PASS: 'cat < /data/output.txt' yielded 'first'
+
+[TEST] Sending monitor command: 'false || echo fallback'
+false || echo fallback
+fallback
+AstraOS>
+[TEST] PASS: 'false || echo fallback' yielded 'fallback'
+
+[TEST] Sending monitor command: 'echo one ; echo two'
+echo one ; echo two
+one
+two
+AstraOS>
+[TEST] PASS: 'echo one ; echo two' yielded 'one'
+
+[TEST] Sending monitor command: 'pkg list'
+pkg list
+=== Installed Packages ===
+coreutils               1.0.0           (3 files)
+astradesktop            0.2.0           (3 files)
+htop                    1.0.0           (1 files)
+AstraOS>
+[TEST] PASS: 'pkg list' yielded 'Installed'
+
+[TEST] Sending monitor command: 'pkg search calc'
+pkg search calc
+=== AstraOS Software Repository Search ===
+            calc            1.0.0       Scientific expression calculator for AstraOS
+AstraOS>
+[TEST] PASS: 'pkg search calc' yielded 'calc'
+
+[TEST] Sending monitor command: 'pkg info calc'
+pkg info calc
+Package: calc
+Status: Available for installation
+Latest Version: 1.0.0
+Architecture: x86_64
+Description: Scientific expression calculator for AstraOS
+AstraOS>
+[TEST] PASS: 'pkg info calc' yielded 'calc'
+
+[TEST] Sending monitor command: 'pkg install calc'
+pkg install calc
+  -> Verifying payload integrity (SHA-256)...
+  PASS: SHA-256 integrity check verified.
+  -> Verifying AstraOS Official RSA-2048 Digital Signature...
+  PASS: Authentic RSA-2048 digital signature verified.
+  -> Staging and extracting package files...
+Package 'calc' installed successfully.
+AstraOS>
+[TEST] PASS: 'pkg install calc' yielded 'calc'
+
+[TEST] Sending monitor command: 'which calc'
+which calc
+/bin/calc.elf
+AstraOS>
+[TEST] PASS: 'which calc' yielded 'calc'
+
+[TEST] Sending monitor command: 'pkg remove calc'
+pkg remove calc
+Removing package: calc...
+Package 'calc' removed cleanly.
+AstraOS>
+[TEST] PASS: 'pkg remove calc' yielded 'removed'
+
+[TEST] Sending monitor command: 'pkg search htop'
+pkg search htop
+=== AstraOS Software Repository Search ===
+[installed] htop            1.0.0       Interactive process viewer and system activity monitor
+AstraOS>
+[TEST] PASS: 'pkg search htop' yielded 'htop'
+
+[TEST] Sending monitor command: 'pkg info htop'
+pkg info htop
+Package: htop
+Status: Installed (version 1.0.0)
+Installed Files:
+  - /bin/htop.elf
+Latest Version: 1.0.0
+Architecture: x86_64
+Description: Interactive process viewer and system activity monitor
+AstraOS>
+[TEST] PASS: 'pkg info htop' yielded 'htop'
+
+[TEST] Sending monitor command: 'pkg install htop'
+pkg install htop
+Package 'htop' is already installed.
+AstraOS>
+[TEST] PASS: 'pkg install htop' yielded 'htop'
+
+[TEST] Sending monitor command: 'which htop'
+which htop
+/bin/htop.elf
+AstraOS>
+[TEST] PASS: 'which htop' yielded 'htop'
+
+[TEST] Sending monitor command: 'pkg remove htop'
+pkg remove htop
+Removing package: htop...
+Package 'htop' removed cleanly.
+AstraOS>
+[TEST] PASS: 'pkg remove htop' yielded 'removed'
+
+[TEST] Sending monitor command: 'pkg install nonexistent_pkg'
+pkg install nonexistent_pkg
+Error: Package 'nonexistent_pkg' not found in software repository.
+AstraOS>
+[TEST] PASS: 'pkg install nonexistent_pkg' yielded 'not found'
+
+[TEST] Sending 'halt' command...
+[TEST] PASS: All tests passed for Mode='normal', RAM=512M!
+

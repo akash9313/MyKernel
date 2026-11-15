@@ -101,6 +101,7 @@ void terminal_print(terminal_state_t *term, const char *str, u32 color);
 void terminal_println(terminal_state_t *term, const char *str, u32 color);
 void terminal_clear(terminal_state_t *term);
 void terminal_prompt(terminal_state_t *term);
+void terminal_get_cursor_coords(const terminal_state_t *term, int screen_h, int *out_x, int *out_y);
 bool terminal_self_test(void);
 
 #endif /* ASTRA_KERNEL_TERMINAL_H */
