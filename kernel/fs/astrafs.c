@@ -316,7 +316,9 @@ int astrafs_format(block_device_t *dev) {
     sbA.version = ASTRAFS_VERSION;
     sbA.generation = 1;
     sbA.sector_size = ASTRAFS_SECTOR_SIZE;
-    sbA.total_sectors = (u32)dev->total_sectors;
+    u32 vol_sectors = (u32)dev->total_sectors;
+    if (vol_sectors > ASTRAFS_MAX_SECTORS) vol_sectors = ASTRAFS_MAX_SECTORS;
+    sbA.total_sectors = vol_sectors;
     sbA.data_start_lba = ASTRAFS_DATA_START_LBA;
     sbA.inode_table_lba = ASTRAFS_INODE_A_LBA;
     sbA.inode_sectors = ASTRAFS_INODE_SECTORS;
@@ -428,8 +430,9 @@ static bool validate_metadata_integrity(block_device_t *dev, const astrafs_super
     if (calculated_used_sectors != sb->used_sectors) return false;
 
     /* Verify allocation bitmap has no orphan or extraneous set bits in data region */
+    u32 scan_sectors = (sb->total_sectors > ASTRAFS_MAX_SECTORS) ? ASTRAFS_MAX_SECTORS : sb->total_sectors;
     u32 bitmap_used_count = 0;
-    for (u32 s = ASTRAFS_DATA_START_LBA; s < sb->total_sectors; s++) {
+    for (u32 s = ASTRAFS_DATA_START_LBA; s < scan_sectors; s++) {
         if (bitmap_get(bitmap, s)) {
             bitmap_used_count++;
         }
@@ -496,6 +499,9 @@ int astrafs_mount(block_device_t *dev) {
     }
 
     astrafs_superblock_t *chosen_sb = (chosen_set == 0) ? &sbA : &sbB;
+    if (chosen_sb->total_sectors > ASTRAFS_MAX_SECTORS) {
+        chosen_sb->total_sectors = ASTRAFS_MAX_SECTORS;
+    }
 
     kmemset(&g_astrafs, 0, sizeof(g_astrafs));
     g_astrafs.dev = dev;
@@ -517,14 +523,20 @@ int astrafs_mount(block_device_t *dev) {
     g_astrafs.root_node.ops = &g_astrafs_ops;
     g_astrafs.root_node.fs_data = (void *)(uintptr_t)-1;
     g_astrafs.root_node.parent = vfs_get_root();
+    g_astrafs.root_node.mode = 0777;
+    g_astrafs.root_node.uid = 1000;
+    g_astrafs.root_node.gid = 1000;
 
     /* Setup VFS nodes for active files */
     for (int i = 0; i < ASTRAFS_MAX_FILES; i++) {
         if (g_astrafs.inodes[i].in_use) {
             vfs_node_t *node = &g_astrafs.vfs_nodes[i];
             kstrncpy(node->name, g_astrafs.inodes[i].name, sizeof(node->name));
-            node->type = VFS_NODE_FILE;
+            node->type = (g_astrafs.inodes[i].flags & ASTRAFS_FLAG_DIR) ? VFS_NODE_DIR : VFS_NODE_FILE;
             node->size = g_astrafs.inodes[i].file_size;
+            node->mode = (g_astrafs.inodes[i].flags & ASTRAFS_FLAG_DIR) ? 0777 : 0666;
+            node->uid = 1000;
+            node->gid = 1000;
             node->ops = &g_astrafs_ops;
             node->fs_data = (void *)(uintptr_t)i;
             node->parent = &g_astrafs.root_node;
@@ -609,9 +621,9 @@ int astrafs_create(const char *name, u32 flags, vfs_node_t **out_node) {
         return VFS_ERR_INVALID_PATH;
     }
 
-    /* AstraFS v1 is a flat directory under /data */
+    /* Validate relative path syntax (reject leading/trailing slashes or empty components) */
     for (size_t c = 0; c < nlen; c++) {
-        if (stripped[c] == '/') {
+        if (stripped[c] == '/' && (c == 0 || c == nlen - 1 || stripped[c + 1] == '/')) {
             astrafs_unlock();
             return VFS_ERR_INVALID_PATH;
         }
@@ -653,8 +665,11 @@ int astrafs_create(const char *name, u32 flags, vfs_node_t **out_node) {
 
     vfs_node_t *node = &g_astrafs.vfs_nodes[slot];
     kstrncpy(node->name, stripped, sizeof(node->name));
-    node->type = VFS_NODE_FILE;
+    node->type = (flags & ASTRAFS_FLAG_DIR) ? VFS_NODE_DIR : VFS_NODE_FILE;
     node->size = 0;
+    node->mode = (flags & ASTRAFS_FLAG_DIR) ? 0777 : 0666;
+    node->uid = 1000;
+    node->gid = 1000;
     node->ops = &g_astrafs_ops;
     node->fs_data = (void *)(uintptr_t)slot;
     node->parent = &g_astrafs.root_node;
@@ -670,6 +685,213 @@ int astrafs_create(const char *name, u32 flags, vfs_node_t **out_node) {
     *out_node = node;
     astrafs_unlock();
     return VFS_OK;
+}
+
+int astrafs_mkdir(const char *name) {
+    astrafs_lock();
+    if (!g_astrafs.mounted || !g_astrafs.dev) {
+        astrafs_unlock();
+        return VFS_ERR_NOT_FOUND;
+    }
+    if (g_astrafs.dev->read_only) {
+        astrafs_unlock();
+        return VFS_ERR_READ_ONLY;
+    }
+
+    const char *stripped = strip_data_prefix(name);
+    if (!stripped || stripped[0] == '\0') {
+        astrafs_unlock();
+        return VFS_ERR_INVALID_PATH;
+    }
+
+    size_t nlen = kstrlen(stripped);
+    if (nlen == 0 || nlen >= ASTRAFS_FILENAME_MAX) {
+        astrafs_unlock();
+        return VFS_ERR_INVALID_PATH;
+    }
+
+    for (size_t c = 0; c < nlen; c++) {
+        if (stripped[c] == '/' && (c == 0 || c == nlen - 1 || stripped[c + 1] == '/')) {
+            astrafs_unlock();
+            return VFS_ERR_INVALID_PATH;
+        }
+    }
+
+    /* Check if already exists */
+    for (int i = 0; i < ASTRAFS_MAX_FILES; i++) {
+        if (g_astrafs.inodes[i].in_use && kstrcmp(g_astrafs.inodes[i].name, stripped) == 0) {
+            astrafs_unlock();
+            return VFS_ERR_EXISTS;
+        }
+    }
+
+    int slot = -1;
+    for (int i = 0; i < ASTRAFS_MAX_FILES; i++) {
+        if (!g_astrafs.inodes[i].in_use) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        astrafs_unlock();
+        return VFS_ERR_NOSPC;
+    }
+
+    astrafs_inode_t *ino = &g_astrafs.inodes[slot];
+    kmemset(ino, 0, sizeof(*ino));
+    kstrncpy(ino->name, stripped, sizeof(ino->name));
+    ino->in_use = 1;
+    ino->file_size = 0;
+    ino->start_lba = 0;
+    ino->sector_count = 0;
+    ino->flags = ASTRAFS_FLAG_DIR;
+    ino->data_checksum = 0;
+    ino->created_time = g_astrafs.sb.generation + 1;
+    ino->modified_time = g_astrafs.sb.generation + 1;
+
+    vfs_node_t *node = &g_astrafs.vfs_nodes[slot];
+    kstrncpy(node->name, stripped, sizeof(node->name));
+    node->type = VFS_NODE_DIR;
+    node->size = 0;
+    node->mode = 0777;
+    node->uid = 1000;
+    node->gid = 1000;
+    node->ops = &g_astrafs_ops;
+    node->fs_data = (void *)(uintptr_t)slot;
+    node->parent = &g_astrafs.root_node;
+
+    int ret = astrafs_commit_metadata();
+    if (ret != VFS_OK) {
+        kmemset(ino, 0, sizeof(*ino));
+        kmemset(node, 0, sizeof(*node));
+        astrafs_unlock();
+        return ret;
+    }
+
+    astrafs_unlock();
+    return VFS_OK;
+}
+
+int astrafs_unlink(const char *name) {
+    astrafs_lock();
+    if (!g_astrafs.mounted || !g_astrafs.dev) {
+        astrafs_unlock();
+        return VFS_ERR_NOT_FOUND;
+    }
+    if (g_astrafs.dev->read_only) {
+        astrafs_unlock();
+        return VFS_ERR_READ_ONLY;
+    }
+
+    const char *stripped = strip_data_prefix(name);
+    if (!stripped || stripped[0] == '\0') {
+        astrafs_unlock();
+        return VFS_ERR_INVALID_PATH;
+    }
+
+    int slot = -1;
+    for (int i = 0; i < ASTRAFS_MAX_FILES; i++) {
+        if (g_astrafs.inodes[i].in_use && kstrcmp(g_astrafs.inodes[i].name, stripped) == 0) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        astrafs_unlock();
+        return VFS_ERR_NOT_FOUND;
+    }
+
+    astrafs_inode_t *ino = &g_astrafs.inodes[slot];
+    if (ino->flags & ASTRAFS_FLAG_DIR) {
+        astrafs_unlock();
+        return VFS_ERR_IS_DIR;
+    }
+
+    if (ino->sector_count > 0 && ino->start_lba != 0) {
+        bitmap_free_extent(g_astrafs.bitmap, ino->start_lba, ino->sector_count);
+    }
+
+    astrafs_inode_t saved_ino = *ino;
+    vfs_node_t saved_node = g_astrafs.vfs_nodes[slot];
+
+    kmemset(ino, 0, sizeof(*ino));
+    kmemset(&g_astrafs.vfs_nodes[slot], 0, sizeof(vfs_node_t));
+
+    int ret = astrafs_commit_metadata();
+    if (ret != VFS_OK) {
+        *ino = saved_ino;
+        g_astrafs.vfs_nodes[slot] = saved_node;
+        if (saved_ino.sector_count > 0 && saved_ino.start_lba != 0) {
+            for (u32 s = 0; s < saved_ino.sector_count; s++) {
+                bitmap_set(g_astrafs.bitmap, saved_ino.start_lba + s);
+            }
+        }
+    }
+
+    astrafs_unlock();
+    return ret;
+}
+
+int astrafs_rmdir(const char *name) {
+    astrafs_lock();
+    if (!g_astrafs.mounted || !g_astrafs.dev) {
+        astrafs_unlock();
+        return VFS_ERR_NOT_FOUND;
+    }
+    if (g_astrafs.dev->read_only) {
+        astrafs_unlock();
+        return VFS_ERR_READ_ONLY;
+    }
+
+    const char *stripped = strip_data_prefix(name);
+    if (!stripped || stripped[0] == '\0') {
+        astrafs_unlock();
+        return VFS_ERR_INVALID_PATH;
+    }
+
+    int slot = -1;
+    for (int i = 0; i < ASTRAFS_MAX_FILES; i++) {
+        if (g_astrafs.inodes[i].in_use && kstrcmp(g_astrafs.inodes[i].name, stripped) == 0) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        astrafs_unlock();
+        return VFS_ERR_NOT_FOUND;
+    }
+
+    astrafs_inode_t *ino = &g_astrafs.inodes[slot];
+    if (!(ino->flags & ASTRAFS_FLAG_DIR)) {
+        astrafs_unlock();
+        return VFS_ERR_NOT_DIR;
+    }
+
+    /* Verify directory is empty */
+    size_t slen = kstrlen(stripped);
+    for (int i = 0; i < ASTRAFS_MAX_FILES; i++) {
+        if (i == slot || !g_astrafs.inodes[i].in_use) continue;
+        if (kstrncmp(g_astrafs.inodes[i].name, stripped, slen) == 0 &&
+            g_astrafs.inodes[i].name[slen] == '/') {
+            astrafs_unlock();
+            return VFS_ERR_BUSY;
+        }
+    }
+
+    astrafs_inode_t saved_ino = *ino;
+    vfs_node_t saved_node = g_astrafs.vfs_nodes[slot];
+
+    kmemset(ino, 0, sizeof(*ino));
+    kmemset(&g_astrafs.vfs_nodes[slot], 0, sizeof(vfs_node_t));
+
+    int ret = astrafs_commit_metadata();
+    if (ret != VFS_OK) {
+        *ino = saved_ino;
+        g_astrafs.vfs_nodes[slot] = saved_node;
+    }
+
+    astrafs_unlock();
+    return ret;
 }
 
 ssize_t astrafs_read(vfs_node_t *node, void *buf, size_t count, size_t offset) {
@@ -763,7 +985,7 @@ ssize_t astrafs_write(vfs_node_t *node, const void *buf, size_t count, size_t of
     u32 req_sectors = (new_size == 0) ? 0 : (u32)((new_size + ASTRAFS_SECTOR_SIZE - 1) / ASTRAFS_SECTOR_SIZE);
 
     /* Allocate fresh contiguous extent for Copy-On-Write data safety */
-    u32 new_lba = bitmap_alloc_extent(g_astrafs.bitmap, (u32)g_astrafs.dev->total_sectors, req_sectors);
+    u32 new_lba = bitmap_alloc_extent(g_astrafs.bitmap, g_astrafs.sb.total_sectors, req_sectors);
     if (new_lba == 0) {
         astrafs_unlock();
         return VFS_ERR_NOSPC;
@@ -979,36 +1201,136 @@ int astrafs_stat(vfs_node_t *node, vfs_stat_t *st) {
     }
 
     kstrncpy(st->name, g_astrafs.inodes[slot].name, sizeof(st->name));
-    st->type = VFS_NODE_FILE;
+    st->type = (g_astrafs.inodes[slot].flags & ASTRAFS_FLAG_DIR) ? VFS_NODE_DIR : VFS_NODE_FILE;
     st->size = g_astrafs.inodes[slot].file_size;
     astrafs_unlock();
     return VFS_OK;
 }
 
+static int astrafs_node_readdir_locked(vfs_node_t *node, size_t index, vfs_dirent_t *dirent) {
+    if (!dirent) return VFS_ERR_INVAL;
+    if (!g_astrafs.mounted) return VFS_ERR_NOT_FOUND;
+
+    const char *prefix = "";
+    size_t plen = 0;
+    if (node && node != &g_astrafs.root_node) {
+        int slot = (int)(uintptr_t)node->fs_data;
+        if (slot >= 0 && slot < ASTRAFS_MAX_FILES && g_astrafs.inodes[slot].in_use) {
+            prefix = g_astrafs.inodes[slot].name;
+            plen = kstrlen(prefix);
+        }
+    }
+
+    char seen[ASTRAFS_MAX_FILES][ASTRAFS_FILENAME_MAX];
+    int seen_count = 0;
+    size_t match_count = 0;
+
+    for (int i = 0; i < ASTRAFS_MAX_FILES; i++) {
+        if (!g_astrafs.inodes[i].in_use) continue;
+        const char *iname = g_astrafs.inodes[i].name;
+
+        char child_name[ASTRAFS_FILENAME_MAX];
+        vfs_node_type_t child_type = VFS_NODE_FILE;
+        size_t child_size = g_astrafs.inodes[i].file_size;
+
+        if (plen == 0) {
+            /* Reading root (/data) */
+            const char *slash = NULL;
+            for (const char *s = iname; *s; s++) {
+                if (*s == '/') { slash = s; break; }
+            }
+            if (!slash) {
+                kstrncpy(child_name, iname, sizeof(child_name));
+                child_type = (g_astrafs.inodes[i].flags & ASTRAFS_FLAG_DIR) ? VFS_NODE_DIR : VFS_NODE_FILE;
+            } else {
+                size_t comp_len = (size_t)(slash - iname);
+                if (comp_len >= sizeof(child_name)) comp_len = sizeof(child_name) - 1;
+                kstrncpy(child_name, iname, comp_len + 1);
+                child_name[comp_len] = '\0';
+                child_type = VFS_NODE_DIR;
+                child_size = 0;
+            }
+        } else {
+            /* Reading subdirectory */
+            if (kstrncmp(iname, prefix, plen) != 0 || iname[plen] != '/') {
+                continue;
+            }
+            const char *rel = iname + plen + 1;
+            const char *slash = NULL;
+            for (const char *s = rel; *s; s++) {
+                if (*s == '/') { slash = s; break; }
+            }
+            if (!slash) {
+                kstrncpy(child_name, rel, sizeof(child_name));
+                child_type = (g_astrafs.inodes[i].flags & ASTRAFS_FLAG_DIR) ? VFS_NODE_DIR : VFS_NODE_FILE;
+            } else {
+                size_t comp_len = (size_t)(slash - rel);
+                if (comp_len >= sizeof(child_name)) comp_len = sizeof(child_name) - 1;
+                kstrncpy(child_name, rel, comp_len + 1);
+                child_name[comp_len] = '\0';
+                child_type = VFS_NODE_DIR;
+                child_size = 0;
+            }
+        }
+
+        bool already_seen = false;
+        for (int s = 0; s < seen_count; s++) {
+            if (kstrcmp(seen[s], child_name) == 0) {
+                already_seen = true;
+                break;
+            }
+        }
+        if (already_seen) continue;
+
+        if (seen_count < ASTRAFS_MAX_FILES) {
+            kstrncpy(seen[seen_count++], child_name, sizeof(seen[0]));
+        }
+
+        if (match_count == index) {
+            kstrncpy(dirent->name, child_name, sizeof(dirent->name));
+            dirent->type = child_type;
+            dirent->size = child_size;
+            return VFS_OK;
+        }
+        match_count++;
+    }
+
+    return VFS_ERR_EOF;
+}
+
 int astrafs_readdir(size_t index, vfs_dirent_t *dirent) {
     if (!dirent) return VFS_ERR_INVAL;
     astrafs_lock();
-    if (!g_astrafs.mounted) {
+    int ret = astrafs_node_readdir_locked(&g_astrafs.root_node, index, dirent);
+    astrafs_unlock();
+    return ret;
+}
+
+int astrafs_statfs(vfs_statfs_t *st) {
+    if (!st) return VFS_ERR_INVAL;
+    astrafs_lock();
+    if (!g_astrafs.mounted || !g_astrafs.dev) {
         astrafs_unlock();
         return VFS_ERR_NOT_FOUND;
     }
 
-    size_t match_count = 0;
-    for (int i = 0; i < ASTRAFS_MAX_FILES; i++) {
-        if (g_astrafs.inodes[i].in_use) {
-            if (match_count == index) {
-                kstrncpy(dirent->name, g_astrafs.inodes[i].name, sizeof(dirent->name));
-                dirent->type = VFS_NODE_FILE;
-                dirent->size = g_astrafs.inodes[i].file_size;
-                astrafs_unlock();
-                return VFS_OK;
-            }
-            match_count++;
-        }
+    u32 total_sec = g_astrafs.sb.total_sectors;
+    u32 used_sec = g_astrafs.sb.used_sectors;
+    u32 reserved_sec = ASTRAFS_DATA_START_LBA;
+    u32 free_sec = 0;
+    if (total_sec > used_sec + reserved_sec) {
+        free_sec = total_sec - used_sec - reserved_sec;
     }
 
+    st->block_size = ASTRAFS_SECTOR_SIZE;
+    st->total_bytes = (size_t)total_sec * ASTRAFS_SECTOR_SIZE;
+    st->free_bytes = (size_t)free_sec * ASTRAFS_SECTOR_SIZE;
+    st->total_inodes = ASTRAFS_MAX_FILES;
+    st->free_inodes = (ASTRAFS_MAX_FILES >= g_astrafs.sb.file_count) ?
+                      (ASTRAFS_MAX_FILES - g_astrafs.sb.file_count) : 0;
+
     astrafs_unlock();
-    return VFS_ERR_EOF;
+    return VFS_OK;
 }
 
 int astrafs_fsync(vfs_node_t *node) {
@@ -1059,7 +1381,7 @@ int astrafs_rename(const char *old_name, const char *new_name) {
         return VFS_ERR_INVALID_PATH;
     }
     for (size_t c = 0; c < nlen; c++) {
-        if (new_s[c] == '/') {
+        if (new_s[c] == '/' && (c == 0 || c == nlen - 1 || new_s[c + 1] == '/')) {
             astrafs_unlock();
             return VFS_ERR_INVALID_PATH;
         }
@@ -1123,6 +1445,24 @@ int astrafs_rename(const char *old_name, const char *new_name) {
         kstrncpy(src_ino->name, new_s, sizeof(src_ino->name));
         src_ino->modified_time = g_astrafs.sb.generation + 1;
         kstrncpy(g_astrafs.vfs_nodes[src_slot].name, new_s, sizeof(g_astrafs.vfs_nodes[src_slot].name));
+
+        /* If renaming directory, update children */
+        if (saved_src_ino.flags & ASTRAFS_FLAG_DIR) {
+            size_t old_plen = kstrlen(old_s);
+            size_t new_plen = kstrlen(new_s);
+            for (int i = 0; i < ASTRAFS_MAX_FILES; i++) {
+                if (i == src_slot || !g_astrafs.inodes[i].in_use) continue;
+                if (kstrncmp(g_astrafs.inodes[i].name, old_s, old_plen) == 0 &&
+                    g_astrafs.inodes[i].name[old_plen] == '/') {
+                    char child_new[ASTRAFS_FILENAME_MAX];
+                    kstrncpy(child_new, new_s, sizeof(child_new));
+                    size_t rem = sizeof(child_new) - new_plen - 1;
+                    kstrncpy(child_new + new_plen, g_astrafs.inodes[i].name + old_plen, rem);
+                    kstrncpy(g_astrafs.inodes[i].name, child_new, sizeof(g_astrafs.inodes[i].name));
+                    kstrncpy(g_astrafs.vfs_nodes[i].name, child_new, sizeof(g_astrafs.vfs_nodes[i].name));
+                }
+            }
+        }
     }
 
     int ret = astrafs_commit_metadata();
@@ -1172,8 +1512,10 @@ static int astrafs_op_stat(vfs_node_t *node, vfs_stat_t *st) {
 }
 
 static int astrafs_op_readdir(vfs_node_t *node, size_t index, vfs_dirent_t *dirent) {
-    (void)node;
-    return astrafs_readdir(index, dirent);
+    astrafs_lock();
+    int ret = astrafs_node_readdir_locked(node, index, dirent);
+    astrafs_unlock();
+    return ret;
 }
 
 static int astrafs_op_lookup(vfs_node_t *parent, const char *name, vfs_node_t **out_node) {

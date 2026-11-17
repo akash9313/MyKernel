@@ -75,6 +75,7 @@ typedef struct input_event {
             int delta_y;    /* Relative Y movement */
             int delta_z;    /* Relative Z movement (wheel delta: +1 up, -1 down) */
             u8 buttons;     /* MOUSE_BTN_* bitmask */
+            u8 modifiers;   /* Active keyboard KEY_MOD_* bitmask during mouse event */
         } mouse;
     };
 } input_event_t;

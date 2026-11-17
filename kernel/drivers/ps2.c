@@ -189,10 +189,6 @@ static void ps2_process_mouse_byte(u8 data) {
         if ((data & 0x08) == 0) {
             return; /* Out of sync, wait for next byte */
         }
-        /* Discard overflow packets */
-        if (data & 0xC0) {
-            return;
-        }
         g_mouse_packet[0] = data;
         g_mouse_cycle = 1;
     } else if (g_mouse_cycle == 1) {
@@ -216,8 +212,8 @@ static void ps2_process_mouse_byte(u8 data) {
 handle_packet:
     {
         u8 flags = g_mouse_packet[0];
-        if ((flags & 0x08) == 0 || (flags & 0xC0)) {
-            return; /* Out of sync or hardware overflow */
+        if ((flags & 0x08) == 0) {
+            return; /* Out of sync */
         }
 
         s32 dx = (s32)g_mouse_packet[1];
@@ -231,13 +227,18 @@ handle_packet:
         if (flags & (1 << 4)) dx |= ~0xFF;
         if (flags & (1 << 5)) dy |= ~0xFF;
 
+        /* If hardware overflow reported, clamp to maximum range */
+        if (flags & 0x40) dx = (flags & (1 << 4)) ? -255 : 255;
+        if (flags & 0x80) dy = (flags & (1 << 5)) ? -255 : 255;
+
         /* Invert dy for standard screen coordinates (positive Y is down) */
         dy = -dy;
 
-        /* Discard corrupt delta spikes (> 400 pixels in a single tick) */
-        if (dx < -400 || dx > 400 || dy < -400 || dy > 400) {
-            return;
-        }
+        /* Clamp delta spikes instead of discarding movement */
+        if (dx < -300) dx = -300;
+        if (dx > 300) dx = 300;
+        if (dy < -300) dy = -300;
+        if (dy > 300) dy = 300;
 
         /* Extract buttons */
         u8 buttons = 0;
@@ -265,17 +266,25 @@ handle_packet:
         if (my < 0) my = 0;
         if (my > max_y) my = max_y;
 
-        /* Check for button press / release events */
-        if ((buttons & MOUSE_BTN_LEFT) && !(g_prev_buttons & MOUSE_BTN_LEFT)) {
+        /* Check for button press / release events (all buttons) */
+        u8 pressed = buttons & ~g_prev_buttons;
+        u8 released = ~buttons & g_prev_buttons;
+
+        u8 mouse_mods = 0;
+        if (g_shift) mouse_mods |= KEY_MOD_SHIFT;
+        if (g_ctrl)  mouse_mods |= KEY_MOD_CTRL;
+        if (g_alt)   mouse_mods |= KEY_MOD_ALT;
+
+        if (pressed != 0) {
             input_event_t ev = {
                 .type = INPUT_EVENT_MOUSE_DOWN,
-                .mouse = { .x = mx, .y = my, .delta_x = dx, .delta_y = dy, .delta_z = dz, .buttons = buttons }
+                .mouse = { .x = mx, .y = my, .delta_x = dx, .delta_y = dy, .delta_z = dz, .buttons = buttons, .modifiers = mouse_mods }
             };
             input_push_event(&ev);
-        } else if (!(buttons & MOUSE_BTN_LEFT) && (g_prev_buttons & MOUSE_BTN_LEFT)) {
+        } else if (released != 0) {
             input_event_t ev = {
                 .type = INPUT_EVENT_MOUSE_UP,
-                .mouse = { .x = mx, .y = my, .delta_x = dx, .delta_y = dy, .delta_z = dz, .buttons = buttons }
+                .mouse = { .x = mx, .y = my, .delta_x = dx, .delta_y = dy, .delta_z = dz, .buttons = buttons, .modifiers = mouse_mods }
             };
             input_push_event(&ev);
         }
@@ -283,7 +292,7 @@ handle_packet:
         if (dx != 0 || dy != 0) {
             input_event_t ev = {
                 .type = INPUT_EVENT_MOUSE_MOVE,
-                .mouse = { .x = mx, .y = my, .delta_x = dx, .delta_y = dy, .delta_z = dz, .buttons = buttons }
+                .mouse = { .x = mx, .y = my, .delta_x = dx, .delta_y = dy, .delta_z = dz, .buttons = buttons, .modifiers = mouse_mods }
             };
             input_push_event(&ev);
         }
@@ -291,7 +300,7 @@ handle_packet:
         if (dz != 0) {
             input_event_t ev = {
                 .type = INPUT_EVENT_MOUSE_WHEEL,
-                .mouse = { .x = mx, .y = my, .delta_x = dx, .delta_y = dy, .delta_z = dz, .buttons = buttons }
+                .mouse = { .x = mx, .y = my, .delta_x = dx, .delta_y = dy, .delta_z = dz, .buttons = buttons, .modifiers = mouse_mods }
             };
             input_push_event(&ev);
         }

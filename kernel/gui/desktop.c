@@ -371,7 +371,7 @@ static void launch_or_focus_app(int app_id) {
         case 0: { /* Text Editor */
             wm_window_t *w = wm_find_by_title_substring("Editor");
             if (w) { wm_bring_to_front(w); wm_set_focus(w); }
-            else { app_editor_launch("/hello.txt"); }
+            else { app_editor_launch(NULL); }
             break;
         }
         case 1: { /* File Manager */
@@ -1435,37 +1435,39 @@ void desktop_handle_event(const input_event_t *ev) {
             }
         }
 
-        /* Check Desktop Shortcuts Clicks */
-        /* Column 1: x = 32 (hitbox 20..88) */
-        if (mx >= 20 && mx <= 88) {
-            if (my >= 54 && my <= 130) {
-                launch_or_focus_app(0); /* Text Editor */
-                return;
-            } else if (my >= 150 && my <= 226) {
-                launch_or_focus_app(1); /* File Manager */
-                return;
-            } else if (my >= 246 && my <= 322) {
-                launch_or_focus_app(2); /* Web Browser */
-                return;
-            } else if (my >= 342 && my <= 418) {
-                launch_or_focus_app(3); /* Terminal */
-                return;
+        /* Check Desktop Shortcuts Clicks (only if not clicking on an active window) */
+        if (!wm_window_at(mx, my)) {
+            /* Column 1: x = 32 (hitbox 20..88) */
+            if (mx >= 20 && mx <= 88) {
+                if (my >= 54 && my <= 130) {
+                    launch_or_focus_app(0); /* Text Editor */
+                    return;
+                } else if (my >= 150 && my <= 226) {
+                    launch_or_focus_app(1); /* File Manager */
+                    return;
+                } else if (my >= 246 && my <= 322) {
+                    launch_or_focus_app(2); /* Web Browser */
+                    return;
+                } else if (my >= 342 && my <= 418) {
+                    launch_or_focus_app(3); /* Terminal */
+                    return;
+                }
             }
-        }
-        /* Column 2: x = 140 (hitbox 128..196) */
-        if (mx >= 128 && mx <= 196) {
-            if (my >= 54 && my <= 130) {
-                launch_or_focus_app(4); /* Settings */
-                return;
-            } else if (my >= 150 && my <= 226) {
-                launch_or_focus_app(5); /* Calculator */
-                return;
-            } else if (my >= 246 && my <= 322) {
-                launch_or_focus_app(6); /* System Monitor */
-                return;
-            } else if (my >= 342 && my <= 418) {
-                launch_or_focus_app(7); /* Package Manager */
-                return;
+            /* Column 2: x = 140 (hitbox 128..196) */
+            if (mx >= 128 && mx <= 196) {
+                if (my >= 54 && my <= 130) {
+                    launch_or_focus_app(4); /* Settings */
+                    return;
+                } else if (my >= 150 && my <= 226) {
+                    launch_or_focus_app(5); /* Calculator */
+                    return;
+                } else if (my >= 246 && my <= 322) {
+                    launch_or_focus_app(6); /* System Monitor */
+                    return;
+                } else if (my >= 342 && my <= 418) {
+                    launch_or_focus_app(7); /* Package Manager */
+                    return;
+                }
             }
         }
     } else if (ev->type == INPUT_EVENT_KEY_DOWN) {

@@ -247,6 +247,16 @@ static void clean_ata_string(char *dst, const u16 *words, int word_count, size_t
     }
 }
 
+static bool ata_str_contains(const char *haystack, const char *needle) {
+    if (!haystack || !needle) return false;
+    for (int i = 0; haystack[i]; i++) {
+        int j = 0;
+        while (needle[j] && haystack[i + j] == needle[j]) j++;
+        if (!needle[j]) return true;
+    }
+    return false;
+}
+
 static bool ata_identify(ata_drive_t *d) {
     /* Disable interrupts on channel */
     outb(d->ctrl_base, ATA_CTRL_NIEN);
@@ -366,14 +376,21 @@ void ata_init(void) {
                 drv->block_dev.ops = &s_ata_ops;
                 drv->block_dev.priv = drv;
 
-                /* Primary Master (c=0, d=0) in QEMU is the FAT EFI boot partition */
+                /*
+                 * In QEMU, Primary Master (c=0, d=0) is the FAT EFI boot partition ("QEMU HARDDISK").
+                 * In VirtualBox, IDE-0-0 is the user's persistent virtual disk ("VBOX HARDDISK").
+                 */
+                bool is_boot = false;
+                bool is_ro = false;
                 if (c == 0 && d == 0) {
-                    drv->block_dev.is_boot_device = true;
-                    drv->block_dev.read_only = true;
-                } else {
-                    drv->block_dev.is_boot_device = false;
-                    drv->block_dev.read_only = false;
+                    if (ata_str_contains(drv->model, "QEMU")) {
+                        is_boot = true;
+                        is_ro = true;
+                    }
                 }
+
+                drv->block_dev.is_boot_device = is_boot;
+                drv->block_dev.read_only = is_ro;
 
                 u64 cap_mib = drv->block_dev.capacity_bytes / (1024 * 1024);
                 kprintf("[ATA] Channel %d Drive %d: Model '%s', Serial '%s', Capacity %llu MiB (%llu sectors)%s\n",

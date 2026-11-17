@@ -10,6 +10,7 @@
 #define ASTRAFS_SECTOR_SIZE       512
 #define ASTRAFS_MAX_FILES         64
 #define ASTRAFS_FILENAME_MAX      48
+#define ASTRAFS_FLAG_DIR          0x80000000U
 
 /* On-Disk Metadata Layout */
 #define ASTRAFS_SUPERBLOCK_A_LBA  1
@@ -20,6 +21,7 @@
 #define ASTRAFS_BITMAP_A_LBA      48
 #define ASTRAFS_BITMAP_B_LBA      64
 #define ASTRAFS_BITMAP_SECTORS    16   /* 16 * 512 = 8192 B = 65536 bits */
+#define ASTRAFS_MAX_SECTORS       (ASTRAFS_BITMAP_SECTORS * ASTRAFS_SECTOR_SIZE * 8) /* 65536 sectors = 32 MiB */
 #define ASTRAFS_DATA_START_LBA    128
 
 typedef struct astrafs_inode {
@@ -104,11 +106,15 @@ const vfs_ops_t *astrafs_get_ops(void);
 
 int astrafs_lookup(const char *name, vfs_node_t **out_node);
 int astrafs_create(const char *name, u32 flags, vfs_node_t **out_node);
+int astrafs_mkdir(const char *name);
+int astrafs_unlink(const char *name);
+int astrafs_rmdir(const char *name);
 ssize_t astrafs_read(vfs_node_t *node, void *buf, size_t count, size_t offset);
 ssize_t astrafs_write(vfs_node_t *node, const void *buf, size_t count, size_t offset);
 int astrafs_truncate(vfs_node_t *node, size_t new_size);
 int astrafs_stat(vfs_node_t *node, vfs_stat_t *st);
 int astrafs_readdir(size_t index, vfs_dirent_t *dirent);
+int astrafs_statfs(vfs_statfs_t *st);
 int astrafs_fsync(vfs_node_t *node);
 int astrafs_sync(void);
 int astrafs_rename(const char *old_name, const char *new_name);

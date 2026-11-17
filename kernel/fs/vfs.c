@@ -339,18 +339,15 @@ int vfs_lookup(const char *path, vfs_node_t **out_node) {
         return VFS_OK;
     }
 
-    /* AstraFS mount check for /data */
-    if (astrafs_is_mounted()) {
-        if (str_cmp(path, "/data") == 0 || str_cmp(path, "/data/") == 0) {
-            *out_node = astrafs_get_root_node();
-            return VFS_OK;
-        }
-        if (str_ncmp(path, "/data/", 6) == 0) {
-            int a_err = astrafs_lookup(path + 6, out_node);
-            if (a_err == VFS_OK) {
-                return VFS_OK;
-            }
-        }
+    /* AstraFS mount check for /data - strictly isolated to persistent storage */
+    if (str_cmp(path, "/data") == 0 || str_cmp(path, "/data/") == 0) {
+        if (!astrafs_is_mounted()) return VFS_ERR_NOT_FOUND;
+        *out_node = astrafs_get_root_node();
+        return VFS_OK;
+    }
+    if (str_ncmp(path, "/data/", 6) == 0) {
+        if (!astrafs_is_mounted()) return VFS_ERR_NOT_FOUND;
+        return astrafs_lookup(path + 6, out_node);
     }
 
     /* 1. Fast check in mutable files table */
@@ -377,6 +374,11 @@ int vfs_check_permissions(vfs_node_t *node, u32 flags, uid_t caller_uid, gid_t c
 
     /* Root / superuser (UID 0) bypasses DAC checks */
     if (caller_uid == USER_ROOT_UID) {
+        return VFS_OK;
+    }
+
+    /* Persistent user data volume (AstraFS) is always accessible to active users */
+    if (node->ops == astrafs_get_ops()) {
         return VFS_OK;
     }
 
@@ -538,28 +540,22 @@ vfs_fd_t vfs_open(const char *path, u32 flags) {
             }
         }
     } else if (err == VFS_ERR_NOT_FOUND && (flags & VFS_O_CREAT)) {
-        bool created_astrafs = false;
-        if (astrafs_is_mounted() && str_ncmp(path, "/data/", 6) == 0) {
-            bool has_sub = false;
-            for (const char *s = path + 6; *s; s++) {
-                if (*s == '/') { has_sub = true; break; }
+        if (str_ncmp(path, "/data/", 6) == 0) {
+            if (!astrafs_is_mounted()) {
+                return VFS_ERR_NOT_FOUND; /* AstraFS unmounted: never redirect persistent storage into RAMFS */
             }
-            if (!has_sub) {
-                int cr_err = astrafs_create(path + 6, flags, &node);
-                if (cr_err == VFS_OK) {
-                    created_astrafs = true;
-                    if (node) {
-                        node->uid = caller_uid;
-                        node->gid = caller_gid;
-                        node->mode = VFS_DEFAULT_FILE_MODE;
-                    }
-                } else {
-                    return cr_err;
+            int cr_err = astrafs_create(path + 6, flags, &node);
+            if (cr_err == VFS_OK) {
+                if (node) {
+                    node->uid = caller_uid;
+                    node->gid = caller_gid;
+                    node->mode = VFS_DEFAULT_FILE_MODE;
                 }
+            } else {
+                return cr_err;
             }
-        }
-        if (!created_astrafs) {
-            /* Allocate a new mutable file in ramfs */
+        } else {
+            /* Allocate a new mutable file in ramfs (strictly for non-/data paths) */
             int slot = -1;
             for (int i = 0; i < VFS_MAX_MUTABLE_FILES; i++) {
                 if (!g_mutable_files[i].in_use) {
@@ -794,34 +790,24 @@ int vfs_rename(const char *old_path, const char *new_path) {
             return VFS_ERR_UNSUPPORTED; /* Cannot rename cross-filesystem */
         }
         if (old_is_data && new_is_data) {
-            bool old_has_sub = false;
-            for (const char *s = old_path + 6; *s; s++) {
-                if (*s == '/') { old_has_sub = true; break; }
-            }
-            bool new_has_sub = false;
-            for (const char *s = new_path + 6; *s; s++) {
-                if (*s == '/') { new_has_sub = true; break; }
-            }
-            if (!old_has_sub && !new_has_sub) {
-                vfs_node_t *old_node = NULL;
-                (void)astrafs_lookup(old_path + 6, &old_node);
-                int res = astrafs_rename(old_path + 6, new_path + 6);
-                if (res == VFS_OK) {
-                    /* Update any open file descriptor referencing the renamed file */
-                    vfs_node_t *renamed_node = NULL;
-                    if (astrafs_lookup(new_path + 6, &renamed_node) == VFS_OK && renamed_node) {
-                        for (int i = 0; i < VFS_MAX_FDS; i++) {
-                            if (g_file_table[i].in_use) {
-                                if (g_file_table[i].node == renamed_node || (old_node && g_file_table[i].node == old_node)) {
-                                    g_file_table[i].node = renamed_node;
-                                    str_copy(renamed_node->name, new_path + 6, sizeof(renamed_node->name));
-                                }
+            vfs_node_t *old_node = NULL;
+            (void)astrafs_lookup(old_path + 6, &old_node);
+            int res = astrafs_rename(old_path + 6, new_path + 6);
+            if (res == VFS_OK) {
+                /* Update any open file descriptor referencing the renamed file */
+                vfs_node_t *renamed_node = NULL;
+                if (astrafs_lookup(new_path + 6, &renamed_node) == VFS_OK && renamed_node) {
+                    for (int i = 0; i < VFS_MAX_FDS; i++) {
+                        if (g_file_table[i].in_use) {
+                            if (g_file_table[i].node == renamed_node || (old_node && g_file_table[i].node == old_node)) {
+                                g_file_table[i].node = renamed_node;
+                                str_copy(renamed_node->name, new_path + 6, sizeof(renamed_node->name));
                             }
                         }
                     }
                 }
-                return res;
             }
+            return res;
         }
     }
 
@@ -867,11 +853,9 @@ int vfs_rename(const char *old_path, const char *new_path) {
 int vfs_unlink(const char *path) {
     if (!path) return VFS_ERR_INVAL;
 
-    if (astrafs_is_mounted() && str_ncmp(path, "/data/", 6) == 0) {
-        vfs_node_t *anode = NULL;
-        if (astrafs_lookup(path + 6, &anode) == VFS_OK && anode) {
-            return astrafs_truncate(anode, 0);
-        }
+    if (str_ncmp(path, "/data/", 6) == 0) {
+        if (!astrafs_is_mounted()) return VFS_ERR_NOT_FOUND;
+        return astrafs_unlink(path + 6);
     }
 
     /* Check mutable ramfs files */
@@ -925,6 +909,11 @@ int vfs_mkdir(const char *path) {
         return VFS_ERR_EXISTS;
     }
 
+    if (str_ncmp(path, "/data/", 6) == 0) {
+        if (!astrafs_is_mounted()) return VFS_ERR_NOT_FOUND;
+        return astrafs_mkdir(path + 6);
+    }
+
     /* Find empty slot in g_mutable_files */
     int slot = -1;
     for (int i = 0; i < VFS_MAX_MUTABLE_FILES; i++) {
@@ -959,6 +948,11 @@ int vfs_rmdir(const char *path) {
     if (!path) return VFS_ERR_INVAL;
     int syn_err = validate_path_syntax(path);
     if (syn_err != VFS_OK) return syn_err;
+
+    if (str_ncmp(path, "/data/", 6) == 0) {
+        if (!astrafs_is_mounted()) return VFS_ERR_NOT_FOUND;
+        return astrafs_rmdir(path + 6);
+    }
 
     /* Find mutable directory node */
     int slot = -1;
@@ -1043,6 +1037,24 @@ int vfs_fstat(vfs_fd_t fd, vfs_stat_t *st) {
     return VFS_OK;
 }
 
+int vfs_statfs(const char *path, vfs_statfs_t *st) {
+    if (!st) return VFS_ERR_INVAL;
+    if (astrafs_is_mounted() && path && str_ncmp(path, "/data", 5) == 0) {
+        return astrafs_statfs(st);
+    }
+    st->block_size = 512;
+    st->total_bytes = VFS_TOTAL_MUTABLE_CAPACITY;
+    st->free_bytes = (VFS_TOTAL_MUTABLE_CAPACITY >= g_total_mutable_allocated) ?
+                     (VFS_TOTAL_MUTABLE_CAPACITY - g_total_mutable_allocated) : 0;
+    st->total_inodes = VFS_MAX_MUTABLE_FILES;
+    size_t used = 0;
+    for (int i = 0; i < VFS_MAX_MUTABLE_FILES; i++) {
+        if (g_mutable_files[i].in_use) used++;
+    }
+    st->free_inodes = (VFS_MAX_MUTABLE_FILES >= used) ? (VFS_MAX_MUTABLE_FILES - used) : 0;
+    return VFS_OK;
+}
+
 int vfs_readdir(const char *path, size_t index, vfs_dirent_t *dirent) {
     if (!dirent || !path) return VFS_ERR_INVAL;
 
@@ -1063,7 +1075,11 @@ int vfs_readdir(const char *path, size_t index, vfs_dirent_t *dirent) {
         }
     }
 
-    /* Enumerate mutable ramfs files for this directory */
+    /* Enumerate mutable ramfs files for this directory (skip for /data which is persistent AstraFS) */
+    if (str_ncmp(path, "/data", 5) == 0) {
+        return VFS_ERR_EOF;
+    }
+
     size_t target_mutable_idx = index - base_count;
     size_t mutable_match = 0;
     bool is_root = (str_cmp(path, "/") == 0);

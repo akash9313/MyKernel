@@ -474,6 +474,69 @@ static void cmd_halt(void) {
     halt_forever();
 }
 
+static void cmd_click(const char *arg) {
+    while (*arg == ' ') arg++;
+    int x = 0, y = 0, btn = 1;
+    while (*arg >= '0' && *arg <= '9') { x = x * 10 + (*arg++ - '0'); }
+    while (*arg == ' ') arg++;
+    while (*arg >= '0' && *arg <= '9') { y = y * 10 + (*arg++ - '0'); }
+    while (*arg == ' ') arg++;
+    if (*arg >= '0' && *arg <= '9') { btn = (*arg++ - '0'); }
+
+    while (*arg == ' ') arg++;
+    u8 mod = 0;
+    if (*arg == 'c' || *arg == 'C' || *arg == '2') mod |= KEY_MOD_CTRL;
+    else if (*arg == 's' || *arg == 'S' || *arg == '1') mod |= KEY_MOD_SHIFT;
+
+    input_event_t ev_down = {
+        .type = INPUT_EVENT_MOUSE_DOWN,
+        .mouse = { .x = x, .y = y, .buttons = (u8)btn, .modifiers = mod }
+    };
+    desktop_handle_event(&ev_down);
+    input_event_t ev_up = {
+        .type = INPUT_EVENT_MOUSE_UP,
+        .mouse = { .x = x, .y = y, .buttons = 0, .modifiers = mod }
+    };
+    desktop_handle_event(&ev_up);
+    desktop_render();
+    kprintf("[GUI] Click injected at (%d, %d, btn=%d, mod=%d)\n", x, y, btn, (int)mod);
+}
+
+static void cmd_guikey(const char *arg) {
+    while (*arg == ' ') arg++;
+    u32 kc = 0;
+    u8 mod = 0;
+    if (kstrcmp(arg, "del") == 0 || kstrcmp(arg, "delete") == 0) kc = KEY_DELETE;
+    else if (kstrcmp(arg, "shift_del") == 0) { kc = KEY_DELETE; mod = KEY_MOD_SHIFT; }
+    else if (kstrcmp(arg, "ctrl_a") == 0) { kc = 'a'; mod = KEY_MOD_CTRL; }
+    else if (kstrcmp(arg, "ctrl_c") == 0) { kc = 'c'; mod = KEY_MOD_CTRL; }
+    else if (kstrcmp(arg, "ctrl_x") == 0) { kc = 'x'; mod = KEY_MOD_CTRL; }
+    else if (kstrcmp(arg, "ctrl_v") == 0) { kc = 'v'; mod = KEY_MOD_CTRL; }
+    else if (kstrcmp(arg, "enter") == 0) kc = KEY_ENTER;
+    else if (kstrcmp(arg, "esc") == 0) kc = KEY_ESC;
+    else if (kstrcmp(arg, "up") == 0) kc = KEY_UP;
+    else if (kstrcmp(arg, "down") == 0) kc = KEY_DOWN;
+    else if (kstrcmp(arg, "backspace") == 0) kc = KEY_BACKSPACE;
+    else if (kstrcmp(arg, "f1") == 0) kc = KEY_F1;
+    else if (kstrcmp(arg, "f2") == 0) kc = KEY_F2;
+    else if (kstrcmp(arg, "f5") == 0) kc = KEY_F5;
+
+    if (kc != 0) {
+        input_event_t ev_down = {
+            .type = INPUT_EVENT_KEY_DOWN,
+            .key = { .keycode = kc, .modifiers = mod }
+        };
+        desktop_handle_event(&ev_down);
+        input_event_t ev_up = {
+            .type = INPUT_EVENT_KEY_UP,
+            .key = { .keycode = kc, .modifiers = mod }
+        };
+        desktop_handle_event(&ev_up);
+        desktop_render();
+        kprintf("[GUI] Key injected: %s\n", arg);
+    }
+}
+
 static void monitor_execute(char *line) {
     /* Trim leading spaces */
     while (*line == ' ' || *line == '\t') {
@@ -565,6 +628,10 @@ static void monitor_execute(char *line) {
         cmd_fault();
     } else if (kstrcmp(line, "halt") == 0) {
         cmd_halt();
+    } else if (kstrncmp(line, "click ", 6) == 0) {
+        cmd_click(line + 6);
+    } else if (kstrncmp(line, "guikey ", 7) == 0) {
+        cmd_guikey(line + 7);
     } else {
         ensure_monitor_shell();
         if (s_monitor_shell_ctx) {

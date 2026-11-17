@@ -75,6 +75,14 @@ typedef struct {
     size_t          size;
 } vfs_dirent_t;
 
+typedef struct {
+    size_t total_bytes;
+    size_t free_bytes;
+    size_t block_size;
+    size_t total_inodes;
+    size_t free_inodes;
+} vfs_statfs_t;
+
 struct vfs_node;
 typedef struct vfs_node vfs_node_t;
 
@@ -128,6 +136,7 @@ int vfs_mkdir(const char *path);
 int vfs_rmdir(const char *path);
 int vfs_stat(const char *path, vfs_stat_t *st);
 int vfs_fstat(vfs_fd_t fd, vfs_stat_t *st);
+int vfs_statfs(const char *path, vfs_statfs_t *st);
 int vfs_readdir(const char *path, size_t index, vfs_dirent_t *dirent);
 const char *vfs_strerror(int err);
 void vfs_initramfs_run_tests(void);

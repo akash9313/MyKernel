@@ -415,6 +415,9 @@ static int process_http_response(const char *raw_resp, size_t total_recv,
     return (int)body_len;
 }
 
+/* Shared response buffer for HTTP/HTTPS download */
+static char s_browser_raw_resp[BROWSER_HTML_BUFFER_MAX];
+
 int browser_fetch_url(const browser_url_t *url, char *out_buf, size_t max_len, int *out_status) {
     if (!url || !out_buf || max_len < 32) {
         if (out_status) *out_status = 400;
@@ -483,20 +486,19 @@ int browser_fetch_url(const browser_url_t *url, char *out_buf, size_t max_len, i
                 return -1;
             }
 
-            /* Read HTTP response into static buffer */
-            static char raw_resp[BROWSER_HTML_BUFFER_MAX];
+            /* Read HTTP response into shared buffer */
             size_t total_recv = 0;
-            while (total_recv < sizeof(raw_resp) - 1) {
-                int r = tls_recv(&session, raw_resp + total_recv, sizeof(raw_resp) - 1 - total_recv);
+            while (total_recv < sizeof(s_browser_raw_resp) - 1) {
+                int r = tls_recv(&session, s_browser_raw_resp + total_recv, sizeof(s_browser_raw_resp) - 1 - total_recv);
                 if (r <= 0) break;
                 total_recv += (size_t)r;
             }
-            raw_resp[total_recv] = '\0';
+            s_browser_raw_resp[total_recv] = '\0';
             tls_close(&session);
 
             int status = 0;
             char location[256] = {0};
-            int n = process_http_response(raw_resp, total_recv, out_buf, max_len, &status, location, sizeof(location));
+            int n = process_http_response(s_browser_raw_resp, total_recv, out_buf, max_len, &status, location, sizeof(location));
             if (out_status) *out_status = status;
 
             /* Check for HTTP Redirect (301, 302, 303, 307, 308) */
@@ -636,20 +638,19 @@ int browser_fetch_url(const browser_url_t *url, char *out_buf, size_t max_len, i
 
             tcp_send(sock, req, (size_t)req_len);
 
-            /* Read HTTP response into temporary buffer */
-            static char raw_resp[BROWSER_HTML_BUFFER_MAX];
+            /* Read HTTP response into shared buffer */
             size_t total_recv = 0;
-            while (total_recv < sizeof(raw_resp) - 1) {
-                int r = tcp_recv(sock, raw_resp + total_recv, sizeof(raw_resp) - 1 - total_recv, 2500);
+            while (total_recv < sizeof(s_browser_raw_resp) - 1) {
+                int r = tcp_recv(sock, s_browser_raw_resp + total_recv, sizeof(s_browser_raw_resp) - 1 - total_recv, 2500);
                 if (r <= 0) break;
                 total_recv += (size_t)r;
             }
-            raw_resp[total_recv] = '\0';
+            s_browser_raw_resp[total_recv] = '\0';
             tcp_close(sock);
 
             int status = 0;
             char location[256] = {0};
-            int n = process_http_response(raw_resp, total_recv, out_buf, max_len, &status, location, sizeof(location));
+            int n = process_http_response(s_browser_raw_resp, total_recv, out_buf, max_len, &status, location, sizeof(location));
             if (out_status) *out_status = status;
 
             /* Check for HTTP Redirect (301, 302, 303, 307, 308) */

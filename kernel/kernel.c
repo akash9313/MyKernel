@@ -477,9 +477,42 @@ __attribute__((noreturn)) void kernel_continuation(void) {
     block_init();
     ata_init();
 
-    /* 15. Mount Persistent Filesystem (AstraFS on hd1 if present) */
+    /* 15. Mount Persistent Filesystem (AstraFS) */
     kprintf("\n[BOOT] Mounting Persistent Filesystem (AstraFS)...\n");
-    block_device_t *data_dev = block_find_by_name("hd1");
+    block_device_t *data_dev = NULL;
+    int dev_cnt = block_get_device_count();
+
+    /* Pass 1: Look for an existing AstraFS volume on any registered block device */
+    for (int i = 0; i < dev_cnt; i++) {
+        block_device_t *d = block_get_device(i);
+        if (d && !d->read_only && !d->is_boot_device) {
+            static u8 s_sb_probe[512];
+            if (block_read(d, ASTRAFS_SUPERBLOCK_A_LBA, 1, s_sb_probe) == BLOCK_OK) {
+                astrafs_superblock_t *sb = (astrafs_superblock_t *)s_sb_probe;
+                if (sb->magic == ASTRAFS_MAGIC && sb->version == ASTRAFS_VERSION) {
+                    data_dev = d;
+                    break;
+                }
+            }
+        }
+    }
+
+    /* Pass 2: Fallback to hd1 (QEMU default) or first writable non-boot disk (e.g. VirtualBox hd0) */
+    if (!data_dev) {
+        block_device_t *hd1 = block_find_by_name("hd1");
+        if (hd1 && !hd1->read_only && !hd1->is_boot_device) {
+            data_dev = hd1;
+        } else {
+            for (int i = 0; i < dev_cnt; i++) {
+                block_device_t *d = block_get_device(i);
+                if (d && !d->read_only && !d->is_boot_device) {
+                    data_dev = d;
+                    break;
+                }
+            }
+        }
+    }
+
     if (data_dev && !data_dev->read_only) {
         int m_err = astrafs_mount(data_dev);
         if (m_err != VFS_OK) {
@@ -587,7 +620,7 @@ __attribute__((noreturn)) void kernel_continuation(void) {
             kprintf("[WARN] Failed to mount AstraFS on '%s' (err=%d).\n", data_dev->name, m_err);
         }
     } else {
-        kprintf("[WARN] Persistent data disk 'hd1' not found or read-only. Operating with volatile storage only.\n");
+        kprintf("[WARN] Persistent data disk not found or read-only. Operating with volatile storage only.\n");
     }
 
     /* 16. Initialize RTC, Power Management, Users, Sessions & Native Browser */
