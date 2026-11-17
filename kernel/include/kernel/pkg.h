@@ -81,6 +81,7 @@ int pkg_update(shell_out_fn out_fn, void *ctx);
 int pkg_upgrade(shell_out_fn out_fn, void *ctx);
 int pkg_clean(shell_out_fn out_fn, void *ctx);
 int pkg_repo_list(shell_out_fn out_fn, void *ctx);
+int pkg_repo_add(const char *url, shell_out_fn out_fn, void *ctx);
 bool pkg_find_package_for_command(const char *cmd, char *out_pkg, char *out_ver);
 bool pkg_find_package_details(const char *cmd, char *out_name, char *out_ver,
                               char *out_desc, u32 *out_size, char *out_deps);

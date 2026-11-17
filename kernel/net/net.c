@@ -39,6 +39,10 @@ void net_poll(void) {
     static u8 rx_buf[E1000_BUFFER_SIZE];
     int len = 0;
 
+    if (e1000_is_available()) {
+        g_net_if.link_up = e1000_is_link_up();
+    }
+
     /* Process all ready packets in E1000 RX ring */
     while ((len = e1000_receive(rx_buf, sizeof(rx_buf))) > 0) {
         ethernet_handle_packet(rx_buf, (size_t)len);

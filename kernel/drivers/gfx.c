@@ -524,6 +524,22 @@ gfx_surface_t *gfx_get_backbuffer(void) {
 void gfx_flip(void) {
     if (!g_gfx.initialized) return;
 
+    /* Fast path: standard 32-bit 0x00RRGGBB direct block copy (avoids 2M per-pixel shifts) */
+    if (g_gfx.red_mask_shift == 16 && g_gfx.green_mask_shift == 8 &&
+        g_gfx.blue_mask_shift == 0 && g_gfx.red_mask_size == 8 &&
+        g_gfx.green_mask_size == 8 && g_gfx.blue_mask_size == 8) {
+        if (g_gfx.pitch_pixels == g_gfx.width) {
+            kmemcpy(g_gfx.hw_buffer, g_gfx.backbuffer_surf.buffer, (size_t)g_gfx.width * g_gfx.height * sizeof(u32));
+        } else {
+            for (int y = 0; y < g_gfx.height; y++) {
+                u32 *src = &g_gfx.backbuffer_surf.buffer[y * g_gfx.pitch_pixels];
+                u32 *dst = &g_gfx.hw_buffer[y * g_gfx.pitch_pixels];
+                kmemcpy(dst, src, (size_t)g_gfx.width * sizeof(u32));
+            }
+        }
+        return;
+    }
+
     for (int y = 0; y < g_gfx.height; y++) {
         u32 *src = &g_gfx.backbuffer_surf.buffer[y * g_gfx.pitch_pixels];
         u32 *dst = &g_gfx.hw_buffer[y * g_gfx.pitch_pixels];
@@ -543,12 +559,20 @@ void gfx_flip_rect(int x, int y, int w, int h) {
 
     if (x0 >= x1 || y0 >= y1) return;
 
+    bool is_std_rgb = (g_gfx.red_mask_shift == 16 && g_gfx.green_mask_shift == 8 &&
+                       g_gfx.blue_mask_shift == 0 && g_gfx.red_mask_size == 8 &&
+                       g_gfx.green_mask_size == 8 && g_gfx.blue_mask_size == 8);
+    int count = x1 - x0;
+
     for (int cy = y0; cy < y1; cy++) {
         u32 *src = &g_gfx.backbuffer_surf.buffer[cy * g_gfx.pitch_pixels + x0];
         u32 *dst = &g_gfx.hw_buffer[cy * g_gfx.pitch_pixels + x0];
-        int count = x1 - x0;
-        for (int cx = 0; cx < count; cx++) {
-            dst[cx] = gfx_convert_color(src[cx]);
+        if (is_std_rgb) {
+            kmemcpy(dst, src, (size_t)count * sizeof(u32));
+        } else {
+            for (int cx = 0; cx < count; cx++) {
+                dst[cx] = gfx_convert_color(src[cx]);
+            }
         }
     }
 }

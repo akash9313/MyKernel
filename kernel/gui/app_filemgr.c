@@ -470,7 +470,7 @@ void app_filemgr_launch(const char *initial_path) {
     const char *p = (initial_path && initial_path[0]) ? initial_path : "/";
     filemgr_load_dir(&g_filemgr, p);
 
-    wm_window_t *win = wm_create_window("AstraOS Files (VFS)", 160, 80, 540, 340);
+    wm_window_t *win = wm_create_window("AstraOS Files (VFS)", 260, 80, 560, 360);
     if (!win) return;
 
     win->user_data = &g_filemgr;

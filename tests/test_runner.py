@@ -49,7 +49,7 @@ def get_rodata_start():
 def update_limine_conf(cmdline_arg=None):
     conf_path = os.path.join(ESP, 'limine.conf')
     with open(conf_path, 'w') as f:
-        f.write("timeout: 0\n\n/AstraOS\n    protocol: limine\n    path: boot():/kernel.elf\n    module_path: boot():/initramfs.bin\n")
+        f.write("timeout: 0\n\n/AstraOS\n    protocol: limine\n    resolution: 1920x1080x32\n    path: boot():/kernel.elf\n    module_path: boot():/initramfs.bin\n")
         if cmdline_arg:
             f.write(f"    cmdline: {cmdline_arg}\n")
 
@@ -1542,7 +1542,7 @@ def run_integration_test(ram_size="512M", test_mode="normal", vga_mode="std", sm
         for char in command + "\n":
             proc.stdin.write(char)
             proc.stdin.flush()
-            time.sleep(0.005)
+            time.sleep(0.015)
 
         cmd_start = time.time()
         found = False
@@ -1738,7 +1738,7 @@ def run_integration_test(ram_size="512M", test_mode="normal", vga_mode="std", sm
     # =========================================================================
     acceptance_commands = [
         ("pwd", "/"),
-        ("whoami", "root"),
+        ("whoami", "akash"),
         ("uname -a", "AstraOS"),
         ("echo hello", "hello"),
         ("which ls", "ls"),

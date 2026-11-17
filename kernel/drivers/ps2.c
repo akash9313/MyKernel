@@ -22,7 +22,9 @@ static bool g_extended = false;
 
 /* Mouse State */
 static u8 g_mouse_cycle = 0;
-static u8 g_mouse_packet[3] = {0};
+static u8 g_mouse_packet[4] = {0};
+static u8 g_mouse_packet_size = 3;
+static bool g_mouse_has_wheel = false;
 static u8 g_prev_buttons = 0;
 
 /* PS/2 Scan Code Set 1 Table (Unshifted and Shifted) */
@@ -198,8 +200,21 @@ static void ps2_process_mouse_byte(u8 data) {
         g_mouse_cycle = 2;
     } else if (g_mouse_cycle == 2) {
         g_mouse_packet[2] = data;
+        if (g_mouse_packet_size == 4) {
+            g_mouse_cycle = 3;
+            return;
+        }
         g_mouse_cycle = 0;
+        goto handle_packet;
+    } else if (g_mouse_cycle == 3) {
+        g_mouse_packet[3] = data;
+        g_mouse_cycle = 0;
+        goto handle_packet;
+    }
+    return;
 
+handle_packet:
+    {
         u8 flags = g_mouse_packet[0];
         if ((flags & 0x08) == 0 || (flags & 0xC0)) {
             return; /* Out of sync or hardware overflow */
@@ -207,6 +222,10 @@ static void ps2_process_mouse_byte(u8 data) {
 
         s32 dx = (s32)g_mouse_packet[1];
         s32 dy = (s32)g_mouse_packet[2];
+        s32 dz = 0;
+        if (g_mouse_has_wheel) {
+            dz = (s32)(s8)g_mouse_packet[3];
+        }
 
         /* Sign extend 9-bit deltas */
         if (flags & (1 << 4)) dx |= ~0xFF;
@@ -250,13 +269,13 @@ static void ps2_process_mouse_byte(u8 data) {
         if ((buttons & MOUSE_BTN_LEFT) && !(g_prev_buttons & MOUSE_BTN_LEFT)) {
             input_event_t ev = {
                 .type = INPUT_EVENT_MOUSE_DOWN,
-                .mouse = { .x = mx, .y = my, .delta_x = dx, .delta_y = dy, .buttons = buttons }
+                .mouse = { .x = mx, .y = my, .delta_x = dx, .delta_y = dy, .delta_z = dz, .buttons = buttons }
             };
             input_push_event(&ev);
         } else if (!(buttons & MOUSE_BTN_LEFT) && (g_prev_buttons & MOUSE_BTN_LEFT)) {
             input_event_t ev = {
                 .type = INPUT_EVENT_MOUSE_UP,
-                .mouse = { .x = mx, .y = my, .delta_x = dx, .delta_y = dy, .buttons = buttons }
+                .mouse = { .x = mx, .y = my, .delta_x = dx, .delta_y = dy, .delta_z = dz, .buttons = buttons }
             };
             input_push_event(&ev);
         }
@@ -264,7 +283,15 @@ static void ps2_process_mouse_byte(u8 data) {
         if (dx != 0 || dy != 0) {
             input_event_t ev = {
                 .type = INPUT_EVENT_MOUSE_MOVE,
-                .mouse = { .x = mx, .y = my, .delta_x = dx, .delta_y = dy, .buttons = buttons }
+                .mouse = { .x = mx, .y = my, .delta_x = dx, .delta_y = dy, .delta_z = dz, .buttons = buttons }
+            };
+            input_push_event(&ev);
+        }
+
+        if (dz != 0) {
+            input_event_t ev = {
+                .type = INPUT_EVENT_MOUSE_WHEEL,
+                .mouse = { .x = mx, .y = my, .delta_x = dx, .delta_y = dy, .delta_z = dz, .buttons = buttons }
             };
             input_push_event(&ev);
         }
@@ -380,14 +407,40 @@ void ps2_init(void) {
     ps2_wait_read();
     (void)inb(PS2_DATA_PORT); /* Read ACK or BAT */
 
-    /* Initialize Mouse to standard streaming mode */
+    /* Initialize Mouse: Try Intellimouse wheel sequence (200, 100, 80) */
     ps2_write_mouse(0xF6); /* Set default settings */
     ps2_wait_read();
     (void)inb(PS2_DATA_PORT);
+
+    ps2_write_mouse(0xF3); ps2_wait_read(); (void)inb(PS2_DATA_PORT);
+    ps2_write_mouse(200);  ps2_wait_read(); (void)inb(PS2_DATA_PORT);
+    ps2_write_mouse(0xF3); ps2_wait_read(); (void)inb(PS2_DATA_PORT);
+    ps2_write_mouse(100);  ps2_wait_read(); (void)inb(PS2_DATA_PORT);
+    ps2_write_mouse(0xF3); ps2_wait_read(); (void)inb(PS2_DATA_PORT);
+    ps2_write_mouse(80);   ps2_wait_read(); (void)inb(PS2_DATA_PORT);
+
+    /* Read mouse device ID */
+    ps2_write_mouse(0xF2); ps2_wait_read(); (void)inb(PS2_DATA_PORT);
+    ps2_wait_read();
+    u8 dev_id = inb(PS2_DATA_PORT);
+    if (dev_id == 3 || dev_id == 4) {
+        g_mouse_has_wheel = true;
+        g_mouse_packet_size = 4;
+    } else {
+        g_mouse_has_wheel = false;
+        g_mouse_packet_size = 3;
+    }
 
     ps2_write_mouse(0xF4); /* Enable data reporting */
     ps2_wait_read();
     (void)inb(PS2_DATA_PORT);
 
-    kprintf("[PS/2] Keyboard and Mouse enabled (IRQ1=33, IRQ12=44, streaming active).\n");
+    /* Flush any lingering device handshake responses to ensure clean packet alignment */
+    while (inb(PS2_STATUS_PORT) & PS2_STATUS_OUTPUT_FULL) {
+        (void)inb(PS2_DATA_PORT);
+    }
+    g_mouse_cycle = 0;
+
+    kprintf("[PS/2] Keyboard and Mouse enabled (wheel=%d, packet_size=%d).\n",
+            g_mouse_has_wheel, g_mouse_packet_size);
 }

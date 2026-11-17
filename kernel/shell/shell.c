@@ -11,6 +11,10 @@
 #include <kernel/kprintf.h>
 #include <kernel/mem.h>
 #include <kernel/code_runner.h>
+#include <kernel/power.h>
+#include <kernel/session.h>
+#include <kernel/user.h>
+#include <kernel/string.h>
 
 /* Shell output colors */
 #define SH_COL_DEFAULT  0xFFE0E4F0U
@@ -101,6 +105,10 @@ static bool sh_str_contains_case(const char *haystack, const char *needle, bool 
         if (match) return true;
     }
     return false;
+}
+
+static inline bool sh_str_contains(const char *haystack, const char *needle) {
+    return sh_str_contains_case(haystack, needle, false);
 }
 
 static int sh_atoi(const char *s) {
@@ -339,28 +347,9 @@ int shell_chdir(shell_context_t *ctx, const char *path) {
 /* Group A — Basic Shell Commands                                            */
 /* ========================================================================= */
 
-static int cmd_help(shell_context_t *ctx, int argc, char **argv) {
-    if (argc > 1) {
-        const char *c = argv[1];
-        if (sh_strcmp(c, "ls") == 0) {
-            sh_println(ctx, "ls [-l] [-a] [-h] [path] - List directory contents", SH_COL_INFO);
-        } else if (sh_strcmp(c, "cd") == 0) {
-            sh_println(ctx, "cd [- | ~ | path] - Change working directory", SH_COL_INFO);
-        } else if (sh_strcmp(c, "grep") == 0) {
-            sh_println(ctx, "grep [-n] [-i] [-v] <pattern> [file] - Search text for pattern", SH_COL_INFO);
-        } else if (sh_strcmp(c, "pkg") == 0) {
-            sh_println(ctx, "pkg <search|install|remove|update|upgrade|list|info|clean|repo list> [args]", SH_COL_INFO);
-        } else {
-            sh_print(ctx, "Help for '", SH_COL_INFO);
-            sh_print(ctx, c, SH_COL_PROMPT);
-            sh_println(ctx, "': Standard AstraOS command. See universal reference.", SH_COL_INFO);
-        }
-        return 0;
-    }
-
-    sh_println(ctx, "=== AstraOS Universal Command Framework ===", SH_COL_INFO);
-    sh_println(ctx, "Core Commands:", SH_COL_PROMPT);
-    sh_println(ctx, "  help [cmd]             Display command reference or specific help", SH_COL_DEFAULT);
+static void show_help_core(shell_context_t *ctx) {
+    sh_println(ctx, "=== AstraOS Core Shell Commands ===", SH_COL_INFO);
+    sh_println(ctx, "  help [cmd|cat]         Display command reference or category", SH_COL_DEFAULT);
     sh_println(ctx, "  clear                  Clear terminal display", SH_COL_DEFAULT);
     sh_println(ctx, "  echo [-n] [-e] [args]  Print text arguments with escape support", SH_COL_DEFAULT);
     sh_println(ctx, "  pwd                    Print current working directory", SH_COL_DEFAULT);
@@ -377,8 +366,11 @@ static int cmd_help(shell_context_t *ctx, int argc, char **argv) {
     sh_println(ctx, "  unalias <name...>      Remove command alias", SH_COL_DEFAULT);
     sh_println(ctx, "  true / false           Return successful (0) or error (1) exit code", SH_COL_DEFAULT);
     sh_println(ctx, "  sleep <sec>            Delay execution for specified seconds", SH_COL_DEFAULT);
+    sh_println(ctx, "=== End of Help (core) ===", SH_COL_INFO);
+}
 
-    sh_println(ctx, "\nFilesystem Commands:", SH_COL_PROMPT);
+static void show_help_fs(shell_context_t *ctx) {
+    sh_println(ctx, "=== AstraOS Filesystem Commands ===", SH_COL_INFO);
     sh_println(ctx, "  ls [-l|-a|-h] [path]   List directory contents", SH_COL_DEFAULT);
     sh_println(ctx, "  cd [-|~|path]          Change directory (-: previous, ~: home)", SH_COL_DEFAULT);
     sh_println(ctx, "  cat [file...]          Display file or stream contents", SH_COL_DEFAULT);
@@ -404,8 +396,11 @@ static int cmd_help(shell_context_t *ctx, int argc, char **argv) {
     sh_println(ctx, "  basename <path> [suf]  Strip directory and suffix from path", SH_COL_DEFAULT);
     sh_println(ctx, "  dirname <path>         Strip trailing path component", SH_COL_DEFAULT);
     sh_println(ctx, "  realpath / readlink    Print resolved canonical absolute path", SH_COL_DEFAULT);
+    sh_println(ctx, "=== End of Help (fs) ===", SH_COL_INFO);
+}
 
-    sh_println(ctx, "\nText & Processing Utilities:", SH_COL_PROMPT);
+static void show_help_text(shell_context_t *ctx) {
+    sh_println(ctx, "=== AstraOS Text Processing Utilities ===", SH_COL_INFO);
     sh_println(ctx, "  printf <fmt> [args...] Format and print text data", SH_COL_DEFAULT);
     sh_println(ctx, "  tee [-a] <file...>     Duplicate stdin/pipe stream to file and stdout", SH_COL_DEFAULT);
     sh_println(ctx, "  cut [-d d] [-f n] [-c] Select fields or characters from text", SH_COL_DEFAULT);
@@ -416,18 +411,29 @@ static int cmd_help(shell_context_t *ctx, int argc, char **argv) {
     sh_println(ctx, "  rev [file]             Reverse characters of each line", SH_COL_DEFAULT);
     sh_println(ctx, "  strings [-n N] [file]  Extract printable character sequences", SH_COL_DEFAULT);
     sh_println(ctx, "  hexdump [-C] [file]    Display canonical hex + ASCII stream dump", SH_COL_DEFAULT);
+    sh_println(ctx, "  sed <script> [file]    Stream editor pattern replacement", SH_COL_DEFAULT);
+    sh_println(ctx, "  awk <program> [file]   Pattern scanning and text processing language", SH_COL_DEFAULT);
+    sh_println(ctx, "=== End of Help (text) ===", SH_COL_INFO);
+}
 
-    sh_println(ctx, "\nSystem & Diagnostics:", SH_COL_PROMPT);
+static void show_help_sys(shell_context_t *ctx) {
+    sh_println(ctx, "=== AstraOS System & Diagnostic Utilities ===", SH_COL_INFO);
     sh_println(ctx, "  ps                     Snapshot of active processes and threads", SH_COL_DEFAULT);
     sh_println(ctx, "  top                    System metrics: tasks, load, CPU and memory", SH_COL_DEFAULT);
+    sh_println(ctx, "  htop                   Interactive process viewer and resource monitor", SH_COL_DEFAULT);
     sh_println(ctx, "  free [-h|-m]           Display physical memory allocation", SH_COL_DEFAULT);
     sh_println(ctx, "  uptime                 Display kernel uptime and APIC clock ticks", SH_COL_DEFAULT);
     sh_println(ctx, "  cpuinfo / meminfo      Hardware CPU model and memory details", SH_COL_DEFAULT);
     sh_println(ctx, "  dmesg                  Kernel diagnostic log ring buffer", SH_COL_DEFAULT);
     sh_println(ctx, "  lsblk                  List block storage devices and partitions", SH_COL_DEFAULT);
     sh_println(ctx, "  mount / umount         Manage and inspect mounted filesystems", SH_COL_DEFAULT);
+    sh_println(ctx, "  kill / pkill / pgrep   Process signal dispatch and management", SH_COL_DEFAULT);
+    sh_println(ctx, "  vmstat                 Display virtual memory and scheduler statistics", SH_COL_DEFAULT);
+    sh_println(ctx, "=== End of Help (sys) ===", SH_COL_INFO);
+}
 
-    sh_println(ctx, "\nNetworking Commands:", SH_COL_PROMPT);
+static void show_help_net(shell_context_t *ctx) {
+    sh_println(ctx, "=== AstraOS Networking Commands ===", SH_COL_INFO);
     sh_println(ctx, "  ip [addr|route|link]   Interface IP, routing, and link inspection", SH_COL_DEFAULT);
     sh_println(ctx, "  ifconfig               Display network interface status", SH_COL_DEFAULT);
     sh_println(ctx, "  ping <ip|host>         ICMP network echo probe", SH_COL_DEFAULT);
@@ -435,14 +441,189 @@ static int cmd_help(shell_context_t *ctx, int argc, char **argv) {
     sh_println(ctx, "  curl [-o file] <url>   HTTP/HTTPS/TLS 1.3 data fetcher", SH_COL_DEFAULT);
     sh_println(ctx, "  wget [-O file] <url>   Download network files to disk", SH_COL_DEFAULT);
     sh_println(ctx, "  netstat                Display socket connections and interfaces", SH_COL_DEFAULT);
+    sh_println(ctx, "  ss                     Display socket statistics", SH_COL_DEFAULT);
+    sh_println(ctx, "  route                  Display or manipulate IP routing table", SH_COL_DEFAULT);
+    sh_println(ctx, "  arp                    Inspect ARP cache and MAC bindings", SH_COL_DEFAULT);
+    sh_println(ctx, "=== End of Help (net) ===", SH_COL_INFO);
+}
 
-    sh_println(ctx, "\nPackage Management (pkg):", SH_COL_PROMPT);
+static void show_help_pkg(shell_context_t *ctx) {
+    sh_println(ctx, "=== AstraOS Package Management (pkg) ===", SH_COL_INFO);
     sh_println(ctx, "  pkg search <query>     Search available software packages", SH_COL_DEFAULT);
     sh_println(ctx, "  pkg install <pkg>      Install package with cryptographic check", SH_COL_DEFAULT);
     sh_println(ctx, "  pkg remove <pkg>       Remove installed package cleanly", SH_COL_DEFAULT);
     sh_println(ctx, "  pkg list / info        List or inspect installed packages", SH_COL_DEFAULT);
-    sh_println(ctx, "  pkg update / upgrade   Synchronize and upgrade packages", SH_COL_DEFAULT);
-    sh_println(ctx, "  pkg clean / repo list  Manage cache and view package repositories", SH_COL_DEFAULT);
+    sh_println(ctx, "  pkg update / upgrade   Synchronize repository & upgrade packages", SH_COL_DEFAULT);
+    sh_println(ctx, "  pkg clean              Purge downloaded cache archives", SH_COL_DEFAULT);
+    sh_println(ctx, "  pkg repo [list|add]    Inspect or configure package repositories", SH_COL_DEFAULT);
+    sh_println(ctx, "=== End of Help (pkg) ===", SH_COL_INFO);
+}
+
+static void show_help_dev(shell_context_t *ctx) {
+    sh_println(ctx, "=== AstraOS Development & Toolchain ===", SH_COL_INFO);
+    sh_println(ctx, "  gcc / cc / tcc <src>   Compile C language programs to native ELF64", SH_COL_DEFAULT);
+    sh_println(ctx, "  python / py <script>   Execute Python code or scripts", SH_COL_DEFAULT);
+    sh_println(ctx, "  git <init|status|add>  AstraOS native Git version control", SH_COL_DEFAULT);
+    sh_println(ctx, "  make                   Rule-based build automation engine", SH_COL_DEFAULT);
+    sh_println(ctx, "  ld / ar                ELF object linker and archive manager", SH_COL_DEFAULT);
+    sh_println(ctx, "  sha256sum / md5sum     Cryptographic hash computation", SH_COL_DEFAULT);
+    sh_println(ctx, "  tar / gzip / gunzip    Archive and compression tools", SH_COL_DEFAULT);
+    sh_println(ctx, "  zip / unzip            Zip archive creation and decompression", SH_COL_DEFAULT);
+    sh_println(ctx, "=== End of Help (dev) ===", SH_COL_INFO);
+}
+
+static void show_help_power(shell_context_t *ctx) {
+    sh_println(ctx, "=== AstraOS Power & Session Lifecycle ===", SH_COL_INFO);
+    sh_println(ctx, "  shutdown [-r|-h]       ACPI S5 system power-off (-r to reboot)", SH_COL_DEFAULT);
+    sh_println(ctx, "  poweroff / halt        ACPI S5 hardware power-off", SH_COL_DEFAULT);
+    sh_println(ctx, "  reboot                 Hardware restart via 8042 reset & ACPI", SH_COL_DEFAULT);
+    sh_println(ctx, "  suspend / sleep        ACPI sleep power state transition", SH_COL_DEFAULT);
+    sh_println(ctx, "  lock                   Lock screen (authenticate with user password)", SH_COL_DEFAULT);
+    sh_println(ctx, "  unlock <password>      Unlock active desktop session", SH_COL_DEFAULT);
+    sh_println(ctx, "  logout                 Terminate current desktop session", SH_COL_DEFAULT);
+    sh_println(ctx, "  users / sessions / id  User account and session inspection", SH_COL_DEFAULT);
+    sh_println(ctx, "=== End of Help (power) ===", SH_COL_INFO);
+}
+
+static void show_help_all(shell_context_t *ctx) {
+    show_help_core(ctx);
+    sh_println(ctx, "", SH_COL_DEFAULT);
+    show_help_fs(ctx);
+    sh_println(ctx, "", SH_COL_DEFAULT);
+    show_help_text(ctx);
+    sh_println(ctx, "", SH_COL_DEFAULT);
+    show_help_sys(ctx);
+    sh_println(ctx, "", SH_COL_DEFAULT);
+    show_help_net(ctx);
+    sh_println(ctx, "", SH_COL_DEFAULT);
+    show_help_pkg(ctx);
+    sh_println(ctx, "", SH_COL_DEFAULT);
+    show_help_dev(ctx);
+    sh_println(ctx, "", SH_COL_DEFAULT);
+    show_help_power(ctx);
+    sh_println(ctx, "\n==================================================================", SH_COL_INFO);
+    sh_println(ctx, "  AstraOS 2.0 Command Architecture — 139 Native Commands Registered", SH_COL_PROMPT);
+    sh_println(ctx, "  Navigation: Use PgUp/PgDn or Mouse Wheel to scroll 4,096 lines", SH_COL_DEFAULT);
+    sh_println(ctx, "=== End of Universal Command Reference ===", SH_COL_INFO);
+}
+
+static void show_help_index(shell_context_t *ctx) {
+    sh_println(ctx, "=== AstraOS Universal Command Index (139 Commands) ===", SH_COL_INFO);
+    sh_println(ctx, "Available Command Categories:", SH_COL_PROMPT);
+    sh_println(ctx, "  help core    - Shell builtins, environment, variables, navigation", SH_COL_DEFAULT);
+    sh_println(ctx, "  help fs      - Filesystem operations, directory & file inspection", SH_COL_DEFAULT);
+    sh_println(ctx, "  help text    - Text filters, streams, formatting, searching", SH_COL_DEFAULT);
+    sh_println(ctx, "  help sys     - System status, CPU, memory, processes & monitoring", SH_COL_DEFAULT);
+    sh_println(ctx, "  help net     - Network config, ping, DNS resolution, HTTP/TLS", SH_COL_DEFAULT);
+    sh_println(ctx, "  help pkg     - Package manager (search, install, update, repos)", SH_COL_DEFAULT);
+    sh_println(ctx, "  help dev     - Development toolchain (gcc, python, git, make)", SH_COL_DEFAULT);
+    sh_println(ctx, "  help power   - Power states, shutdown, reboot, lock & session", SH_COL_DEFAULT);
+    sh_println(ctx, "  help all     - Complete 139-command universal reference list", SH_COL_DEFAULT);
+    sh_println(ctx, "\nQuick Commands:", SH_COL_PROMPT);
+    sh_println(ctx, "  clear        - Clear terminal display", SH_COL_DEFAULT);
+    sh_println(ctx, "  help <cmd>   - Display detailed syntax for any specific command", SH_COL_DEFAULT);
+    sh_println(ctx, "  shutdown     - Genuine ACPI S5 guest power-off", SH_COL_DEFAULT);
+    sh_println(ctx, "  reboot       - Hardware restart via 8042 controller", SH_COL_DEFAULT);
+    sh_println(ctx, "------------------------------------------------------------------", SH_COL_MUTED);
+    sh_println(ctx, "  Tip: Scrollback buffer holds 4,096 lines (PgUp/PgDn or Mouse Wheel)", SH_COL_MUTED);
+    sh_println(ctx, "=== End of Help Index (Type 'help <category>' or 'help <cmd>') ===", SH_COL_INFO);
+}
+
+static int cmd_help(shell_context_t *ctx, int argc, char **argv) {
+    if (argc > 1) {
+        const char *c = argv[1];
+        /* Check category aliases */
+        if (sh_strcmp(c, "core") == 0 || sh_strcmp(c, "shell") == 0) {
+            show_help_core(ctx);
+            return 0;
+        } else if (sh_strcmp(c, "fs") == 0 || sh_strcmp(c, "file") == 0 || sh_strcmp(c, "files") == 0) {
+            show_help_fs(ctx);
+            return 0;
+        } else if (sh_strcmp(c, "text") == 0) {
+            show_help_text(ctx);
+            return 0;
+        } else if (sh_strcmp(c, "sys") == 0 || sh_strcmp(c, "proc") == 0) {
+            show_help_sys(ctx);
+            return 0;
+        } else if (sh_strcmp(c, "net") == 0 || sh_strcmp(c, "network") == 0) {
+            show_help_net(ctx);
+            return 0;
+        } else if (sh_strcmp(c, "pkg") == 0 || sh_strcmp(c, "package") == 0) {
+            show_help_pkg(ctx);
+            return 0;
+        } else if (sh_strcmp(c, "dev") == 0 || sh_strcmp(c, "devel") == 0) {
+            show_help_dev(ctx);
+            return 0;
+        } else if (sh_strcmp(c, "power") == 0) {
+            show_help_power(ctx);
+            return 0;
+        } else if (sh_strcmp(c, "all") == 0) {
+            show_help_all(ctx);
+            return 0;
+        }
+
+        /* Specific command syntax */
+        if (sh_strcmp(c, "ls") == 0) {
+            sh_println(ctx, "ls [-l] [-a] [-h] [path] - List directory contents", SH_COL_INFO);
+            sh_println(ctx, "  -l: long listing with permissions, size, date", SH_COL_DEFAULT);
+            sh_println(ctx, "  -a: include hidden files starting with .", SH_COL_DEFAULT);
+            sh_println(ctx, "  -h: human-readable file sizes (K, M, G)", SH_COL_DEFAULT);
+            sh_println(ctx, "=== End of Help (ls) ===", SH_COL_INFO);
+        } else if (sh_strcmp(c, "cd") == 0) {
+            sh_println(ctx, "cd [- | ~ | path] - Change working directory", SH_COL_INFO);
+            sh_println(ctx, "  -: switch to previous directory", SH_COL_DEFAULT);
+            sh_println(ctx, "  ~: change to user home directory (/data or /root)", SH_COL_DEFAULT);
+            sh_println(ctx, "=== End of Help (cd) ===", SH_COL_INFO);
+        } else if (sh_strcmp(c, "cat") == 0) {
+            sh_println(ctx, "cat [file...] - Concatenate and display file contents", SH_COL_INFO);
+            sh_println(ctx, "=== End of Help (cat) ===", SH_COL_INFO);
+        } else if (sh_strcmp(c, "grep") == 0) {
+            sh_println(ctx, "grep [-n] [-i] [-v] <pattern> [file] - Search text for pattern", SH_COL_INFO);
+            sh_println(ctx, "  -n: show 1-based line numbers", SH_COL_DEFAULT);
+            sh_println(ctx, "  -i: case-insensitive matching", SH_COL_DEFAULT);
+            sh_println(ctx, "  -v: invert match (show lines NOT matching pattern)", SH_COL_DEFAULT);
+            sh_println(ctx, "=== End of Help (grep) ===", SH_COL_INFO);
+        } else if (sh_strcmp(c, "shutdown") == 0) {
+            sh_println(ctx, "shutdown [-r|-h] - Perform genuine ACPI S5 power-off or reboot", SH_COL_INFO);
+            sh_println(ctx, "  -h: halt and power off system (default)", SH_COL_DEFAULT);
+            sh_println(ctx, "  -r: reboot system cleanly", SH_COL_DEFAULT);
+            sh_println(ctx, "=== End of Help (shutdown) ===", SH_COL_INFO);
+        } else if (sh_strcmp(c, "reboot") == 0) {
+            sh_println(ctx, "reboot - Restart the machine via 8042 controller and ACPI reset", SH_COL_INFO);
+            sh_println(ctx, "=== End of Help (reboot) ===", SH_COL_INFO);
+        } else if (sh_strcmp(c, "lock") == 0 || sh_strcmp(c, "unlock") == 0) {
+            sh_println(ctx, "lock / unlock <pass> - Desktop session security management", SH_COL_INFO);
+            sh_println(ctx, "  lock: secure screen with password challenge", SH_COL_DEFAULT);
+            sh_println(ctx, "  unlock <password>: verify password and resume session", SH_COL_DEFAULT);
+            sh_println(ctx, "=== End of Help (lock/unlock) ===", SH_COL_INFO);
+        } else if (sh_strcmp(c, "ping") == 0) {
+            sh_println(ctx, "ping [-c count] <ip|host> - Send ICMP Echo requests to network host", SH_COL_INFO);
+            sh_println(ctx, "=== End of Help (ping) ===", SH_COL_INFO);
+        } else if (sh_strcmp(c, "curl") == 0 || sh_strcmp(c, "wget") == 0) {
+            sh_println(ctx, "curl [-I] [-o file] <url> - Fetch web resources over HTTP/HTTPS/TLS 1.3", SH_COL_INFO);
+            sh_println(ctx, "=== End of Help (curl) ===", SH_COL_INFO);
+        } else if (sh_strcmp(c, "python") == 0 || sh_strcmp(c, "py") == 0) {
+            sh_println(ctx, "python [script.py] [-c code] - AstraOS Python execution environment", SH_COL_INFO);
+            sh_println(ctx, "=== End of Help (python) ===", SH_COL_INFO);
+        } else if (sh_strcmp(c, "gcc") == 0 || sh_strcmp(c, "cc") == 0) {
+            sh_println(ctx, "gcc [-o out] <source.c> - Compile C program to native ELF64 executable", SH_COL_INFO);
+            sh_println(ctx, "=== End of Help (gcc) ===", SH_COL_INFO);
+        } else if (sh_strcmp(c, "git") == 0) {
+            sh_println(ctx, "git <init|status|add|commit|log|diff|branch> - Git version control", SH_COL_INFO);
+            sh_println(ctx, "=== End of Help (git) ===", SH_COL_INFO);
+        } else {
+            sh_print(ctx, "Help for '", SH_COL_INFO);
+            sh_print(ctx, c, SH_COL_PROMPT);
+            sh_println(ctx, "': Registered AstraOS command.", SH_COL_INFO);
+            sh_println(ctx, "Type 'help <category>' or 'help all' for full reference.", SH_COL_DEFAULT);
+            sh_print(ctx, "=== End of Help (", SH_COL_INFO);
+            sh_print(ctx, c, SH_COL_PROMPT);
+            sh_println(ctx, ") ===", SH_COL_INFO);
+        }
+        return 0;
+    }
+
+    show_help_index(ctx);
     return 0;
 }
 
@@ -502,8 +683,13 @@ static int cmd_pwd(shell_context_t *ctx, int argc, char **argv) {
 
 static int cmd_whoami(shell_context_t *ctx, int argc, char **argv) {
     (void)argc; (void)argv;
-    const char *user = shell_getenv(ctx, "USER");
-    sh_println(ctx, user ? user : "root", SH_COL_PROMPT);
+    session_t *s = session_get_active();
+    if (s && s->username[0]) {
+        sh_println(ctx, s->username, SH_COL_PROMPT);
+    } else {
+        const char *user = shell_getenv(ctx, "USER");
+        sh_println(ctx, user ? user : "akash", SH_COL_PROMPT);
+    }
     return 0;
 }
 
@@ -2860,6 +3046,13 @@ static int cmd_pkg(shell_context_t *ctx, int argc, char **argv) {
     } else if (sh_strcmp(sub, "clean") == 0) {
         return pkg_clean(ctx->out_fn, ctx->out_ctx);
     } else if (sh_strcmp(sub, "repo") == 0) {
+        if (argc > 2 && sh_strcmp(argv[2], "add") == 0) {
+            if (argc < 4) {
+                sh_println(ctx, "Usage: pkg repo add <url>", SH_COL_WARN);
+                return 1;
+            }
+            return pkg_repo_add(argv[3], ctx->out_fn, ctx->out_ctx);
+        }
         return pkg_repo_list(ctx->out_fn, ctx->out_ctx);
     } else {
         sh_println(ctx, "pkg: unknown action. Type 'pkg' for syntax.", SH_COL_ERR);
@@ -2868,8 +3061,17 @@ static int cmd_pkg(shell_context_t *ctx, int argc, char **argv) {
 }
 
 static int cmd_terminal(shell_context_t *ctx, int argc, char **argv) {
-    (void)ctx; (void)argc; (void)argv;
-    app_terminal_launch();
+    (void)ctx;
+    if (argc > 1) {
+        char full_cmd[SHELL_LINE_MAX] = {0};
+        for (int i = 1; i < argc; i++) {
+            if (i > 1) sh_strcat(full_cmd, " ", sizeof(full_cmd));
+            sh_strcat(full_cmd, argv[i], sizeof(full_cmd));
+        }
+        app_terminal_launch_with_command(full_cmd);
+    } else {
+        app_terminal_launch();
+    }
     return 0;
 }
 
@@ -2967,6 +3169,8 @@ static int cmd_sh_exec(shell_context_t *ctx, int argc, char **argv) {
 /* Command Table & Execution Pipeline Engine                                 */
 /* ========================================================================= */
 
+#include "shell_cmds.c"
+
 static const shell_cmd_entry_t g_builtins[] = {
     { "help",        cmd_help },
     { "clear",       cmd_clear },
@@ -3057,6 +3261,89 @@ static const shell_cmd_entry_t g_builtins[] = {
     { "gcc",         cmd_cc },
     { "sh",          cmd_sh_exec },
     { "bash",        cmd_sh_exec },
+
+    /* Category A: Basic Shell Utilities */
+    { "whereis",     cmd_whereis },
+    { "printenv",    cmd_printenv },
+    { "export",      cmd_export },
+    { "unset",       cmd_unset },
+    { "yes",         cmd_yes },
+
+    /* Category B: File & Text Processing */
+    { "more",        cmd_more },
+    { "less",        cmd_less },
+    { "cmp",         cmd_cmp },
+    { "comm",        cmd_comm },
+    { "xargs",       cmd_xargs },
+    { "od",          cmd_od },
+    { "split",       cmd_split },
+    { "join",        cmd_join },
+    { "sed",         cmd_sed },
+    { "awk",         cmd_awk },
+
+    /* Category C: Filesystem & Storage */
+    { "sync",        cmd_sync },
+    { "chmod",       cmd_chmod },
+    { "chown",       cmd_chown },
+    { "ln",          cmd_ln },
+    { "mktemp",      cmd_mktemp },
+    { "truncate",    cmd_truncate },
+
+    /* Category D: Process & System Monitoring */
+    { "kill",        cmd_kill },
+    { "jobs",        cmd_jobs },
+    { "fg",          cmd_fg },
+    { "bg",          cmd_bg },
+    { "nice",        cmd_nice },
+    { "renice",      cmd_renice },
+    { "vmstat",      cmd_vmstat },
+    { "time",        cmd_time },
+    { "watch",       cmd_watch },
+    { "pgrep",       cmd_pgrep },
+    { "pkill",       cmd_pkill },
+
+    /* Category E: Network Utilities */
+    { "ss",          cmd_ss },
+    { "dig",         cmd_dig },
+    { "host",        cmd_host },
+    { "traceroute",  cmd_traceroute },
+    { "arp",         cmd_arp },
+    { "route",       cmd_route },
+
+    /* Category F: Archives & Checksums */
+    { "sha256sum",   cmd_sha256sum },
+    { "md5sum",      cmd_md5sum },
+    { "base64",      cmd_base64 },
+    { "tar",         cmd_tar },
+    { "gzip",        cmd_gzip },
+    { "gunzip",      cmd_gunzip },
+    { "zip",         cmd_zip },
+    { "unzip",       cmd_unzip },
+
+    /* Category G: Development & Tooling */
+    { "ld",          cmd_ld },
+    { "ar",          cmd_ar },
+    { "make",        cmd_make },
+    { "git",         cmd_git },
+
+    /* Category H: System & Power Lifecycle */
+    { "shutdown",    cmd_shutdown },
+    { "poweroff",    cmd_poweroff },
+    { "reboot",      cmd_reboot },
+    { "halt",        cmd_halt },
+    { "logout",      cmd_logout },
+    { "lock",        cmd_lock },
+    { "unlock",      cmd_unlock },
+    { "suspend",     cmd_suspend },
+
+    /* Category I: User Identity & Session Management */
+    { "id",          cmd_id },
+    { "su",          cmd_su },
+    { "users",       cmd_users },
+    { "sessions",    cmd_sessions },
+    { "useradd",     cmd_useradd },
+    { "passwd",      cmd_passwd },
+
     { NULL,          NULL }
 };
 
@@ -3064,9 +3351,16 @@ static const shell_cmd_entry_t g_builtins[] = {
 static void expand_variables(shell_context_t *ctx, const char *in, char *out, size_t max) {
     if (!in || !out || max == 0) return;
     size_t o = 0;
+    bool in_single_quote = false;
 
     for (size_t i = 0; in[i] && o < max - 1; ) {
-        if (in[i] == '$') {
+        if (in[i] == '\'') {
+            in_single_quote = !in_single_quote;
+            out[o++] = in[i++];
+            continue;
+        }
+
+        if (in[i] == '$' && !in_single_quote) {
             i++;
             if (in[i] == '?') {
                 i++;
@@ -3100,9 +3394,15 @@ static void expand_variables(shell_context_t *ctx, const char *in, char *out, si
             var_name[vp] = '\0';
             if (braced && in[i] == '}') i++;
 
-            const char *val = shell_getenv(ctx, var_name);
-            if (val) {
-                for (int v = 0; val[v] && o < max - 1; v++) out[o++] = val[v];
+            if (vp == 0) {
+                /* Not an environment variable name; preserve literal '$' */
+                out[o++] = '$';
+                if (braced && o < max - 1) out[o++] = '{';
+            } else {
+                const char *val = shell_getenv(ctx, var_name);
+                if (val) {
+                    for (int v = 0; val[v] && o < max - 1; v++) out[o++] = val[v];
+                }
             }
         } else {
             out[o++] = in[i++];
@@ -3652,6 +3952,108 @@ int shell_execute(shell_context_t *ctx, const char *raw_line) {
     return last_status;
 }
 
+int shell_complete(shell_context_t *ctx, const char *prefix, bool is_cmd, char *out_match, size_t max_len) {
+    if (!ctx || !prefix || !out_match || max_len == 0) return 0;
+    out_match[0] = '\0';
+    size_t plen = sh_strlen(prefix);
+    int match_count = 0;
+
+    if (is_cmd) {
+        for (int i = 0; g_builtins[i].name != NULL; i++) {
+            const char *name = g_builtins[i].name;
+            if (sh_strncmp(name, prefix, plen) == 0) {
+                match_count++;
+                if (match_count == 1) {
+                    sh_strcpy(out_match, name, max_len);
+                } else {
+                    size_t k = 0;
+                    while (k < max_len - 1 && out_match[k] && name[k] && out_match[k] == name[k]) {
+                        k++;
+                    }
+                    out_match[k] = '\0';
+                }
+            }
+        }
+        vfs_dirent_t ent;
+        for (size_t idx = 0; vfs_readdir("/bin", idx, &ent) == VFS_OK; idx++) {
+            if (sh_strncmp(ent.name, prefix, plen) == 0) {
+                match_count++;
+                if (match_count == 1) {
+                    sh_strcpy(out_match, ent.name, max_len);
+                } else {
+                    size_t k = 0;
+                    while (k < max_len - 1 && out_match[k] && ent.name[k] && out_match[k] == ent.name[k]) {
+                        k++;
+                    }
+                    out_match[k] = '\0';
+                }
+            }
+        }
+    } else {
+        char dir_path[SHELL_PATH_MAX];
+        char base_prefix[VFS_MAX_NAME_LEN];
+        const char *last_slash = NULL;
+        for (const char *p = prefix; *p; p++) {
+            if (*p == '/') last_slash = p;
+        }
+
+        if (last_slash) {
+            size_t dlen = (size_t)(last_slash - prefix);
+            if (dlen == 0) {
+                sh_strcpy(dir_path, "/", sizeof(dir_path));
+            } else {
+                if (dlen >= sizeof(dir_path)) dlen = sizeof(dir_path) - 1;
+                kmemcpy(dir_path, prefix, dlen);
+                dir_path[dlen] = '\0';
+            }
+            sh_strcpy(base_prefix, last_slash + 1, sizeof(base_prefix));
+        } else {
+            sh_strcpy(dir_path, ctx->cwd, sizeof(dir_path));
+            sh_strcpy(base_prefix, prefix, sizeof(base_prefix));
+        }
+
+        size_t bplen = sh_strlen(base_prefix);
+        vfs_dirent_t ent;
+        char matched_name[VFS_MAX_NAME_LEN];
+        matched_name[0] = '\0';
+        bool is_dir = false;
+
+        for (size_t idx = 0; vfs_readdir(dir_path, idx, &ent) == VFS_OK; idx++) {
+            if (sh_strncmp(ent.name, base_prefix, bplen) == 0) {
+                match_count++;
+                if (match_count == 1) {
+                    sh_strcpy(matched_name, ent.name, sizeof(matched_name));
+                    is_dir = (ent.type == VFS_NODE_DIR);
+                } else {
+                    size_t k = 0;
+                    while (k < sizeof(matched_name) - 1 && matched_name[k] && ent.name[k] && matched_name[k] == ent.name[k]) {
+                        k++;
+                    }
+                    matched_name[k] = '\0';
+                    is_dir = false;
+                }
+            }
+        }
+
+        if (match_count > 0) {
+            if (last_slash) {
+                size_t dlen = (size_t)(last_slash - prefix) + 1;
+                if (dlen >= max_len) dlen = max_len - 1;
+                kmemcpy(out_match, prefix, dlen);
+                out_match[dlen] = '\0';
+                sh_strcat(out_match, matched_name, max_len);
+            } else {
+                sh_strcpy(out_match, matched_name, max_len);
+            }
+            if (match_count == 1 && is_dir) {
+                sh_strcat(out_match, "/", max_len);
+            }
+        }
+    }
+
+    return match_count;
+}
+
 /* ========================================================================= */
 /* Unit and Qualification Self-Test for Shell Subsystem                      */
 /* ========================================================================= */
@@ -3756,6 +4158,51 @@ bool shell_self_test(void) {
         return false;
     }
     kprintf("  PASS: Interactive missing-command 3-option menu verified.\n");
+
+    /* 9. Shell Tab Autocompletion Engine */
+    kprintf("[SHELL TEST] 9. Testing command and path autocompletion...\n");
+    char c_match[64];
+    int c_count = shell_complete(&test_ctx, "cle", true, c_match, sizeof(c_match));
+    if (c_count != 1 || sh_strcmp(c_match, "clear") != 0) {
+        kprintf("[SHELL TEST FAIL] shell_complete for 'cle' failed! count=%d match='%s'\n", c_count, c_match);
+        return false;
+    }
+    c_count = shell_complete(&test_ctx, "whoa", true, c_match, sizeof(c_match));
+    if (c_count != 1 || sh_strcmp(c_match, "whoami") != 0) {
+        kprintf("[SHELL TEST FAIL] shell_complete for 'whoa' failed! count=%d match='%s'\n", c_count, c_match);
+        return false;
+    }
+    kprintf("  PASS: Command and path autocompletion verified.\n");
+
+    /* 10. User Security & Session Commands */
+    kprintf("[SHELL TEST] 10. Testing user identity, session commands, and lock/unlock...\n");
+    if (shell_execute(&test_ctx, "id") != 0) {
+        kprintf("[SHELL TEST FAIL] 'id' command execution failed!\n");
+        return false;
+    }
+    if (shell_execute(&test_ctx, "users") != 0) {
+        kprintf("[SHELL TEST FAIL] 'users' command execution failed!\n");
+        return false;
+    }
+    if (shell_execute(&test_ctx, "sessions") != 0) {
+        kprintf("[SHELL TEST FAIL] 'sessions' command execution failed!\n");
+        return false;
+    }
+    if (shell_execute(&test_ctx, "lock") != 0 || !session_is_locked()) {
+        kprintf("[SHELL TEST FAIL] 'lock' command failed to lock active session!\n");
+        return false;
+    }
+    /* Negative unlock attempt */
+    if (shell_execute(&test_ctx, "unlock badpass") == 0 || !session_is_locked()) {
+        kprintf("[SHELL TEST FAIL] 'unlock' with wrong password erroneously succeeded!\n");
+        return false;
+    }
+    /* Positive unlock attempt */
+    if (shell_execute(&test_ctx, "unlock astra") != 0 || session_is_locked()) {
+        kprintf("[SHELL TEST FAIL] 'unlock' with valid password failed!\n");
+        return false;
+    }
+    kprintf("  PASS: id, users, sessions, lock, and unlock CLI commands verified.\n");
 
     kprintf("[SHELL TEST] All Native Shell qualification tests passed successfully!\n");
     kprintf("ASTRA_NATIVE_SHELL_OK\n\n");

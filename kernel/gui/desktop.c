@@ -10,14 +10,30 @@
 #include <kernel/rtc.h>
 #include <kernel/net.h>
 #include <kernel/arch/x86_64/cpu.h>
+#include <kernel/power.h>
+#include <kernel/session.h>
+#include <kernel/user.h>
+#include <kernel/string.h>
+
+typedef enum {
+    DESKTOP_UI_NORMAL = 0,
+    DESKTOP_UI_LOCKED = 1,
+    DESKTOP_UI_LOGIN  = 2
+} desktop_ui_state_t;
 
 static struct {
     bool initialized;
     bool start_menu_open;
     bool power_menu_open;
-    int  confirm_action; /* 0 = none, 1 = restart, 2 = shutdown */
+    int  confirm_action; /* 0 = none, 1 = restart, 2 = shutdown, 3 = logout */
     int  screen_w;
     int  screen_h;
+    desktop_ui_state_t ui_state;
+    char pass_buffer[64];
+    int  pass_len;
+    char status_msg[64];
+    u32  status_col;
+    int  login_selected_user; /* index into accounts */
 } g_desktop = {0};
 
 static desktop_lifecycle_state_t g_desktop_lifecycle = DESKTOP_STATE_BOOTING;
@@ -39,29 +55,11 @@ bool desktop_is_initialized(void) {
 }
 
 static void sys_reboot(void) {
-    kprintf("[SYSTEM] Reboot requested. Resetting CPU via 8042/PCI...\n");
-    u8 temp;
-    do {
-        temp = inb(0x64);
-        if (temp & 1) inb(0x60);
-    } while (temp & 2);
-    outb(0x64, 0xFE);
-    io_wait();
-    outb(0xCF9, 0x02);
-    outb(0xCF9, 0x06);
-    io_wait();
-    struct { u16 limit; u64 base; } __attribute__((packed)) null_idt = {0, 0};
-    __asm__ volatile ("lidt %0; int3" : : "m"(null_idt));
-    halt_forever();
+    power_restart();
 }
 
 static void sys_shutdown(void) {
-    kprintf("[SYSTEM] Shutting down AstraOS via ACPI...\n");
-    outw(0x604, 0x2000);   /* QEMU */
-    outw(0xB004, 0x2000);  /* Bochs / older QEMU */
-    outw(0x4004, 0x3400);  /* VirtualBox */
-    outw(0x0600, 0x0034);  /* Cloud-hypervisor */
-    halt_forever();
+    power_shutdown();
 }
 
 void desktop_init(void) {
@@ -92,132 +90,149 @@ void desktop_init(void) {
 /* ========================================================================= */
 
 static void draw_icon_editor(gfx_surface_t *s, int x, int y) {
-    /* Modern Developer IDE: Midnight Indigo Squircle */
+    /* Modern Developer IDE / Code Studio: Deep Indigo Squircle */
     gfx_fill_rounded_rect(s, x, y, 44, 44, 11, 0x1E1B4B);
     gfx_draw_rounded_rect(s, x, y, 44, 44, 11, 0x4338CA);
     /* Specular lighting rim */
     gfx_fill_rect(s, x + 8, y + 1, 28, 1, 0x818CF8);
     gfx_fill_rect(s, x + 12, y + 2, 20, 1, 0xA5B4FC);
 
-    /* Electric Neon Syntax Chevrons: < / > */
-    /* Left bracket '<' */
-    gfx_draw_line(s, x + 13, y + 22, x + 18, y + 16, 0x38BDF8);
-    gfx_draw_line(s, x + 14, y + 22, x + 19, y + 16, 0x0EA5E9);
-    gfx_draw_line(s, x + 13, y + 22, x + 18, y + 28, 0x38BDF8);
-    gfx_draw_line(s, x + 14, y + 22, x + 19, y + 28, 0x0EA5E9);
+    /* Crisp White Document Sheet with Corner Fold */
+    gfx_fill_rounded_rect(s, x + 10, y + 8, 24, 28, 3, 0xF8FAFC);
+    /* Triangular Top-Right Corner Fold */
+    gfx_fill_rect(s, x + 28, y + 8, 6, 6, 0xCBD5E1);
+    gfx_draw_line(s, x + 28, y + 8, x + 34, y + 14, 0x94A3B8);
 
-    /* Slash '/' in vibrant violet */
-    gfx_draw_line(s, x + 23, y + 15, x + 19, y + 29, 0xC084FC);
-    gfx_draw_line(s, x + 24, y + 15, x + 20, y + 29, 0xA855F7);
+    /* Rich Syntax Highlight Bars */
+    /* Line 1: Keyword Blue & Identifier Slate */
+    gfx_fill_rect(s, x + 14, y + 13, 6, 2, 0x0284C7);
+    gfx_fill_rect(s, x + 22, y + 13, 8, 2, 0x334155);
 
-    /* Right bracket '>' */
-    gfx_draw_line(s, x + 30, y + 22, x + 25, y + 16, 0x38BDF8);
-    gfx_draw_line(s, x + 29, y + 22, x + 24, y + 16, 0x0EA5E9);
-    gfx_draw_line(s, x + 30, y + 22, x + 25, y + 28, 0x38BDF8);
-    gfx_draw_line(s, x + 29, y + 22, x + 24, y + 28, 0x0EA5E9);
+    /* Line 2: Function Amber & String Emerald */
+    gfx_fill_rect(s, x + 14, y + 18, 10, 2, 0xD97706);
+    gfx_fill_rect(s, x + 26, y + 18, 6, 2, 0x059669);
 
-    /* Glowing accent dot */
-    gfx_fill_rounded_rect(s, x + 32, y + 15, 3, 3, 1, 0xF59E0B);
+    /* Line 3: Operator Violet & Identifier */
+    gfx_fill_rect(s, x + 14, y + 23, 4, 2, 0x9333EA);
+    gfx_fill_rect(s, x + 20, y + 23, 11, 2, 0x334155);
+
+    /* Line 4: Comment Slate */
+    gfx_fill_rect(s, x + 14, y + 28, 12, 2, 0x64748B);
+
+    /* Overlaid Precision Stylus Pen on Bottom-Right */
+    gfx_draw_line(s, x + 34, y + 24, x + 28, y + 32, 0x94A3B8);
+    gfx_draw_line(s, x + 35, y + 24, x + 29, y + 32, 0xE2E8F0);
+    gfx_put_pixel(s, x + 27, y + 33, 0xF59E0B); /* Golden nib */
 }
 
 static void draw_icon_filemgr(gfx_surface_t *s, int x, int y) {
-    /* Fluent Oceanic Blue Squircle */
-    gfx_fill_rounded_rect(s, x, y, 44, 44, 11, 0x0369A1);
+    /* Modern Fluent Oceanic Blue Squircle */
+    gfx_fill_rounded_rect(s, x, y, 44, 44, 11, 0x082F49);
     gfx_draw_rounded_rect(s, x, y, 44, 44, 11, 0x0284C7);
     /* Specular lighting rim */
-    gfx_fill_rect(s, x + 8, y + 1, 28, 1, 0x7DD3FC);
-    gfx_fill_rect(s, x + 12, y + 2, 20, 1, 0xBAE6FD);
+    gfx_fill_rect(s, x + 8, y + 1, 28, 1, 0x38BDF8);
 
-    /* Folder Tab (Back) */
-    gfx_fill_rounded_rect(s, x + 8, y + 10, 14, 5, 2, 0x075985);
+    /* Back Folder Tab */
+    gfx_fill_rounded_rect(s, x + 7, y + 9, 15, 6, 2, 0x0369A1);
 
-    /* Main Folder Body (Back) */
-    gfx_fill_rounded_rect(s, x + 8, y + 13, 28, 22, 3, 0x0284C7);
+    /* Back Folder Body */
+    gfx_fill_rounded_rect(s, x + 7, y + 13, 30, 22, 3, 0x0284C7);
 
-    /* Crisp White Inner Sheet with code lines */
-    gfx_fill_rounded_rect(s, x + 12, y + 10, 20, 14, 2, 0xF8FAFC);
-    gfx_fill_rect(s, x + 15, y + 13, 10, 2, 0x38BDF8);
-    gfx_fill_rect(s, x + 15, y + 17, 14, 2, 0x10B981);
+    /* Inner Crisp Document Sheets Peeking Up */
+    gfx_fill_rounded_rect(s, x + 11, y + 10, 22, 14, 2, 0xF8FAFC);
+    gfx_fill_rect(s, x + 14, y + 13, 10, 2, 0x38BDF8);
+    gfx_fill_rect(s, x + 14, y + 17, 14, 2, 0x10B981);
 
-    /* Translucent Cyan Front Pocket with Specular Edge */
-    gfx_fill_rounded_rect(s, x + 8, y + 18, 28, 17, 3, 0x38BDF8);
-    gfx_draw_rounded_rect(s, x + 8, y + 18, 28, 17, 3, 0x7DD3FC);
-    gfx_fill_rect(s, x + 10, y + 19, 24, 1, 0xE0F2FE);
+    /* Radiant Sky-Blue Front Pocket Flap */
+    gfx_fill_rounded_rect(s, x + 7, y + 18, 30, 18, 3, 0x38BDF8);
+    gfx_draw_rounded_rect(s, x + 7, y + 18, 30, 18, 3, 0x7DD3FC);
+    /* Top Specular Rim on Flap */
+    gfx_fill_rect(s, x + 9, y + 19, 26, 1, 0xBAE6FD);
+    /* Bottom Subdued Pocket Shadow */
+    gfx_fill_rect(s, x + 9, y + 34, 26, 1, 0x0284C7);
 }
 
 static void draw_icon_browser(gfx_surface_t *s, int x, int y) {
-    /* Modern Deep Space Navy Squircle */
-    gfx_fill_rounded_rect(s, x, y, 44, 44, 11, 0x0B132B);
-    gfx_draw_rounded_rect(s, x, y, 44, 44, 11, 0x1C2541);
-    /* Specular highlight rim */
+    /* Orbital Compass Globe: Modern Twilight Navy Squircle */
+    gfx_fill_rounded_rect(s, x, y, 44, 44, 11, 0x060E22);
+    gfx_draw_rounded_rect(s, x, y, 44, 44, 11, 0x1E293B);
+    /* Specular lighting rim */
     gfx_fill_rect(s, x + 8, y + 1, 28, 1, 0x60A5FA);
 
-    /* Outer Compass / Dial Ring */
-    gfx_fill_rounded_rect(s, x + 8, y + 8, 28, 28, 14, 0x1E293B);
-    gfx_draw_rounded_rect(s, x + 8, y + 8, 28, 28, 14, 0xE2E8F0);
+    /* Polished Titanium Outer Dial Bezel Ring */
+    gfx_fill_rounded_rect(s, x + 7, y + 7, 30, 30, 15, 0x0F172A);
+    gfx_draw_rounded_rect(s, x + 7, y + 7, 30, 30, 15, 0xE2E8F0);
 
-    /* Inner Dial Face */
-    gfx_fill_rounded_rect(s, x + 10, y + 10, 24, 24, 12, 0x0F172A);
+    /* Deep Spherical Lens */
+    gfx_fill_rounded_rect(s, x + 9, y + 9, 26, 26, 13, 0x081226);
 
-    /* Cardinal ticks */
-    gfx_put_pixel(s, x + 22, y + 12, 0x94A3B8);
-    gfx_put_pixel(s, x + 22, y + 31, 0x94A3B8);
-    gfx_put_pixel(s, x + 12, y + 22, 0x94A3B8);
-    gfx_put_pixel(s, x + 31, y + 22, 0x94A3B8);
+    /* Latitude & Longitude Orbital Wireframe Rings */
+    gfx_draw_line(s, x + 11, y + 22, x + 33, y + 22, 0x1E3A8A);
+    gfx_draw_line(s, x + 22, y + 11, x + 22, y + 33, 0x1E3A8A);
+    gfx_draw_rounded_rect(s, x + 14, y + 11, 16, 22, 8, 0x1E3A8A);
 
-    /* North needle (Coral Red 3D Facet) */
+    /* Specular Glass Gloss Arc (Top-Left) */
+    gfx_draw_line(s, x + 13, y + 14, x + 18, y + 11, 0x93C5FD);
+    gfx_draw_line(s, x + 14, y + 13, x + 17, y + 12, 0xBAE6FD);
+
+    /* 3D Faceted Compass Rose Needle */
+    /* North Point (Vibrant Crimson Red) */
     gfx_draw_line(s, x + 22, y + 22, x + 29, y + 15, 0xEF4444);
     gfx_draw_line(s, x + 21, y + 22, x + 28, y + 15, 0xF87171);
     gfx_draw_line(s, x + 22, y + 21, x + 29, y + 14, 0xDC2626);
 
-    /* South needle (Cool Metallic Silver) */
+    /* South Point (Metallic Chrome Silver) */
     gfx_draw_line(s, x + 22, y + 22, x + 15, y + 29, 0xF8FAFC);
     gfx_draw_line(s, x + 23, y + 22, x + 16, y + 29, 0xCBD5E1);
 
-    /* Center brass pivot */
+    /* Polished Gold Center Pivot */
     gfx_fill_rounded_rect(s, x + 20, y + 20, 5, 5, 2, 0xF59E0B);
-    gfx_put_pixel(s, x + 22, y + 22, 0xFEF3C7);
+    gfx_put_pixel(s, x + 22, y + 22, 0xFFFFFF);
 }
 
 static void draw_icon_terminal(gfx_surface_t *s, int x, int y) {
-    /* Obsidian Black Squircle (Modern Hyper / Warp style) */
+    /* Obsidian Black Hyper-Terminal Squircle */
     gfx_fill_rounded_rect(s, x, y, 44, 44, 11, 0x090D16);
     gfx_draw_rounded_rect(s, x, y, 44, 44, 11, 0x1E293B);
     /* Specular lighting rim */
     gfx_fill_rect(s, x + 8, y + 1, 28, 1, 0x475569);
 
-    /* Inner Screen Bezel */
-    gfx_fill_rounded_rect(s, x + 6, y + 6, 32, 32, 5, 0x020617);
-    gfx_draw_rounded_rect(s, x + 6, y + 6, 32, 32, 5, 0x1E293B);
+    /* Inner CRT Screen Canvas */
+    gfx_fill_rounded_rect(s, x + 6, y + 7, 32, 30, 4, 0x020617);
+    gfx_draw_rounded_rect(s, x + 6, y + 7, 32, 30, 4, 0x0F172A);
 
-    /* Traffic-light header dots */
+    /* Header Mini Traffic Lights */
     gfx_fill_rounded_rect(s, x + 10, y + 10, 3, 3, 1, 0xEF4444);
     gfx_fill_rounded_rect(s, x + 15, y + 10, 3, 3, 1, 0xF59E0B);
     gfx_fill_rounded_rect(s, x + 20, y + 10, 3, 3, 1, 0x10B981);
 
-    /* Glowing Emerald Prompt: >_ */
-    gfx_draw_line(s, x + 11, y + 21, x + 16, y + 25, 0x10B981);
-    gfx_draw_line(s, x + 12, y + 21, x + 17, y + 25, 0x34D399);
-    gfx_draw_line(s, x + 16, y + 25, x + 11, y + 29, 0x10B981);
-    gfx_draw_line(s, x + 17, y + 25, x + 12, y + 29, 0x34D399);
+    /* Glowing Mint-Green Command Prompt: > */
+    gfx_draw_line(s, x + 10, y + 18, x + 14, y + 21, 0x10B981);
+    gfx_draw_line(s, x + 11, y + 18, x + 15, y + 21, 0x34D399);
+    gfx_draw_line(s, x + 14, y + 21, x + 10, y + 24, 0x10B981);
+    gfx_draw_line(s, x + 15, y + 21, x + 11, y + 24, 0x34D399);
 
-    /* Glowing Cyan Cursor Bar */
-    gfx_fill_rounded_rect(s, x + 20, y + 27, 10, 3, 1, 0x38BDF8);
-    gfx_fill_rect(s, x + 21, y + 28, 8, 1, 0xBAE6FD);
+    /* Solid Glowing Mint Cursor Block */
+    gfx_fill_rounded_rect(s, x + 17, y + 16, 6, 9, 1, 0x10B981);
+    gfx_fill_rect(s, x + 18, y + 17, 4, 7, 0x6EE7B7);
+
+    /* Secondary Line Output Preview Dots */
+    gfx_fill_rect(s, x + 10, y + 28, 8, 2, 0x0284C7);
+    gfx_fill_rect(s, x + 20, y + 28, 12, 2, 0x38BDF8);
 }
 
 static void draw_icon_settings(gfx_surface_t *s, int x, int y) {
     /* Precision Machined Titanium Squircle */
-    gfx_fill_rounded_rect(s, x, y, 44, 44, 11, 0x334155);
-    gfx_draw_rounded_rect(s, x, y, 44, 44, 11, 0x64748B);
+    gfx_fill_rounded_rect(s, x, y, 44, 44, 11, 0x1E293B);
+    gfx_draw_rounded_rect(s, x, y, 44, 44, 11, 0x334155);
     /* Specular lighting rim */
-    gfx_fill_rect(s, x + 8, y + 1, 28, 1, 0x94A3B8);
-    gfx_fill_rect(s, x + 12, y + 2, 20, 1, 0xCBD5E1);
+    gfx_fill_rect(s, x + 8, y + 1, 28, 1, 0x64748B);
+    gfx_fill_rect(s, x + 12, y + 2, 20, 1, 0x94A3B8);
 
-    /* Outer gear body */
-    gfx_fill_rounded_rect(s, x + 13, y + 13, 18, 18, 9, 0xE2E8F0);
+    /* Primary Machined Gear: Brushed Platinum Silver Body */
+    gfx_fill_rounded_rect(s, x + 12, y + 12, 20, 20, 10, 0xE2E8F0);
 
-    /* Cardinal & Diagonal 8-gear teeth */
+    /* 8 Precision Cog Teeth */
     gfx_fill_rounded_rect(s, x + 19, y + 8, 6, 28, 2, 0xE2E8F0);
     gfx_fill_rounded_rect(s, x + 8, y + 19, 28, 6, 2, 0xE2E8F0);
     gfx_fill_rounded_rect(s, x + 11, y + 11, 6, 6, 2, 0xE2E8F0);
@@ -225,86 +240,96 @@ static void draw_icon_settings(gfx_surface_t *s, int x, int y) {
     gfx_fill_rounded_rect(s, x + 11, y + 27, 6, 6, 2, 0xE2E8F0);
     gfx_fill_rounded_rect(s, x + 27, y + 27, 6, 6, 2, 0xE2E8F0);
 
-    /* Center axle inset */
-    gfx_fill_rounded_rect(s, x + 17, y + 17, 10, 10, 5, 0x1E293B);
-    gfx_draw_rounded_rect(s, x + 17, y + 17, 10, 10, 5, 0x475569);
+    /* Inner Concentric Bevel Groove */
+    gfx_fill_rounded_rect(s, x + 15, y + 15, 14, 14, 7, 0x475569);
 
-    /* Chrome axle pin */
-    gfx_fill_rounded_rect(s, x + 20, y + 20, 4, 4, 2, 0x94A3B8);
-    gfx_put_pixel(s, x + 21, y + 21, 0xFFFFFF);
+    /* Center Axle Inset */
+    gfx_fill_rounded_rect(s, x + 18, y + 18, 8, 8, 4, 0x0F172A);
+
+    /* Polished Chrome Center Hub Pin */
+    gfx_fill_rounded_rect(s, x + 20, y + 20, 4, 4, 2, 0xFFFFFF);
+
+    /* Secondary Interlocking Brass Cog (Top-Right) */
+    gfx_fill_rounded_rect(s, x + 28, y + 8, 8, 8, 4, 0xD97706);
+    gfx_draw_rounded_rect(s, x + 28, y + 8, 8, 8, 4, 0xF59E0B);
 }
 
 static void draw_icon_calc(gfx_surface_t *s, int x, int y) {
-    /* Modern Matte Charcoal Squircle (Fluent / iOS style) */
+    /* Modern Matte Charcoal Acrylic Squircle */
     gfx_fill_rounded_rect(s, x, y, 44, 44, 11, 0x18181B);
     gfx_draw_rounded_rect(s, x, y, 44, 44, 11, 0x27272A);
     /* Specular lighting rim */
     gfx_fill_rect(s, x + 8, y + 1, 28, 1, 0x52525B);
 
-    /* Recessed LCD Screen */
-    gfx_fill_rounded_rect(s, x + 8, y + 7, 28, 12, 3, 0x09090B);
-    gfx_draw_rounded_rect(s, x + 8, y + 7, 28, 12, 3, 0x27272A);
-    /* Mini LCD Digit */
-    gfx_draw_string(s, x + 26, y + 9, "0", 0x34D399, 0, true);
+    /* Recessed OLED Screen Readout */
+    gfx_fill_rounded_rect(s, x + 8, y + 7, 28, 11, 2, 0x06080E);
+    gfx_draw_rounded_rect(s, x + 8, y + 7, 28, 11, 2, 0x1E293B);
+    /* Glowing Digital Readout Digits */
+    gfx_draw_string(s, x + 12, y + 8, "123.4", 0x34D399, 0, true);
 
-    /* Keycaps: 4 Gray, 1 Signature Orange (+), 1 Emerald (=) */
-    gfx_fill_rounded_rect(s, x + 8, y + 22, 12, 8, 2, 0x27272A);
-    gfx_draw_string(s, x + 12, y + 22, "7", 0xE4E4E7, 0, true);
+    /* 4x4 Precision Keypad */
+    /* Row 1 */
+    gfx_fill_rounded_rect(s, x + 8, y + 20, 5, 4, 1, 0xEF4444);  /* C */
+    gfx_fill_rounded_rect(s, x + 15, y + 20, 5, 4, 1, 0x27272A); /* +/- */
+    gfx_fill_rounded_rect(s, x + 22, y + 20, 5, 4, 1, 0x27272A); /* % */
+    gfx_fill_rounded_rect(s, x + 29, y + 20, 7, 4, 1, 0xEA580C); /* / */
 
-    /* Signature Safety Orange Operator Key */
-    gfx_fill_rounded_rect(s, x + 24, y + 22, 12, 8, 2, 0xEA580C);
-    gfx_draw_rounded_rect(s, x + 24, y + 22, 12, 8, 2, 0xF97316);
-    gfx_draw_string(s, x + 28, y + 22, "+", 0xFFFFFF, 0, true);
+    /* Row 2 */
+    gfx_fill_rounded_rect(s, x + 8, y + 26, 5, 4, 1, 0x334155);  /* 7 */
+    gfx_fill_rounded_rect(s, x + 15, y + 26, 5, 4, 1, 0x334155); /* 8 */
+    gfx_fill_rounded_rect(s, x + 22, y + 26, 5, 4, 1, 0x334155); /* 9 */
+    gfx_fill_rounded_rect(s, x + 29, y + 26, 7, 4, 1, 0xEA580C); /* * */
 
-    gfx_fill_rounded_rect(s, x + 8, y + 32, 12, 8, 2, 0x27272A);
-    gfx_draw_string(s, x + 12, y + 32, "C", 0xF87171, 0, true);
+    /* Row 3 */
+    gfx_fill_rounded_rect(s, x + 8, y + 32, 5, 4, 1, 0x334155);  /* 4 */
+    gfx_fill_rounded_rect(s, x + 15, y + 32, 5, 4, 1, 0x334155); /* 5 */
+    gfx_fill_rounded_rect(s, x + 22, y + 32, 5, 4, 1, 0x334155); /* 6 */
+    gfx_fill_rounded_rect(s, x + 29, y + 32, 7, 4, 1, 0xEA580C); /* - */
 
-    /* Emerald Result Key */
-    gfx_fill_rounded_rect(s, x + 24, y + 32, 12, 8, 2, 0x10B981);
-    gfx_draw_rounded_rect(s, x + 24, y + 32, 12, 8, 2, 0x34D399);
-    gfx_draw_string(s, x + 28, y + 32, "=", 0xFFFFFF, 0, true);
+    /* Row 4 */
+    gfx_fill_rounded_rect(s, x + 8, y + 38, 12, 4, 1, 0x334155); /* 0 (wide) */
+    gfx_fill_rounded_rect(s, x + 22, y + 38, 5, 4, 1, 0x334155); /* . */
+    gfx_fill_rounded_rect(s, x + 29, y + 38, 7, 4, 1, 0x10B981); /* = */
 }
 
 static void draw_icon_sysmon(gfx_surface_t *s, int x, int y) {
     /* Space-Navy Telemetry Squircle */
-    gfx_fill_rounded_rect(s, x, y, 44, 44, 11, 0x0F172A);
-    gfx_draw_rounded_rect(s, x, y, 44, 44, 11, 0x334155);
+    gfx_fill_rounded_rect(s, x, y, 44, 44, 11, 0x0B0F19);
+    gfx_draw_rounded_rect(s, x, y, 44, 44, 11, 0x1E293B);
     /* Specular highlight rim */
     gfx_fill_rect(s, x + 8, y + 1, 28, 1, 0x38BDF8);
 
-    /* Inner Oscilloscope Grid */
-    gfx_fill_rounded_rect(s, x + 6, y + 6, 32, 32, 5, 0x020617);
-    gfx_draw_rounded_rect(s, x + 6, y + 6, 32, 32, 5, 0x1E293B);
+    /* Inner Oscilloscope CRT Grid */
+    gfx_fill_rounded_rect(s, x + 6, y + 7, 32, 30, 4, 0x020617);
+    gfx_draw_rounded_rect(s, x + 6, y + 7, 32, 30, 4, 0x0F2937);
 
-    /* Subdued grid markers */
-    gfx_put_pixel(s, x + 14, y + 14, 0x1E293B);
-    gfx_put_pixel(s, x + 22, y + 14, 0x1E293B);
-    gfx_put_pixel(s, x + 30, y + 14, 0x1E293B);
-    gfx_put_pixel(s, x + 14, y + 30, 0x1E293B);
-    gfx_put_pixel(s, x + 22, y + 30, 0x1E293B);
-    gfx_put_pixel(s, x + 30, y + 30, 0x1E293B);
+    /* Subdued Grid Reticle */
+    gfx_draw_line(s, x + 7, y + 22, x + 37, y + 22, 0x0B1F2D);
+    gfx_draw_line(s, x + 22, y + 8, x + 22, y + 36, 0x0B1F2D);
 
-    /* Glowing ECG Heartbeat Pulse */
-    gfx_draw_line(s, x + 8, y + 23, x + 14, y + 23, 0x06B6D4);
-    gfx_draw_line(s, x + 14, y + 23, x + 18, y + 13, 0x10B981);
-    gfx_draw_line(s, x + 15, y + 23, x + 19, y + 13, 0x34D399);
-    gfx_draw_line(s, x + 18, y + 13, x + 23, y + 32, 0x10B981);
-    gfx_draw_line(s, x + 19, y + 13, x + 24, y + 32, 0x34D399);
-    gfx_draw_line(s, x + 23, y + 32, x + 26, y + 18, 0x10B981);
-    gfx_draw_line(s, x + 26, y + 18, x + 36, y + 23, 0x06B6D4);
+    /* Glowing ECG Heartbeat Pulse Trace */
+    gfx_draw_line(s, x + 8, y + 22, x + 13, y + 22, 0x06B6D4);
+    gfx_draw_line(s, x + 13, y + 22, x + 15, y + 20, 0x10B981); /* P wave */
+    gfx_draw_line(s, x + 15, y + 20, x + 17, y + 24, 0x10B981); /* Q drop */
+    gfx_draw_line(s, x + 17, y + 24, x + 20, y + 12, 0x34D399); /* R peak */
+    gfx_draw_line(s, x + 18, y + 24, x + 21, y + 12, 0x6EE7B7);
+    gfx_draw_line(s, x + 20, y + 12, x + 23, y + 31, 0x10B981); /* S drop */
+    gfx_draw_line(s, x + 23, y + 31, x + 26, y + 20, 0x10B981); /* T wave */
+    gfx_draw_line(s, x + 26, y + 20, x + 29, y + 22, 0x06B6D4);
+    gfx_draw_line(s, x + 29, y + 22, x + 36, y + 22, 0x06B6D4);
 
-    /* Radiant peak glow dot */
-    gfx_fill_rounded_rect(s, x + 18, y + 12, 3, 3, 1, 0x6EE7B7);
+    /* Radiant Status Beacon LED */
+    gfx_fill_rounded_rect(s, x + 20, y + 11, 3, 3, 1, 0x6EE7B7);
 }
 
 static void draw_icon_pkgmgr(gfx_surface_t *s, int x, int y) {
-    /* Royal Indigo Software Center Squircle */
-    gfx_fill_rounded_rect(s, x, y, 44, 44, 11, 0x4338CA);
-    gfx_draw_rounded_rect(s, x, y, 44, 44, 11, 0x6366F1);
+    /* Royal Violet App Store Squircle */
+    gfx_fill_rounded_rect(s, x, y, 44, 44, 11, 0x2E1065);
+    gfx_draw_rounded_rect(s, x, y, 44, 44, 11, 0x4C1D95);
     /* Specular lighting rim */
-    gfx_fill_rect(s, x + 8, y + 1, 28, 1, 0xA5B4FC);
+    gfx_fill_rect(s, x + 8, y + 1, 28, 1, 0xA855F7);
 
-    /* 3D Isometric Software Cube */
+    /* 3D Isometric Software Container */
     /* Top Diamond Facet */
     gfx_fill_rounded_rect(s, x + 12, y + 11, 20, 8, 2, 0x38BDF8);
     gfx_draw_rounded_rect(s, x + 12, y + 11, 20, 8, 2, 0x7DD3FC);
@@ -313,33 +338,28 @@ static void draw_icon_pkgmgr(gfx_surface_t *s, int x, int y) {
     gfx_fill_rounded_rect(s, x + 12, y + 18, 20, 16, 2, 0x0284C7);
     gfx_draw_rounded_rect(s, x + 12, y + 18, 20, 16, 2, 0x0369A1);
 
-    /* Center seam ribbon */
-    gfx_fill_rect(s, x + 21, y + 11, 2, 23, 0x075985);
+    /* Center Gold Seam Ribbon */
+    gfx_fill_rect(s, x + 21, y + 11, 2, 23, 0xF59E0B);
 
-    /* Radiant White Install Arrow */
-    gfx_fill_rect(s, x + 21, y + 14, 2, 9, 0xFFFFFF);
-    gfx_draw_line(s, x + 19, y + 20, x + 22, y + 23, 0xFFFFFF);
-    gfx_draw_line(s, x + 24, y + 20, x + 22, y + 23, 0xFFFFFF);
+    /* Radiant White Download Arrow */
+    gfx_fill_rect(s, x + 21, y + 14, 2, 8, 0xFFFFFF);
+    gfx_draw_line(s, x + 18, y + 19, x + 22, y + 23, 0xFFFFFF);
+    gfx_draw_line(s, x + 25, y + 19, x + 22, y + 23, 0xFFFFFF);
 }
 
-/* Helper to render crisp frosted translucent badge for desktop labels */
+/* Helper to render clean modern floating label with crisp 1px drop shadow (macOS / Windows style) */
 static void draw_desktop_label(gfx_surface_t *s, int icon_x, int icon_w, int y, const char *text) {
     int len = 0;
     while (text[len]) len++;
     int text_w = len * 8;
     int cx = icon_x + icon_w / 2;
     int tx = cx - text_w / 2;
-    if (tx < 6) tx = 6;
-    int pill_w = text_w + 14;
-    int pill_x = tx - 7;
-    if (pill_x < 2) pill_x = 2;
-    int pill_h = 18;
-    int pill_y = y - 1;
+    if (tx < 4) tx = 4;
 
-    /* Frosted glass capsule background */
-    gfx_fill_rounded_rect(s, pill_x, pill_y, pill_w, pill_h, 5, 0x0C1322);
-    gfx_draw_rounded_rect(s, pill_x, pill_y, pill_w, pill_h, 5, 0x22304A);
-    gfx_draw_string(s, tx, y + 1, text, 0xF8FAFC, 0, true);
+    /* Crisp drop shadow */
+    gfx_draw_string(s, tx + 1, y + 1, text, 0x04060B, 0, true);
+    /* Pure white primary text */
+    gfx_draw_string(s, tx, y, text, 0xF8FAFC, 0, true);
 }
 
 /* ========================================================================= */
@@ -421,39 +441,40 @@ static void render_desktop_background(gfx_surface_t *bb) {
     /* 1. Restore the Cosmic Vista wallpaper */
     gfx_restore_wallpaper(bb);
 
-    /* 2. Desktop Application Icons (Left Columns) */
-    /* Column 1 (x = 24): Editor, Files, Browser, Terminal */
-    draw_icon_editor(bb, 24, 70);
-    draw_desktop_label(bb, 24, 44, 120, "Editor");
+    /* 2. Desktop Application Icons (Left Columns with generous modern spacing) */
+    /* Column 1 (x = 32): Editor, Files, Browser, Terminal */
+    draw_icon_editor(bb, 32, 60);
+    draw_desktop_label(bb, 32, 44, 114, "Editor");
 
-    draw_icon_filemgr(bb, 24, 150);
-    draw_desktop_label(bb, 24, 44, 200, "Files");
+    draw_icon_filemgr(bb, 32, 156);
+    draw_desktop_label(bb, 32, 44, 210, "Files");
 
-    draw_icon_browser(bb, 24, 230);
-    draw_desktop_label(bb, 24, 44, 280, "Browser");
+    draw_icon_browser(bb, 32, 252);
+    draw_desktop_label(bb, 32, 44, 306, "Browser");
 
-    draw_icon_terminal(bb, 24, 310);
-    draw_desktop_label(bb, 24, 44, 360, "Terminal");
+    draw_icon_terminal(bb, 32, 348);
+    draw_desktop_label(bb, 32, 44, 402, "Terminal");
 
-    /* Column 2 (x = 110): Settings, Calculator, Telemetry, Packages */
-    draw_icon_settings(bb, 110, 70);
-    draw_desktop_label(bb, 110, 44, 120, "Settings");
+    /* Column 2 (x = 140): Settings, Calculator, Telemetry, Packages */
+    draw_icon_settings(bb, 140, 60);
+    draw_desktop_label(bb, 140, 44, 114, "Settings");
 
-    draw_icon_calc(bb, 110, 150);
-    draw_desktop_label(bb, 110, 44, 200, "Calculator");
+    draw_icon_calc(bb, 140, 156);
+    draw_desktop_label(bb, 140, 44, 210, "Calculator");
 
-    draw_icon_sysmon(bb, 110, 230);
-    draw_desktop_label(bb, 110, 44, 280, "Telemetry");
+    draw_icon_sysmon(bb, 140, 252);
+    draw_desktop_label(bb, 140, 44, 306, "Telemetry");
 
-    draw_icon_pkgmgr(bb, 110, 310);
-    draw_desktop_label(bb, 110, 44, 360, "Packages");
+    draw_icon_pkgmgr(bb, 140, 348);
+    draw_desktop_label(bb, 140, 44, 402, "Packages");
 }
 
-static int g_tz_index = 0; /* 0=IST (+5:30), 1=UTC (+0:00), 2=EST (-5:00), 3=PST (-8:00) */
+static int g_tz_index = 0; /* 0=LOCAL (+0:00, native RTC), 1=IST (+5:30), 2=UTC (+0:00), 3=EST (-5:00), 4=PST (-8:00) */
 static const struct {
     const char *code;
     int offset_mins;
 } g_timezones[] = {
+    { "LOCAL", 0 },
     { "IST", 330 },
     { "UTC", 0 },
     { "EST", -300 },
@@ -581,21 +602,33 @@ static void render_top_panel(gfx_surface_t *bb) {
         gfx_fill_rounded_rect(bb, cur_rx + 8, 12, 8, 8, 4, 0x64748B);
         gfx_draw_string(bb, cur_rx + 20, 8, "No Link", GFX_COLOR_TEXT_MUTED, 0, true);
     }
+    cur_rx -= 8;
+
+    /* 5. User Identity chip: [dot] username */
+    session_t *cur_s = session_get_active();
+    const char *uname = cur_s ? cur_s->username : "akash";
+    int uchip_w = 28 + (int)kstrlen(uname) * 8;
+    cur_rx -= uchip_w;
+    gfx_fill_rounded_rect(bb, cur_rx, 4, uchip_w, 24, 5, 0x131A2B);
+    gfx_draw_rounded_rect(bb, cur_rx, 4, uchip_w, 24, 5, 0x223048);
+    gfx_fill_rounded_rect(bb, cur_rx + 8, 12, 8, 8, 4, 0x38BDF8);
+    gfx_draw_string(bb, cur_rx + 20, 8, uname, GFX_COLOR_TEXT_PRIMARY, 0, true);
 }
 
 static void render_bottom_dock(gfx_surface_t *bb) {
-    int dock_w = 420;
-    int dock_h = 52;
+    int dock_w = 432;
+    int dock_h = 56;
     int dock_x = (bb->width - dock_w) / 2;
-    int dock_y = bb->height - dock_h - 8;
+    int dock_y = bb->height - dock_h - 10;
 
-    /* Translucent rounded capsule base */
-    gfx_fill_rounded_rect(bb, dock_x, dock_y, dock_w, dock_h, 12, 0x0E1424);
-    gfx_draw_rounded_rect(bb, dock_x, dock_y, dock_w, dock_h, 12, 0x2A364F);
+    /* Translucent rounded capsule base with specular highlight */
+    gfx_fill_rounded_rect(bb, dock_x, dock_y, dock_w, dock_h, 14, 0x0E1424);
+    gfx_draw_rounded_rect(bb, dock_x, dock_y, dock_w, dock_h, 14, 0x2A364F);
+    gfx_draw_line(bb, dock_x + 14, dock_y + 1, dock_x + dock_w - 14, dock_y + 1, 0x3E4E6D);
 
     /* 8 Dock Apps */
     for (int i = 0; i < 8; i++) {
-        int app_x = dock_x + 10 + i * 50;
+        int app_x = dock_x + 8 + i * 52;
         int app_y = dock_y + 4;
 
         switch (i) {
@@ -609,9 +642,9 @@ static void render_bottom_dock(gfx_surface_t *bb) {
             case 7: draw_icon_pkgmgr(bb, app_x, app_y); break;
         }
 
-        /* Running Application Indicator Dot/Line */
+        /* Running Application Indicator Dot (clean circular dot centered under app) */
         if (is_app_running(i)) {
-            gfx_fill_rounded_rect(bb, app_x + 16, dock_y + dock_h - 4, 12, 2, 1, GFX_COLOR_ACCENT_CYAN);
+            gfx_fill_rounded_rect(bb, app_x + 20, dock_y + dock_h - 5, 4, 4, 2, 0x38BDF8);
         }
     }
 }
@@ -655,25 +688,280 @@ static void render_start_menu(gfx_surface_t *bb) {
     gfx_draw_string(bb, menu_x + 12, menu_y + 218, "AstraOS v1.0 Cosmic Vista", GFX_COLOR_TEXT_MUTED, 0, true);
 }
 
+/* Session Change Notification Callback from Session Manager */
+void desktop_notify_session_change(sid_t sid, session_state_t state) {
+    (void)sid;
+    if (state == SESSION_LOCKED) {
+        g_desktop.ui_state = DESKTOP_UI_LOCKED;
+        g_desktop.pass_len = 0;
+        g_desktop.pass_buffer[0] = '\0';
+        g_desktop.status_msg[0] = '\0';
+        g_desktop.power_menu_open = false;
+        g_desktop.start_menu_open = false;
+        g_desktop.confirm_action = 0;
+    } else if (state == SESSION_ACTIVE) {
+        g_desktop.ui_state = DESKTOP_UI_NORMAL;
+        g_desktop.pass_len = 0;
+        g_desktop.pass_buffer[0] = '\0';
+        g_desktop.status_msg[0] = '\0';
+        g_desktop.confirm_action = 0;
+    } else if (state == SESSION_TERMINATING || state == SESSION_UNUSED) {
+        g_desktop.ui_state = DESKTOP_UI_LOGIN;
+        g_desktop.pass_len = 0;
+        g_desktop.pass_buffer[0] = '\0';
+        g_desktop.status_msg[0] = '\0';
+        g_desktop.login_selected_user = 0;
+        g_desktop.power_menu_open = false;
+        g_desktop.start_menu_open = false;
+        g_desktop.confirm_action = 0;
+    }
+}
+
+static void render_lock_screen(gfx_surface_t *bb) {
+    /* 1. Base wallpaper background */
+    gfx_restore_wallpaper(bb);
+
+    /* 2. Security overlay tint */
+    for (int y = 0; y < bb->height; y += 4) {
+        gfx_fill_rect(bb, 0, y, bb->width, 2, 0x070B14);
+    }
+
+    session_t *s = session_get_active();
+    const char *uname = s ? s->username : "akash";
+    const char *rname = s ? s->realname : "Akash";
+
+    int card_w = 400;
+    int card_h = 320;
+    int cx = (bb->width - card_w) / 2;
+    int cy = (bb->height - card_h) / 2;
+
+    /* Card background & glow border */
+    gfx_fill_rounded_rect(bb, cx, cy, card_w, card_h, 12, 0x0B1222);
+    gfx_draw_rounded_rect(bb, cx, cy, card_w, card_h, 12, 0x0284C7);
+    gfx_draw_rounded_rect(bb, cx + 1, cy + 1, card_w - 2, card_h - 2, 11, 0x1E293B);
+
+    /* User Avatar Squircle emblem */
+    int av_x = cx + (card_w - 56) / 2;
+    int av_y = cy + 24;
+    gfx_fill_rounded_rect(bb, av_x, av_y, 56, 56, 16, 0x1E3A8A);
+    gfx_draw_rounded_rect(bb, av_x, av_y, 56, 56, 16, 0x38BDF8);
+    char init_str[2] = { (char)((rname[0] >= 'a' && rname[0] <= 'z') ? (rname[0] - 32) : rname[0]), '\0' };
+    gfx_draw_string(bb, av_x + 22, av_y + 18, init_str, 0x38BDF8, 0, true);
+
+    /* Real name & username */
+    int rn_len = (int)kstrlen(rname);
+    gfx_draw_string(bb, cx + (card_w - rn_len * 8) / 2, cy + 92, rname, 0xF8FAFC, 0, true);
+
+    char tag_str[64];
+    ksprintf(tag_str, "@%s  -  Session Locked", uname);
+    int tag_len = (int)kstrlen(tag_str);
+    gfx_draw_string(bb, cx + (card_w - tag_len * 8) / 2, cy + 112, tag_str, 0x94A3B8, 0, true);
+
+    /* Password Input Field */
+    int field_x = cx + 50;
+    int field_y = cy + 140;
+    int field_w = card_w - 100;
+    int field_h = 34;
+
+    gfx_fill_rounded_rect(bb, field_x, field_y, field_w, field_h, 6, 0x1E293B);
+    gfx_draw_rounded_rect(bb, field_x, field_y, field_w, field_h, 6, 0x38BDF8);
+
+    char masked[64];
+    int mask_len = g_desktop.pass_len;
+    if (mask_len > 30) mask_len = 30;
+    for (int i = 0; i < mask_len; i++) masked[i] = '*';
+    masked[mask_len] = '\0';
+
+    if (mask_len > 0) {
+        gfx_draw_string(bb, field_x + 12, field_y + 9, masked, 0xF8FAFC, 0, true);
+        static int blink = 0;
+        blink++;
+        if ((blink / 20) % 2 == 0) {
+            gfx_fill_rect(bb, field_x + 12 + mask_len * 8, field_y + 8, 2, 16, 0x38BDF8);
+        }
+    } else {
+        gfx_draw_string(bb, field_x + 12, field_y + 9, "Enter password...", 0x64748B, 0, true);
+    }
+
+    /* Action Buttons: Unlock & Switch User */
+    int btn_w = (field_w - 12) / 2;
+    int btn_y = cy + 188;
+
+    /* Unlock Button (Primary Blue) */
+    gfx_fill_rounded_rect(bb, field_x, btn_y, btn_w, 32, 6, 0x0284C7);
+    gfx_draw_rounded_rect(bb, field_x, btn_y, btn_w, 32, 6, 0x38BDF8);
+    gfx_draw_string(bb, field_x + (btn_w - 48) / 2, btn_y + 8, "Unlock", 0xFFFFFF, 0, true);
+
+    /* Switch User Button (Secondary Glass) */
+    int sw_x = field_x + btn_w + 12;
+    gfx_fill_rounded_rect(bb, sw_x, btn_y, btn_w, 32, 6, 0x1E293B);
+    gfx_draw_rounded_rect(bb, sw_x, btn_y, btn_w, 32, 6, 0x475569);
+    gfx_draw_string(bb, sw_x + (btn_w - 88) / 2, btn_y + 8, "Switch User", 0xE2E8F0, 0, true);
+
+    /* Status / Error Message */
+    if (g_desktop.status_msg[0]) {
+        int sm_len = (int)kstrlen(g_desktop.status_msg);
+        gfx_draw_string(bb, cx + (card_w - sm_len * 8) / 2, cy + 232, g_desktop.status_msg, g_desktop.status_col, 0, true);
+    } else {
+        gfx_draw_string(bb, cx + (card_w - 168) / 2, cy + 232, "Press Enter to unlock", 0x64748B, 0, true);
+    }
+
+    /* Bottom System Controls */
+    gfx_draw_line(bb, cx + 24, cy + 260, cx + card_w - 24, cy + 260, 0x1E293B);
+    gfx_draw_string(bb, cx + 60, cy + 276, "[ Restart ]", 0x38BDF8, 0, true);
+    gfx_draw_string(bb, cx + card_w - 160, cy + 276, "[ Shut Down ]", 0xF43F5E, 0, true);
+}
+
+static void render_login_screen(gfx_surface_t *bb) {
+    /* 1. Base wallpaper */
+    gfx_restore_wallpaper(bb);
+
+    /* 2. Dim entire screen */
+    for (int y = 0; y < bb->height; y += 4) {
+        gfx_fill_rect(bb, 0, y, bb->width, 2, 0x070B14);
+    }
+
+    int card_w = 460;
+    int card_h = 360;
+    int cx = (bb->width - card_w) / 2;
+    int cy = (bb->height - card_h) / 2;
+
+    /* Card background */
+    gfx_fill_rounded_rect(bb, cx, cy, card_w, card_h, 12, 0x0B1222);
+    gfx_draw_rounded_rect(bb, cx, cy, card_w, card_h, 12, 0x0284C7);
+    gfx_draw_rounded_rect(bb, cx + 1, cy + 1, card_w - 2, card_h - 2, 11, 0x1E293B);
+
+    /* Header */
+    gfx_draw_string(bb, cx + (card_w - 184) / 2, cy + 20, "AstraOS Display Manager", 0x38BDF8, 0, true);
+    gfx_draw_string(bb, cx + (card_w - 168) / 2, cy + 40, "Select account to sign in", 0x94A3B8, 0, true);
+
+    /* User Accounts List (Up to 3 tiles) */
+    user_account_t accounts[3];
+    int acc_count = user_list_accounts(accounts, 3);
+    if (acc_count < 1) {
+        acc_count = 1;
+        kstrncpy(accounts[0].username, "akash", USER_NAME_MAX - 1);
+        kstrncpy(accounts[0].realname, "Akash", USER_REALNAME_MAX - 1);
+    }
+
+    int tile_w = (card_w - 60 - (acc_count - 1) * 12) / acc_count;
+    int tile_h = 68;
+    int tile_y = cy + 70;
+
+    for (int i = 0; i < acc_count; i++) {
+        int tile_x = cx + 30 + i * (tile_w + 12);
+        bool is_sel = (g_desktop.login_selected_user == i);
+        u32 bg_col = is_sel ? 0x1E3A8A : 0x131A2B;
+        u32 bdr_col = is_sel ? 0x38BDF8 : 0x223048;
+
+        gfx_fill_rounded_rect(bb, tile_x, tile_y, tile_w, tile_h, 8, bg_col);
+        gfx_draw_rounded_rect(bb, tile_x, tile_y, tile_w, tile_h, 8, bdr_col);
+
+        char init_c = accounts[i].realname[0];
+        if (init_c >= 'a' && init_c <= 'z') init_c -= 32;
+        char istr[2] = { init_c, '\0' };
+        gfx_draw_string(bb, tile_x + 10, tile_y + 14, istr, is_sel ? 0x38BDF8 : 0x94A3B8, 0, true);
+
+        gfx_draw_string(bb, tile_x + 24, tile_y + 14, accounts[i].realname, 0xF8FAFC, 0, true);
+        char ustr[32];
+        ksprintf(ustr, "@%s", accounts[i].username);
+        gfx_draw_string(bb, tile_x + 24, tile_y + 36, ustr, 0x94A3B8, 0, true);
+    }
+
+    /* Password Input Field */
+    int field_x = cx + 50;
+    int field_y = cy + 160;
+    int field_w = card_w - 100;
+    int field_h = 34;
+
+    gfx_fill_rounded_rect(bb, field_x, field_y, field_w, field_h, 6, 0x1E293B);
+    gfx_draw_rounded_rect(bb, field_x, field_y, field_w, field_h, 6, 0x38BDF8);
+
+    char masked[64];
+    int mask_len = g_desktop.pass_len;
+    if (mask_len > 30) mask_len = 30;
+    for (int i = 0; i < mask_len; i++) masked[i] = '*';
+    masked[mask_len] = '\0';
+
+    if (mask_len > 0) {
+        gfx_draw_string(bb, field_x + 12, field_y + 9, masked, 0xF8FAFC, 0, true);
+        static int blink2 = 0;
+        blink2++;
+        if ((blink2 / 20) % 2 == 0) {
+            gfx_fill_rect(bb, field_x + 12 + mask_len * 8, field_y + 8, 2, 16, 0x38BDF8);
+        }
+    } else {
+        gfx_draw_string(bb, field_x + 12, field_y + 9, "Password for selected user...", 0x64748B, 0, true);
+    }
+
+    /* Sign In Button */
+    int sign_w = 140;
+    int sign_x = cx + (card_w - sign_w) / 2;
+    int sign_y = cy + 210;
+
+    gfx_fill_rounded_rect(bb, sign_x, sign_y, sign_w, 34, 6, 0x0284C7);
+    gfx_draw_rounded_rect(bb, sign_x, sign_y, sign_w, 34, 6, 0x38BDF8);
+    gfx_draw_string(bb, sign_x + (sign_w - 56) / 2, sign_y + 9, "Sign In", 0xFFFFFF, 0, true);
+
+    /* Status Message */
+    if (g_desktop.status_msg[0]) {
+        int sm_len = (int)kstrlen(g_desktop.status_msg);
+        gfx_draw_string(bb, cx + (card_w - sm_len * 8) / 2, cy + 260, g_desktop.status_msg, g_desktop.status_col, 0, true);
+    } else {
+        gfx_draw_string(bb, cx + (card_w - 232) / 2, cy + 260, "Enter password & click Sign In", 0x64748B, 0, true);
+    }
+
+    /* Bottom System Controls */
+    gfx_draw_line(bb, cx + 24, cy + 295, cx + card_w - 24, cy + 295, 0x1E293B);
+    gfx_draw_string(bb, cx + 80, cy + 315, "[ Restart ]", 0x38BDF8, 0, true);
+    gfx_draw_string(bb, cx + card_w - 180, cy + 315, "[ Shut Down ]", 0xF43F5E, 0, true);
+}
+
 static void render_power_menu(gfx_surface_t *bb) {
     if (!g_desktop.power_menu_open) return;
 
-    int menu_w = 150;
-    int menu_h = 136;
+    int menu_w = 236;
+    int menu_h = 182;
     int menu_x = bb->width - menu_w - 6;
     int menu_y = 34;
 
-    gfx_fill_rounded_rect(bb, menu_x, menu_y, menu_w, menu_h, 6, 0x101728);
-    gfx_draw_rounded_rect(bb, menu_x, menu_y, menu_w, menu_h, 6, GFX_COLOR_ACCENT_BLUE);
+    gfx_fill_rounded_rect(bb, menu_x, menu_y, menu_w, menu_h, 8, 0x0F172A);
+    gfx_draw_rounded_rect(bb, menu_x, menu_y, menu_w, menu_h, 8, GFX_COLOR_ACCENT_BLUE);
 
-    gfx_draw_string(bb, menu_x + 12, menu_y + 8, "Power & Session", GFX_COLOR_ACCENT_CYAN, 0, true);
+    gfx_draw_string(bb, menu_x + 12, menu_y + 8, "Power & Session Control", GFX_COLOR_ACCENT_CYAN, 0, true);
     gfx_draw_line(bb, menu_x + 8, menu_y + 24, menu_x + menu_w - 8, menu_y + 24, GFX_COLOR_PANEL_BORDER);
 
-    gfx_draw_string(bb, menu_x + 14, menu_y + 32, "Lock Screen", GFX_COLOR_TEXT_MUTED, 0, true);
-    gfx_draw_string(bb, menu_x + 14, menu_y + 52, "Log Out", GFX_COLOR_TEXT_PRIMARY, 0, true);
-    gfx_draw_string(bb, menu_x + 14, menu_y + 72, "Suspend", GFX_COLOR_TEXT_MUTED, 0, true);
-    gfx_draw_string(bb, menu_x + 14, menu_y + 92, "Restart...", GFX_COLOR_ACCENT_BLUE, 0, true);
-    gfx_draw_string(bb, menu_x + 14, menu_y + 112, "Shut Down...", GFX_COLOR_BTN_CLOSE, 0, true);
+    /* 1. Lock Screen (Active) */
+    gfx_fill_rounded_rect(bb, menu_x + 10, menu_y + 30, menu_w - 20, 22, 4, 0x1E293B);
+    gfx_draw_rounded_rect(bb, menu_x + 10, menu_y + 30, menu_w - 20, 22, 4, GFX_COLOR_ACCENT_BLUE);
+    gfx_draw_string(bb, menu_x + 18, menu_y + 34, "Lock Screen", GFX_COLOR_TEXT_PRIMARY, 0, true);
+    gfx_draw_string(bb, menu_x + 140, menu_y + 34, "[Ctrl+L]", 0x94A3B8, 0, true);
+
+    /* 2. Switch User (Active) */
+    gfx_fill_rounded_rect(bb, menu_x + 10, menu_y + 54, menu_w - 20, 22, 4, 0x1E293B);
+    gfx_draw_rounded_rect(bb, menu_x + 10, menu_y + 54, menu_w - 20, 22, 4, GFX_COLOR_ACCENT_BLUE);
+    gfx_draw_string(bb, menu_x + 18, menu_y + 58, "Switch User", GFX_COLOR_TEXT_PRIMARY, 0, true);
+
+    /* 3. Log Out (Active) */
+    gfx_fill_rounded_rect(bb, menu_x + 10, menu_y + 78, menu_w - 20, 22, 4, 0x1E293B);
+    gfx_draw_rounded_rect(bb, menu_x + 10, menu_y + 78, menu_w - 20, 22, 4, GFX_COLOR_ACCENT_BLUE);
+    gfx_draw_string(bb, menu_x + 18, menu_y + 82, "Log Out...", GFX_COLOR_TEXT_PRIMARY, 0, true);
+
+    /* 4. Sleep (Unavailable: S3 Unconfigured) */
+    gfx_draw_string(bb, menu_x + 18, menu_y + 104, "Sleep", GFX_COLOR_TEXT_MUTED, 0, true);
+    gfx_draw_string(bb, menu_x + 130, menu_y + 104, "[S3 Unavail]", 0x64748B, 0, true);
+
+    gfx_draw_line(bb, menu_x + 8, menu_y + 122, menu_x + menu_w - 8, menu_y + 122, GFX_COLOR_PANEL_BORDER);
+
+    /* 5. Restart... (Active) */
+    gfx_fill_rounded_rect(bb, menu_x + 10, menu_y + 128, menu_w - 20, 22, 4, 0x1E293B);
+    gfx_draw_rounded_rect(bb, menu_x + 10, menu_y + 128, menu_w - 20, 22, 4, 0x38BDF8);
+    gfx_draw_string(bb, menu_x + 18, menu_y + 132, "Restart...", 0x38BDF8, 0, true);
+
+    /* 6. Shut Down... (Active) */
+    gfx_fill_rounded_rect(bb, menu_x + 10, menu_y + 152, menu_w - 20, 22, 4, 0x1E293B);
+    gfx_draw_rounded_rect(bb, menu_x + 10, menu_y + 152, menu_w - 20, 22, 4, 0xF43F5E);
+    gfx_draw_string(bb, menu_x + 18, menu_y + 156, "Shut Down...", 0xF43F5E, 0, true);
 }
 
 static void render_confirm_dialog(gfx_surface_t *bb) {
@@ -687,8 +975,12 @@ static void render_confirm_dialog(gfx_surface_t *bb) {
     gfx_fill_rounded_rect(bb, dx, dy, dw, dh, 8, 0x0B1120);
     gfx_draw_rounded_rect(bb, dx, dy, dw, dh, 8, GFX_COLOR_ACCENT_BLUE);
 
-    const char *title = (g_desktop.confirm_action == 1) ? "Confirm System Restart" : "Confirm System Shutdown";
-    const char *prompt = (g_desktop.confirm_action == 1) ? "Restart AstraOS and reboot machine?" : "Power off computer completely via ACPI?";
+    const char *title = (g_desktop.confirm_action == 1) ? "Confirm System Restart" :
+                        (g_desktop.confirm_action == 2) ? "Confirm System Shutdown" :
+                        "Confirm Log Out";
+    const char *prompt = (g_desktop.confirm_action == 1) ? "Restart AstraOS and reboot machine?" :
+                         (g_desktop.confirm_action == 2) ? "Power off computer completely via ACPI?" :
+                         "Close active session and return to Login Screen?";
 
     gfx_draw_string(bb, dx + 16, dy + 12, title, GFX_COLOR_ACCENT_CYAN, 0, true);
     gfx_draw_line(bb, dx + 12, dy + 28, dx + dw - 12, dy + 28, GFX_COLOR_PANEL_BORDER);
@@ -708,6 +1000,26 @@ static void render_confirm_dialog(gfx_surface_t *bb) {
 void desktop_render(void) {
     gfx_surface_t *bb = gfx_get_backbuffer();
     if (!bb) return;
+
+    if (g_desktop.ui_state == DESKTOP_UI_LOCKED) {
+        render_lock_screen(bb);
+        render_confirm_dialog(bb);
+        int mx, my;
+        input_get_mouse_state(&mx, &my, NULL);
+        gfx_draw_cursor(bb, mx, my);
+        gfx_flip();
+        return;
+    }
+
+    if (g_desktop.ui_state == DESKTOP_UI_LOGIN) {
+        render_login_screen(bb);
+        render_confirm_dialog(bb);
+        int mx, my;
+        input_get_mouse_state(&mx, &my, NULL);
+        gfx_draw_cursor(bb, mx, my);
+        gfx_flip();
+        return;
+    }
 
     /* 1. Desktop Background Wallpaper & Icons */
     render_desktop_background(bb);
@@ -738,8 +1050,252 @@ void desktop_render(void) {
 }
 
 void desktop_handle_event(const input_event_t *ev) {
-    if (!ev) return;
+    if (!ev || power_is_in_progress()) return;
 
+    /* --------------------------------------------------------------------- */
+    /* State: LOCKED Screen                                                  */
+    /* --------------------------------------------------------------------- */
+    if (g_desktop.ui_state == DESKTOP_UI_LOCKED) {
+        int card_w = 400;
+        int card_h = 320;
+        int cx = (g_desktop.screen_w - card_w) / 2;
+        int cy = (g_desktop.screen_h - card_h) / 2;
+
+        if (ev->type == INPUT_EVENT_MOUSE_DOWN) {
+            int mx = ev->mouse.x;
+            int my = ev->mouse.y;
+
+            if (g_desktop.confirm_action != 0) {
+                int dw = 320;
+                int dh = 120;
+                int dx = (g_desktop.screen_w - dw) / 2;
+                int dy = (g_desktop.screen_h - dh) / 2;
+                if (mx >= dx + 40 && mx <= dx + 140 && my >= dy + 76 && my <= dy + 102) {
+                    int act = g_desktop.confirm_action;
+                    g_desktop.confirm_action = 0;
+                    if (act == 1) sys_reboot();
+                    else sys_shutdown();
+                    return;
+                }
+                g_desktop.confirm_action = 0;
+                return;
+            }
+
+            int field_x = cx + 50;
+            int field_w = card_w - 100;
+            int btn_w = (field_w - 12) / 2;
+            int btn_y = cy + 188;
+
+            /* Unlock Button */
+            if (mx >= field_x && mx <= field_x + btn_w && my >= btn_y && my <= btn_y + 32) {
+                sid_t active_sid = session_get_active_sid();
+                int res = session_unlock(active_sid, g_desktop.pass_buffer);
+                if (res != SESSION_OK) {
+                    kstrncpy(g_desktop.status_msg, "Authentication failed. Try again.", sizeof(g_desktop.status_msg) - 1);
+                    g_desktop.status_col = 0xF43F5E;
+                    g_desktop.pass_len = 0;
+                    g_desktop.pass_buffer[0] = '\0';
+                }
+                return;
+            }
+
+            /* Switch User Button */
+            int sw_x = field_x + btn_w + 12;
+            if (mx >= sw_x && mx <= sw_x + btn_w && my >= btn_y && my <= btn_y + 32) {
+                g_desktop.ui_state = DESKTOP_UI_LOGIN;
+                g_desktop.pass_len = 0;
+                g_desktop.pass_buffer[0] = '\0';
+                g_desktop.status_msg[0] = '\0';
+                g_desktop.login_selected_user = 0;
+                return;
+            }
+
+            /* Bottom controls: Restart / Shut Down */
+            if (my >= cy + 265 && my <= cy + 295) {
+                if (mx >= cx + 50 && mx <= cx + 150) {
+                    g_desktop.confirm_action = 1;
+                    return;
+                } else if (mx >= cx + card_w - 170 && mx <= cx + card_w - 50) {
+                    g_desktop.confirm_action = 2;
+                    return;
+                }
+            }
+            return;
+        } else if (ev->type == INPUT_EVENT_KEY_DOWN) {
+            if (g_desktop.confirm_action != 0) {
+                if (ev->key.keycode == KEY_ESC || ev->key.ascii == 'n' || ev->key.ascii == 'N') {
+                    g_desktop.confirm_action = 0;
+                    return;
+                } else if (ev->key.keycode == KEY_ENTER || ev->key.ascii == 'y' || ev->key.ascii == 'Y') {
+                    int act = g_desktop.confirm_action;
+                    g_desktop.confirm_action = 0;
+                    if (act == 1) sys_reboot();
+                    else sys_shutdown();
+                    return;
+                }
+            }
+
+            if (ev->key.keycode == KEY_ENTER) {
+                sid_t active_sid = session_get_active_sid();
+                int res = session_unlock(active_sid, g_desktop.pass_buffer);
+                if (res != SESSION_OK) {
+                    kstrncpy(g_desktop.status_msg, "Authentication failed. Try again.", sizeof(g_desktop.status_msg) - 1);
+                    g_desktop.status_col = 0xF43F5E;
+                    g_desktop.pass_len = 0;
+                    g_desktop.pass_buffer[0] = '\0';
+                }
+                return;
+            } else if (ev->key.keycode == KEY_BACKSPACE) {
+                if (g_desktop.pass_len > 0) {
+                    g_desktop.pass_buffer[--g_desktop.pass_len] = '\0';
+                }
+                return;
+            } else if (ev->key.ascii >= 32 && ev->key.ascii <= 126) {
+                if (g_desktop.pass_len < (int)sizeof(g_desktop.pass_buffer) - 1) {
+                    g_desktop.pass_buffer[g_desktop.pass_len++] = (char)ev->key.ascii;
+                    g_desktop.pass_buffer[g_desktop.pass_len] = '\0';
+                }
+                return;
+            }
+            return;
+        }
+        return;
+    }
+
+    /* --------------------------------------------------------------------- */
+    /* State: LOGIN / Display Manager Screen                                */
+    /* --------------------------------------------------------------------- */
+    if (g_desktop.ui_state == DESKTOP_UI_LOGIN) {
+        int card_w = 460;
+        int card_h = 360;
+        int cx = (g_desktop.screen_w - card_w) / 2;
+        int cy = (g_desktop.screen_h - card_h) / 2;
+
+        user_account_t accounts[3];
+        int acc_count = user_list_accounts(accounts, 3);
+        if (acc_count < 1) {
+            acc_count = 1;
+            kstrncpy(accounts[0].username, "akash", USER_NAME_MAX - 1);
+        }
+
+        if (ev->type == INPUT_EVENT_MOUSE_DOWN) {
+            int mx = ev->mouse.x;
+            int my = ev->mouse.y;
+
+            if (g_desktop.confirm_action != 0) {
+                int dw = 320;
+                int dh = 120;
+                int dx = (g_desktop.screen_w - dw) / 2;
+                int dy = (g_desktop.screen_h - dh) / 2;
+                if (mx >= dx + 40 && mx <= dx + 140 && my >= dy + 76 && my <= dy + 102) {
+                    int act = g_desktop.confirm_action;
+                    g_desktop.confirm_action = 0;
+                    if (act == 1) sys_reboot();
+                    else sys_shutdown();
+                    return;
+                }
+                g_desktop.confirm_action = 0;
+                return;
+            }
+
+            /* Account Selection Tiles */
+            int tile_w = (card_w - 60 - (acc_count - 1) * 12) / acc_count;
+            int tile_h = 68;
+            int tile_y = cy + 70;
+
+            for (int i = 0; i < acc_count; i++) {
+                int tile_x = cx + 30 + i * (tile_w + 12);
+                if (mx >= tile_x && mx <= tile_x + tile_w && my >= tile_y && my <= tile_y + tile_h) {
+                    g_desktop.login_selected_user = i;
+                    g_desktop.pass_len = 0;
+                    g_desktop.pass_buffer[0] = '\0';
+                    g_desktop.status_msg[0] = '\0';
+                    return;
+                }
+            }
+
+            /* Sign In Button */
+            int sign_w = 140;
+            int sign_x = cx + (card_w - sign_w) / 2;
+            int sign_y = cy + 210;
+
+            if (mx >= sign_x && mx <= sign_x + sign_w && my >= sign_y && my <= sign_y + 34) {
+                int u_idx = g_desktop.login_selected_user;
+                if (u_idx < 0 || u_idx >= acc_count) u_idx = 0;
+                const char *target_user = accounts[u_idx].username;
+                int res = session_switch_to_user(target_user, g_desktop.pass_buffer);
+                if (res != SESSION_OK) {
+                    kstrncpy(g_desktop.status_msg, "Incorrect password. Try again.", sizeof(g_desktop.status_msg) - 1);
+                    g_desktop.status_col = 0xF43F5E;
+                    g_desktop.pass_len = 0;
+                    g_desktop.pass_buffer[0] = '\0';
+                }
+                return;
+            }
+
+            /* Bottom controls: Restart / Shut Down */
+            if (my >= cy + 300 && my <= cy + 335) {
+                if (mx >= cx + 60 && mx <= cx + 160) {
+                    g_desktop.confirm_action = 1;
+                    return;
+                } else if (mx >= cx + card_w - 190 && mx <= cx + card_w - 70) {
+                    g_desktop.confirm_action = 2;
+                    return;
+                }
+            }
+            return;
+        } else if (ev->type == INPUT_EVENT_KEY_DOWN) {
+            if (g_desktop.confirm_action != 0) {
+                if (ev->key.keycode == KEY_ESC || ev->key.ascii == 'n' || ev->key.ascii == 'N') {
+                    g_desktop.confirm_action = 0;
+                    return;
+                } else if (ev->key.keycode == KEY_ENTER || ev->key.ascii == 'y' || ev->key.ascii == 'Y') {
+                    int act = g_desktop.confirm_action;
+                    g_desktop.confirm_action = 0;
+                    if (act == 1) sys_reboot();
+                    else sys_shutdown();
+                    return;
+                }
+            }
+
+            if (ev->key.keycode == KEY_ENTER) {
+                int u_idx = g_desktop.login_selected_user;
+                if (u_idx < 0 || u_idx >= acc_count) u_idx = 0;
+                const char *target_user = accounts[u_idx].username;
+                int res = session_switch_to_user(target_user, g_desktop.pass_buffer);
+                if (res != SESSION_OK) {
+                    kstrncpy(g_desktop.status_msg, "Incorrect password. Try again.", sizeof(g_desktop.status_msg) - 1);
+                    g_desktop.status_col = 0xF43F5E;
+                    g_desktop.pass_len = 0;
+                    g_desktop.pass_buffer[0] = '\0';
+                }
+                return;
+            } else if (ev->key.keycode == KEY_TAB || ev->key.keycode == KEY_UP || ev->key.keycode == KEY_DOWN) {
+                g_desktop.login_selected_user = (g_desktop.login_selected_user + 1) % acc_count;
+                g_desktop.pass_len = 0;
+                g_desktop.pass_buffer[0] = '\0';
+                g_desktop.status_msg[0] = '\0';
+                return;
+            } else if (ev->key.keycode == KEY_BACKSPACE) {
+                if (g_desktop.pass_len > 0) {
+                    g_desktop.pass_buffer[--g_desktop.pass_len] = '\0';
+                }
+                return;
+            } else if (ev->key.ascii >= 32 && ev->key.ascii <= 126) {
+                if (g_desktop.pass_len < (int)sizeof(g_desktop.pass_buffer) - 1) {
+                    g_desktop.pass_buffer[g_desktop.pass_len++] = (char)ev->key.ascii;
+                    g_desktop.pass_buffer[g_desktop.pass_len] = '\0';
+                }
+                return;
+            }
+            return;
+        }
+        return;
+    }
+
+    /* --------------------------------------------------------------------- */
+    /* State: NORMAL Desktop                                                 */
+    /* --------------------------------------------------------------------- */
     if (ev->type == INPUT_EVENT_MOUSE_DOWN) {
         int mx = ev->mouse.x;
         int my = ev->mouse.y;
@@ -756,7 +1312,8 @@ void desktop_handle_event(const input_event_t *ev) {
                 int act = g_desktop.confirm_action;
                 g_desktop.confirm_action = 0;
                 if (act == 1) sys_reboot();
-                else sys_shutdown();
+                else if (act == 2) sys_shutdown();
+                else if (act == 3) power_logout();
                 return;
             }
 
@@ -784,16 +1341,16 @@ void desktop_handle_event(const input_event_t *ev) {
         }
 
         /* Click Top-Right Power Menu Button */
-        if (mx >= g_desktop.screen_w - 46 && mx <= g_desktop.screen_w - 10 && my >= 3 && my <= 27) {
+        if (mx >= g_desktop.screen_w - 68 && mx <= g_desktop.screen_w - 8 && my >= 2 && my <= 30) {
             g_desktop.power_menu_open = !g_desktop.power_menu_open;
             g_desktop.start_menu_open = false;
             return;
         }
 
-        /* Click Top Center Clock Pill to toggle Timezone (IST <-> UTC <-> EST <-> PST) */
+        /* Click Top Center Clock Pill to toggle Timezone (LOCAL <-> IST <-> UTC <-> EST <-> PST) */
         int clk_cx = g_desktop.screen_w / 2;
         if (mx >= clk_cx - 150 && mx <= clk_cx + 150 && my >= 3 && my <= 28) {
-            g_tz_index = (g_tz_index + 1) % 4;
+            g_tz_index = (g_tz_index + 1) % 5;
             return;
         }
 
@@ -820,46 +1377,58 @@ void desktop_handle_event(const input_event_t *ev) {
 
         /* Check Power Menu Clicks */
         if (g_desktop.power_menu_open) {
-            int menu_w = 150;
-            int menu_h = 136;
+            int menu_w = 236;
+            int menu_h = 182;
             int menu_x = g_desktop.screen_w - menu_w - 6;
             int menu_y = 34;
 
             if (mx >= menu_x && mx <= menu_x + menu_w && my >= menu_y && my <= menu_y + menu_h) {
-                if (my >= menu_y + 50 && my <= menu_y + 70) {
-                    /* Log Out: Close all open application windows */
-                    for (int id = 1; id < 16; id++) {
-                        wm_window_t *w = wm_find_by_id(id);
-                        if (w) wm_destroy_window(w);
-                    }
+                if (my >= menu_y + 30 && my <= menu_y + 52) {
+                    /* Lock Screen */
+                    g_desktop.power_menu_open = false;
+                    power_lock();
+                    return;
+                } else if (my >= menu_y + 54 && my <= menu_y + 76) {
+                    /* Switch User */
+                    g_desktop.power_menu_open = false;
+                    g_desktop.ui_state = DESKTOP_UI_LOGIN;
+                    g_desktop.pass_len = 0;
+                    g_desktop.pass_buffer[0] = '\0';
+                    g_desktop.status_msg[0] = '\0';
+                    g_desktop.login_selected_user = 0;
+                    return;
+                } else if (my >= menu_y + 78 && my <= menu_y + 100) {
+                    /* Log Out... */
+                    g_desktop.confirm_action = 3;
                     g_desktop.power_menu_open = false;
                     return;
-                } else if (my >= menu_y + 90 && my <= menu_y + 110) {
+                } else if (my >= menu_y + 128 && my <= menu_y + 150) {
                     /* Restart... */
                     g_desktop.confirm_action = 1;
                     g_desktop.power_menu_open = false;
                     return;
-                } else if (my >= menu_y + 110 && my <= menu_y + 130) {
+                } else if (my >= menu_y + 152 && my <= menu_y + 174) {
                     /* Shut Down... */
                     g_desktop.confirm_action = 2;
                     g_desktop.power_menu_open = false;
                     return;
                 }
+                return;
             } else {
                 g_desktop.power_menu_open = false;
             }
         }
 
         /* Check Bottom Dock Clicks */
-        int dock_w = 420;
-        int dock_h = 52;
+        int dock_w = 432;
+        int dock_h = 56;
         int dock_x = (g_desktop.screen_w - dock_w) / 2;
-        int dock_y = g_desktop.screen_h - dock_h - 8;
+        int dock_y = g_desktop.screen_h - dock_h - 10;
 
         if (mx >= dock_x && mx <= dock_x + dock_w && my >= dock_y && my <= dock_y + dock_h) {
             for (int i = 0; i < 8; i++) {
-                int app_x = dock_x + 10 + i * 50;
-                if (mx >= app_x && mx <= app_x + 44) {
+                int app_x = dock_x + 8 + i * 52;
+                if (mx >= app_x && mx <= app_x + 48) {
                     launch_or_focus_app(i);
                     return;
                 }
@@ -867,45 +1436,54 @@ void desktop_handle_event(const input_event_t *ev) {
         }
 
         /* Check Desktop Shortcuts Clicks */
-        /* Column 1: x = 24..68 */
-        if (mx >= 20 && mx <= 76) {
-            if (my >= 66 && my <= 126) {
-                launch_or_focus_app(0); /* Text Editor (matches x=38, y=86) */
+        /* Column 1: x = 32 (hitbox 20..88) */
+        if (mx >= 20 && mx <= 88) {
+            if (my >= 54 && my <= 130) {
+                launch_or_focus_app(0); /* Text Editor */
                 return;
-            } else if (my >= 146 && my <= 206) {
+            } else if (my >= 150 && my <= 226) {
                 launch_or_focus_app(1); /* File Manager */
                 return;
-            } else if (my >= 226 && my <= 286) {
+            } else if (my >= 246 && my <= 322) {
                 launch_or_focus_app(2); /* Web Browser */
                 return;
-            } else if (my >= 306 && my <= 366) {
+            } else if (my >= 342 && my <= 418) {
                 launch_or_focus_app(3); /* Terminal */
                 return;
             }
         }
-        /* Column 2: x = 106..162 */
-        if (mx >= 106 && mx <= 162) {
-            if (my >= 66 && my <= 126) {
+        /* Column 2: x = 140 (hitbox 128..196) */
+        if (mx >= 128 && mx <= 196) {
+            if (my >= 54 && my <= 130) {
                 launch_or_focus_app(4); /* Settings */
                 return;
-            } else if (my >= 146 && my <= 206) {
+            } else if (my >= 150 && my <= 226) {
                 launch_or_focus_app(5); /* Calculator */
                 return;
-            } else if (my >= 226 && my <= 286) {
+            } else if (my >= 246 && my <= 322) {
                 launch_or_focus_app(6); /* System Monitor */
                 return;
-            } else if (my >= 306 && my <= 366) {
+            } else if (my >= 342 && my <= 418) {
                 launch_or_focus_app(7); /* Package Manager */
                 return;
             }
         }
     } else if (ev->type == INPUT_EVENT_KEY_DOWN) {
         /* Global Keyboard Shortcuts for Desktop Navigation */
-        if (ev->key.keycode == KEY_ESC) {
-            if (g_desktop.confirm_action != 0) {
+        if (g_desktop.confirm_action != 0) {
+            if (ev->key.keycode == KEY_ESC || ev->key.ascii == 'n' || ev->key.ascii == 'N') {
                 g_desktop.confirm_action = 0;
                 return;
+            } else if (ev->key.keycode == KEY_ENTER || ev->key.ascii == 'y' || ev->key.ascii == 'Y') {
+                int act = g_desktop.confirm_action;
+                g_desktop.confirm_action = 0;
+                if (act == 1) sys_reboot();
+                else if (act == 2) sys_shutdown();
+                else if (act == 3) power_logout();
+                return;
             }
+        }
+        if (ev->key.keycode == KEY_ESC) {
             if (g_desktop.start_menu_open) {
                 g_desktop.start_menu_open = false;
                 return;
@@ -914,6 +1492,15 @@ void desktop_handle_event(const input_event_t *ev) {
                 g_desktop.power_menu_open = false;
                 return;
             }
+        } else if ((ev->key.modifiers & KEY_MOD_CTRL) && (ev->key.ascii == 'l' || ev->key.ascii == 'L')) {
+            g_desktop.power_menu_open = false;
+            g_desktop.start_menu_open = false;
+            power_lock();
+            return;
+        } else if ((ev->key.modifiers & KEY_MOD_CTRL) && (ev->key.ascii == 'd' || ev->key.ascii == 'D' || ev->key.ascii == 'q' || ev->key.ascii == 'Q')) {
+            g_desktop.power_menu_open = !g_desktop.power_menu_open;
+            g_desktop.start_menu_open = false;
+            return;
         } else if (ev->key.keycode >= KEY_F1 && ev->key.keycode <= KEY_F8) {
             int app_idx = ev->key.keycode - KEY_F1;
             launch_or_focus_app(app_idx);
@@ -960,7 +1547,107 @@ bool desktop_self_test(void) {
     }
     kprintf("  PASS: Application launcher toggle and dispatch verified.\n");
 
-    /* 3. Test Full Desktop Rendering Pass */
+    /* 3. Test Power Menu Toggle & Confirmation Dialog */
+    input_event_t click_pwr = {
+        .type = INPUT_EVENT_MOUSE_DOWN,
+        .mouse = { .x = g_desktop.screen_w - 36, .y = 14, .buttons = MOUSE_BTN_LEFT }
+    };
+    desktop_handle_event(&click_pwr);
+    if (!g_desktop.power_menu_open) {
+        kprintf("[DESKTOP TEST FAIL] Power button click failed to open power menu!\n");
+        return false;
+    }
+    kprintf("  PASS: Power & Session menu opens on button click.\n");
+
+    /* Click Shut Down item in Power Menu */
+    int menu_w = 236;
+    int menu_x = g_desktop.screen_w - menu_w - 6;
+    int menu_y = 34;
+    input_event_t click_shutdown = {
+        .type = INPUT_EVENT_MOUSE_DOWN,
+        .mouse = { .x = menu_x + 50, .y = menu_y + 155, .buttons = MOUSE_BTN_LEFT }
+    };
+    desktop_handle_event(&click_shutdown);
+    if (g_desktop.confirm_action != 2 || g_desktop.power_menu_open) {
+        kprintf("[DESKTOP TEST FAIL] Clicking Shut Down did not open confirmation dialog (act=%d)!\n",
+                g_desktop.confirm_action);
+        return false;
+    }
+    kprintf("  PASS: Shut Down click opens modal confirmation dialog.\n");
+
+    /* Press ESC to cancel confirmation dialog */
+    input_event_t press_esc = {
+        .type = INPUT_EVENT_KEY_DOWN,
+        .key = { .keycode = KEY_ESC, .modifiers = 0, .ascii = 27 }
+    };
+    desktop_handle_event(&press_esc);
+    if (g_desktop.confirm_action != 0) {
+        kprintf("[DESKTOP TEST FAIL] ESC key did not cancel confirmation dialog!\n");
+        return false;
+    }
+    kprintf("  PASS: ESC key cancels confirmation dialog cleanly.\n");
+
+    /* 4. Test Lock Screen, Bypass Prevention, and Password Unlock */
+    kprintf("  Testing Lock Screen keyboard shortcut [Ctrl+L]...\n");
+    input_event_t press_ctrl_l = {
+        .type = INPUT_EVENT_KEY_DOWN,
+        .key = { .keycode = 0, .modifiers = KEY_MOD_CTRL, .ascii = 'l' }
+    };
+    desktop_handle_event(&press_ctrl_l);
+    if (g_desktop.ui_state != DESKTOP_UI_LOCKED) {
+        kprintf("[DESKTOP TEST FAIL] Ctrl+L shortcut failed to lock desktop! (state=%d)\n", g_desktop.ui_state);
+        return false;
+    }
+    kprintf("  PASS: Desktop successfully locked via Ctrl+L.\n");
+
+    /* Verify start menu and shortcuts are blocked while locked */
+    desktop_handle_event(&click_start);
+    if (g_desktop.start_menu_open) {
+        kprintf("[DESKTOP TEST FAIL] Lock screen allowed start menu bypass!\n");
+        return false;
+    }
+    kprintf("  PASS: Desktop navigation and shortcut bypass prevented while locked.\n");
+
+    /* Render locked desktop pass */
+    desktop_render();
+
+    /* Test unlock with incorrect password first (negative test) */
+    const char *wrong_pass = "wrongpass";
+    for (int i = 0; wrong_pass[i]; i++) {
+        input_event_t type_char = {
+            .type = INPUT_EVENT_KEY_DOWN,
+            .key = { .keycode = 0, .modifiers = 0, .ascii = wrong_pass[i] }
+        };
+        desktop_handle_event(&type_char);
+    }
+    input_event_t press_enter = {
+        .type = INPUT_EVENT_KEY_DOWN,
+        .key = { .keycode = KEY_ENTER, .modifiers = 0, .ascii = 13 }
+    };
+    desktop_handle_event(&press_enter);
+    if (g_desktop.ui_state != DESKTOP_UI_LOCKED) {
+        kprintf("[DESKTOP TEST FAIL] Incorrect password erroneously unlocked session!\n");
+        return false;
+    }
+    kprintf("  PASS: Negative authentication check verified (incorrect password rejected).\n");
+
+    /* Test unlock with valid password 'astra' */
+    const char *good_pass = "astra";
+    for (int i = 0; good_pass[i]; i++) {
+        input_event_t type_char = {
+            .type = INPUT_EVENT_KEY_DOWN,
+            .key = { .keycode = 0, .modifiers = 0, .ascii = good_pass[i] }
+        };
+        desktop_handle_event(&type_char);
+    }
+    desktop_handle_event(&press_enter);
+    if (g_desktop.ui_state != DESKTOP_UI_NORMAL) {
+        kprintf("[DESKTOP TEST FAIL] Valid password 'astra' failed to unlock session! (state=%d)\n", g_desktop.ui_state);
+        return false;
+    }
+    kprintf("  PASS: Valid authentication unlocks session back to normal desktop.\n");
+
+    /* 5. Test Full Desktop Rendering Pass */
     desktop_render();
     kprintf("  PASS: Full composite rendering pass completed cleanly.\n");
 

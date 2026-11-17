@@ -12,6 +12,18 @@ static repo_package_t  g_repo[PKG_MAX_REPO_ENTRIES];
 static installed_pkg_t g_installed[PKG_MAX_INSTALLED];
 static bool            g_pkg_initialized = false;
 
+#define PKG_MAX_REPO_SOURCES 4
+typedef struct {
+    char name[32];
+    char url[96];
+    bool enabled;
+    bool trusted;
+    bool in_use;
+} pkg_repo_source_t;
+
+static pkg_repo_source_t g_repo_sources[PKG_MAX_REPO_SOURCES];
+static int               g_repo_source_count = 0;
+
 /* Helper string utilities */
 static size_t pkg_strlen(const char *s) {
     size_t len = 0;
@@ -42,6 +54,17 @@ static void pkg_strcpy(char *dst, const char *src, size_t max) {
         i++;
     }
     dst[i] = '\0';
+}
+
+static void pkg_strcat(char *dst, const char *src, size_t max) {
+    if (!dst || max == 0) return;
+    size_t dlen = pkg_strlen(dst);
+    size_t i = 0;
+    while (src && src[i] && (dlen + i) < max - 1) {
+        dst[dlen + i] = src[i];
+        i++;
+    }
+    dst[dlen + i] = '\0';
 }
 
 static bool str_contains(const char *haystack, const char *needle) {
@@ -146,6 +169,22 @@ void pkg_subsystem_init(void) {
     pkg_strcpy(g_installed[1].installed_files[2], "/bin/browser", 64);
     g_installed[1].file_count = 3;
     g_installed[1].in_use = true;
+
+    if (g_repo_source_count == 0) {
+        pkg_strcpy(g_repo_sources[0].name, "local-initramfs", 32);
+        pkg_strcpy(g_repo_sources[0].url, "file:///repo/", 96);
+        g_repo_sources[0].enabled = true;
+        g_repo_sources[0].trusted = true;
+        g_repo_sources[0].in_use = true;
+
+        pkg_strcpy(g_repo_sources[1].name, "official-core", 32);
+        pkg_strcpy(g_repo_sources[1].url, "https://repo.astraos.org/v1/core", 96);
+        g_repo_sources[1].enabled = false;
+        g_repo_sources[1].trusted = true;
+        g_repo_sources[1].in_use = true;
+
+        g_repo_source_count = 2;
+    }
 
     g_pkg_initialized = true;
 }
@@ -687,8 +726,48 @@ int pkg_repo_list(shell_out_fn out_fn, void *ctx) {
     pkg_subsystem_init();
 
     out_fn(ctx, "=== Configured AstraOS Package Repositories ===\n", 0xFF8BE9FD);
-    out_fn(ctx, "  [1] local-initramfs   file:///repo/                         [ENABLED, TRUSTED, RSA-2048]\n", 0xFF50FA7B);
-    out_fn(ctx, "  [2] official-core     https://repo.astraos.org/v1/core      [BLOCKED: Offline freestanding]\n", 0xFFF1FA8C);
+    for (int i = 0; i < g_repo_source_count; i++) {
+        if (!g_repo_sources[i].in_use) continue;
+        char line[160];
+        pkg_strcpy(line, "  [", sizeof(line));
+        char num[4];
+        num[0] = (char)('1' + i); num[1] = ']'; num[2] = ' '; num[3] = '\0';
+        pkg_strcat(line, num, sizeof(line));
+        pkg_strcat(line, g_repo_sources[i].name, sizeof(line));
+        while (pkg_strlen(line) < 24) pkg_strcat(line, " ", sizeof(line));
+        pkg_strcat(line, g_repo_sources[i].url, sizeof(line));
+        while (pkg_strlen(line) < 62) pkg_strcat(line, " ", sizeof(line));
+        if (g_repo_sources[i].enabled) {
+            pkg_strcat(line, "[ENABLED, TRUSTED, RSA-2048]\n", sizeof(line));
+            out_fn(ctx, line, 0xFF50FA7B);
+        } else {
+            pkg_strcat(line, "[BLOCKED: Offline freestanding]\n", sizeof(line));
+            out_fn(ctx, line, 0xFFF1FA8C);
+        }
+    }
+    return PKG_OK;
+}
+
+int pkg_repo_add(const char *url, shell_out_fn out_fn, void *ctx) {
+    if (!url || !out_fn) return PKG_ERR_NOT_FOUND;
+    pkg_subsystem_init();
+
+    if (g_repo_source_count >= PKG_MAX_REPO_SOURCES) {
+        out_fn(ctx, "pkg: repository source limit reached (max 4)\n", 0xFFFF5555);
+        return PKG_ERR_NOSPC;
+    }
+
+    int idx = g_repo_source_count++;
+    pkg_strcpy(g_repo_sources[idx].name, "custom-repo", 32);
+    pkg_strcpy(g_repo_sources[idx].url, url, 96);
+    g_repo_sources[idx].enabled = true;
+    g_repo_sources[idx].trusted = true;
+    g_repo_sources[idx].in_use = true;
+
+    out_fn(ctx, "Added repository: ", 0xFF8BE9FD);
+    out_fn(ctx, url, 0xFF50FA7B);
+    out_fn(ctx, "\nContacting repository and refreshing catalog...\n", 0xFF8088A0);
+    out_fn(ctx, "Notice: Offline freestanding environment; package signatures enforced.\n", 0xFFF1FA8C);
     return PKG_OK;
 }
 

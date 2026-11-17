@@ -1048,7 +1048,11 @@ int vmm_build_kernel_space(struct limine_memmap_response *mmap,
         struct limine_memmap_entry *e = mmap->entries[i];
         if (!e) continue;
 
-        if (e->type == LIMINE_MEMMAP_USABLE || e->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE) {
+        if (e->type == LIMINE_MEMMAP_USABLE ||
+            e->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE ||
+            e->type == LIMINE_MEMMAP_ACPI_RECLAIMABLE ||
+            e->type == LIMINE_MEMMAP_ACPI_NVS ||
+            (e->type == LIMINE_MEMMAP_RESERVED && e->base < 0x100000)) {
             for (phys_addr_t pa = e->base; pa < e->base + e->length; pa += PAGE_SIZE) {
                 virt_addr_t va = g_hhdm_offset + pa;
                 struct vmm_mapping exist;

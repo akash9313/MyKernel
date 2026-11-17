@@ -35,6 +35,9 @@
 #include <kernel/terminal.h>
 #include <kernel/shell.h>
 #include <kernel/pkg.h>
+#include <kernel/power.h>
+#include <kernel/user.h>
+#include <kernel/session.h>
 
 static bool kstrstr_contains(const char *haystack, const char *needle) {
     if (!haystack || !needle) return false;
@@ -454,6 +457,17 @@ __attribute__((noreturn)) void kernel_continuation(void) {
     pci_init();
     if (e1000_init()) {
         net_init();
+        /* Attempt automatic DHCP lease configuration at boot */
+        kprintf("[NET] Attempting automatic DHCP lease negotiation...\n");
+        if (dhcp_request_lease(1500)) {
+            kprintf("[NET] DHCP lease acquired successfully!\n");
+        } else {
+            kprintf("[NET] DHCP negotiation timed out; activating fallback static IP configuration.\n");
+            net_if_t *nif = net_get_interface();
+            if (nif && nif->link_up) {
+                nif->configured = true;
+            }
+        }
     } else {
         kprintf("[WARN] Intel E1000 network adapter not found or failed to initialize.\n");
     }
@@ -576,8 +590,11 @@ __attribute__((noreturn)) void kernel_continuation(void) {
         kprintf("[WARN] Persistent data disk 'hd1' not found or read-only. Operating with volatile storage only.\n");
     }
 
-    /* 16. Initialize RTC & Native Browser Subsystem */
+    /* 16. Initialize RTC, Power Management, Users, Sessions & Native Browser */
     rtc_init();
+    power_init();
+    user_subsystem_init();
+    session_subsystem_init();
     app_browser_init();
 
     /* 17. Transition to KERNEL_READY */

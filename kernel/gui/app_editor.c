@@ -587,7 +587,7 @@ void app_editor_launch(const char *filepath) {
         return;
     }
 
-    wm_window_t *win = wm_create_window("AstraOS Code Editor", 120, 60, 640, 420);
+    wm_window_t *win = wm_create_window("AstraOS Code Editor", 240, 60, 660, 440);
     if (!win) return;
 
     win->user_data = &g_editor;

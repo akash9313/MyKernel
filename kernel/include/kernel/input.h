@@ -13,6 +13,7 @@ typedef enum {
     INPUT_EVENT_MOUSE_MOVE,
     INPUT_EVENT_MOUSE_DOWN,
     INPUT_EVENT_MOUSE_UP,
+    INPUT_EVENT_MOUSE_WHEEL,
     INPUT_EVENT_WINDOW_CLOSE
 } input_event_type_t;
 
@@ -72,6 +73,7 @@ typedef struct input_event {
             int y;          /* Absolute screen Y */
             int delta_x;    /* Relative X movement */
             int delta_y;    /* Relative Y movement */
+            int delta_z;    /* Relative Z movement (wheel delta: +1 up, -1 down) */
             u8 buttons;     /* MOUSE_BTN_* bitmask */
         } mouse;
     };

@@ -13,6 +13,7 @@
 #include <kernel/input.h>
 #include <kernel/gfx.h>
 #include <kernel/net.h>
+#include <kernel/e1000.h>
 #include <kernel/browser.h>
 #include <kernel/block.h>
 #include <kernel/astrafs.h>
@@ -580,8 +581,17 @@ void monitor_run(void) {
     kprintf("Type 'help' for available commands.\n\n");
     kprintf("AstraOS>\n");
 
+    /* Initial nonblocking network lease check */
+    net_if_t *init_nif = net_get_interface();
+    if (init_nif && e1000_is_available() && !init_nif->configured) {
+        if (dhcp_request_lease(1000)) {
+            kprintf("[NET] Network online via DHCP.\n");
+        }
+    }
+
     bool last_was_cr = false;
     u64 last_tick_render = apic_get_ticks();
+    static int s_dhcp_retry_count = 0;
     for (;;) {
         /* 1. Poll PS/2 keyboard/mouse hardware */
         ps2_poll();
@@ -602,56 +612,70 @@ void monitor_run(void) {
         if (now_ticks - last_tick_render >= 100) {
             need_render = true;
             last_tick_render = now_ticks;
+
+            /* If link is up but interface not yet configured, retry DHCP */
+            net_if_t *cur_nif = net_get_interface();
+            if (cur_nif && !cur_nif->configured && e1000_is_link_up()) {
+                if (s_dhcp_retry_count++ < 3) {
+                    dhcp_request_lease(1000);
+                } else {
+                    cur_nif->configured = true; /* fallback to static IP */
+                }
+            }
         }
 
-        if (need_render && !serial_has_rx()) {
+        if (need_render && !serial_has_rx() && pos == 0) {
             desktop_render();
         }
 
-        /* 3. Check for COM1 serial port character */
+        /* 3. Drain all pending COM1 serial port characters */
         if (!serial_has_rx()) {
             io_wait();
             continue;
         }
 
-        char c = serial_getchar();
+        while (serial_has_rx()) {
+            char c = serial_getchar();
 
-        if (c == '\r') {
-            serial_putchar('\n');
-            fb_putchar('\n');
-            buf[pos] = '\0';
-            if (pos > 0) {
-                monitor_execute(buf);
-                pos = 0;
-            }
-            kprintf("AstraOS>\n");
-            last_was_cr = true;
-        } else if (c == '\n') {
-            if (last_was_cr) {
+            if (c == '\r') {
+                serial_putchar('\n');
+                fb_putchar('\n');
+                buf[pos] = '\0';
+                if (pos > 0) {
+                    monitor_execute(buf);
+                    pos = 0;
+                }
+                kprintf("AstraOS>\n");
+                last_was_cr = true;
+                break;
+            } else if (c == '\n') {
+                if (last_was_cr) {
+                    last_was_cr = false;
+                    continue;
+                }
+                serial_putchar('\n');
+                fb_putchar('\n');
+                buf[pos] = '\0';
+                if (pos > 0) {
+                    monitor_execute(buf);
+                    pos = 0;
+                }
+                kprintf("AstraOS>\n");
                 last_was_cr = false;
-                continue;
+                break;
+            } else if (c == '\b' || c == 0x7F) {
+                last_was_cr = false;
+                if (pos > 0) {
+                    pos--;
+                    serial_puts("\b \b");
+                    fb_putchar('\b');
+                }
+            } else if (pos < MONITOR_MAX_LINE - 1 && (c == '\t' || (c >= 32 && c <= 126))) {
+                last_was_cr = false;
+                buf[pos++] = c;
+                serial_putchar(c);
+                fb_putchar(c);
             }
-            serial_putchar('\n');
-            fb_putchar('\n');
-            buf[pos] = '\0';
-            if (pos > 0) {
-                monitor_execute(buf);
-                pos = 0;
-            }
-            kprintf("AstraOS>\n");
-            last_was_cr = false;
-        } else if (c == '\b' || c == 0x7F) {
-            last_was_cr = false;
-            if (pos > 0) {
-                pos--;
-                serial_puts("\b \b");
-                fb_putchar('\b');
-            }
-        } else if (pos < MONITOR_MAX_LINE - 1 && c >= 32 && c <= 126) {
-            last_was_cr = false;
-            buf[pos++] = c;
-            serial_putchar(c);
-            fb_putchar(c);
         }
     }
 }

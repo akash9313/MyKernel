@@ -51,6 +51,13 @@ static volatile struct limine_smp_request smp_request = {
     .flags = 0
 };
 
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_rsdp_request rsdp_request = {
+    .id = LIMINE_RSDP_REQUEST,
+    .revision = 0,
+    .response = NULL
+};
+
 __attribute__((used, section(".limine_requests_end")))
 static volatile LIMINE_REQUESTS_END_MARKER;
 
@@ -87,4 +94,8 @@ const char *boot_get_cmdline(void) {
 
 bool boot_is_base_revision_supported(void) {
     return LIMINE_BASE_REVISION_SUPPORTED;
+}
+
+struct limine_rsdp_response *boot_get_rsdp_response(void) {
+    return rsdp_request.response;
 }

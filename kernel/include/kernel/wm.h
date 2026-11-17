@@ -14,6 +14,8 @@
 typedef struct wm_window {
     int id;
     pid_t owner_pid;         /* 0 for kernel-owned windows; >0 for user-space process */
+    uid_t owner_uid;         /* User ID owning this window */
+    u32   owner_sid;         /* Session ID owning this window */
     char title[64];
     int x;
     int y;
@@ -53,6 +55,7 @@ typedef struct wm_window {
 
     void (*on_paint)(struct wm_window *win, gfx_surface_t *s);
     void (*on_event)(struct wm_window *win, const input_event_t *ev);
+    void (*on_destroy)(struct wm_window *win);
     void *user_data;
 } wm_window_t;
 

@@ -5,6 +5,7 @@
 #include <kernel/kprintf.h>
 #include <kernel/mem.h>
 #include <kernel/drivers/apic.h>
+#include <kernel/session.h>
 
 static struct {
     wm_window_t windows[WM_MAX_WINDOWS];
@@ -174,6 +175,8 @@ wm_window_t *wm_create_window_owner(const char *title, int x, int y, int w, int 
     kmemset(win, 0, sizeof(wm_window_t));
     win->id = g_wm.next_id++;
     win->owner_pid = owner_pid;
+    win->owner_sid = session_get_active_sid();
+    win->owner_uid = session_get_active_uid();
     win->x = x;
     win->y = y;
     win->width = w;
@@ -207,6 +210,7 @@ wm_window_t *wm_create_window_owner(const char *title, int x, int y, int w, int 
     gfx_init_surface(&win->client_surf, client_va, client_w, client_h, client_w);
 
     int id = win->id;
+    session_register_window(win->owner_sid, win->id);
     wm_bring_to_front(win);
     return wm_find_by_id(id);
 }
@@ -360,6 +364,12 @@ void wm_destroy_window(wm_window_t *win) {
     }
     if (idx == -1) return;
 
+    if (win->on_destroy) {
+        win->on_destroy(win);
+    }
+
+    session_unregister_window(win->owner_sid, win->id);
+
     /* Free client buffer */
     if (win->client_buffer) {
         struct limine_hhdm_response *hhdm = boot_get_hhdm_response();
@@ -385,7 +395,7 @@ void wm_destroy_window(wm_window_t *win) {
 }
 
 void wm_handle_input_event(const input_event_t *ev) {
-    if (!ev) return;
+    if (!ev || session_is_locked()) return;
 
     if (ev->type == INPUT_EVENT_MOUSE_MOVE) {
         /* Check if any window is being resized */
@@ -546,6 +556,20 @@ void wm_handle_input_event(const input_event_t *ev) {
                 wm_window_push_event(foc, &cev);
             }
         }
+    } else if (ev->type == INPUT_EVENT_MOUSE_WHEEL) {
+        wm_window_t *w = wm_window_at(ev->mouse.x, ev->mouse.y);
+        if (!w) w = wm_get_focused();
+        if (w) {
+            if (w->on_event) {
+                w->on_event(w, ev);
+            }
+            if (w->owner_pid > 0) {
+                input_event_t cev = *ev;
+                cev.mouse.x = ev->mouse.x - w->client_x;
+                cev.mouse.y = ev->mouse.y - w->client_y;
+                wm_window_push_event(w, &cev);
+            }
+        }
     } else if (ev->type == INPUT_EVENT_KEY_DOWN || ev->type == INPUT_EVENT_KEY_UP) {
         wm_window_t *foc = wm_get_focused();
         if (foc) {
@@ -568,21 +592,35 @@ void wm_render(void) {
         wm_window_t *w = &g_wm.windows[i];
         if (!w->visible || w->minimized) continue;
 
-        /* Window Outline and Outer Frame */
-        u32 border_color = w->focused ? 0x38BDF8 : 0x223048;
+        /* Modern 3D Ambient Drop Shadow (elevation depth against wallpaper) */
+        if (!w->maximized) {
+            gfx_draw_line(bb, w->x + w->width, w->y + 3, w->x + w->width, w->y + w->height, 0x050811);
+            gfx_draw_line(bb, w->x + w->width + 1, w->y + 5, w->x + w->width + 1, w->y + w->height, 0x0A0F1D);
+            gfx_draw_line(bb, w->x + 3, w->y + w->height, w->x + w->width, w->y + w->height, 0x050811);
+            gfx_draw_line(bb, w->x + 5, w->y + w->height + 1, w->x + w->width + 1, w->y + w->height + 1, 0x0A0F1D);
+        }
+
+        /* Industrial Window Outline (Refined Dark Slate Frame, not electric neon) */
+        u32 border_color = w->focused ? 0x334155 : 0x1E293B;
         gfx_draw_rect(bb, w->x, w->y, w->width, w->height, border_color);
 
-        /* Modern Title Bar (Sleek Dark Glass) */
-        u32 tb_color = w->focused ? 0x0F172A : 0x182030;
+        /* Modern Title Bar (Sleek Dark Glass with Top Specular Lighting) */
+        u32 tb_color = w->focused ? 0x131A2B : 0x0D111A;
         gfx_fill_rect(bb, w->x + 1, w->y + 1, w->width - 2, WM_TITLEBAR_HEIGHT - 1, tb_color);
+
+        /* Top Ambient Specular Rim */
+        u32 rim_color = w->focused ? 0x475569 : 0x243044;
+        gfx_draw_line(bb, w->x + 1, w->y + 1, w->x + w->width - 2, w->y + 1, rim_color);
+
         /* Subtle divider line between titlebar and client area */
         gfx_draw_line(bb, w->x + 1, w->y + WM_TITLEBAR_HEIGHT - 1, w->x + w->width - 2, w->y + WM_TITLEBAR_HEIGHT - 1, 0x1E293B);
 
-        /* App mini-badge icon & title text */
+        /* App mini-badge icon & title text with soft shadow */
         u32 badge_color = w->focused ? 0x38BDF8 : 0x64748B;
         gfx_fill_rounded_rect(bb, w->x + 8, w->y + 7, 10, 10, 3, badge_color);
         u32 title_text_color = w->focused ? 0xF8FAFC : 0x94A3B8;
-        gfx_draw_string(bb, w->x + 24, w->y + 5, w->title, title_text_color, tb_color, true);
+        gfx_draw_string(bb, w->x + 25, w->y + 6, w->title, 0x04060B, 0, true);
+        gfx_draw_string(bb, w->x + 24, w->y + 5, w->title, title_text_color, 0, true);
 
         /* Modern Traffic-Light Circular Window Controls */
         /* 1. Minimize Button (Amber Gold Circle with minus) */

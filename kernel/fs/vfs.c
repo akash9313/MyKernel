@@ -3,6 +3,8 @@
 #include <kernel/heap.h>
 #include <kernel/panic.h>
 #include <kernel/kprintf.h>
+#include <kernel/session.h>
+#include <kernel/user.h>
 
 typedef struct vfs_file {
     bool        in_use;
@@ -50,12 +52,37 @@ static void str_copy(char *dst, const char *src, size_t max) {
 }
 
 /* Phase AC: Mutable RAM-backed file structure */
+#ifdef HOST_TEST
+static void *ramfs_alloc_buf(size_t sz) {
+    return malloc(sz);
+}
+static void ramfs_free_buf(void *p, size_t sz) {
+    (void)sz;
+    free(p);
+}
+#else
+#include <kernel/pmm.h>
+static void *ramfs_alloc_buf(size_t sz) {
+    size_t pages = (sz + PAGE_SIZE - 1) / PAGE_SIZE;
+    phys_addr_t pa = 0;
+    if (pmm_alloc_contiguous(pages, &pa) != PMM_SUCCESS) return NULL;
+    return (void *)((uintptr_t)pa + 0xffff800000000000ULL);
+}
+static void ramfs_free_buf(void *p, size_t sz) {
+    if (!p) return;
+    size_t pages = (sz + PAGE_SIZE - 1) / PAGE_SIZE;
+    phys_addr_t pa = (phys_addr_t)((uintptr_t)p - 0xffff800000000000ULL);
+    pmm_free_contiguous(pa, pages);
+}
+#endif
+
 typedef struct {
     bool        in_use;
     char        name[VFS_MAX_PATH_LEN];
     size_t      size;
+    size_t      capacity;
     vfs_node_t  node;
-    u8          data[VFS_MAX_FILE_SIZE];
+    u8         *data;
 } vfs_mutable_file_t;
 
 static vfs_node_t         *g_root_node = NULL;
@@ -85,6 +112,7 @@ static ssize_t ramfs_op_read(vfs_node_t *node, void *buf, size_t count, size_t o
     size_t available = mf->size - offset;
     size_t to_read = (count < available) ? count : available;
 
+    if (!mf->data) return 0;
     for (size_t i = 0; i < to_read; i++) {
         ((u8 *)buf)[i] = mf->data[offset + i];
     }
@@ -115,8 +143,30 @@ static ssize_t ramfs_op_write(vfs_node_t *node, const void *buf, size_t count, s
         return VFS_ERR_NOSPC;
     }
 
+    /* Ensure buffer capacity */
+    if (offset + count > mf->capacity) {
+        size_t needed = offset + count;
+        size_t new_cap = ((needed + 4095) / 4096) * 4096;
+        if (new_cap < 4096) new_cap = 4096;
+        if (new_cap > VFS_MAX_FILE_SIZE) new_cap = VFS_MAX_FILE_SIZE;
+
+        u8 *new_buf = (u8 *)ramfs_alloc_buf(new_cap);
+        if (!new_buf) return VFS_ERR_NOSPC;
+
+        for (size_t b = 0; b < new_cap; b++) new_buf[b] = 0;
+
+        if (mf->data && mf->size > 0) {
+            for (size_t b = 0; b < mf->size; b++) {
+                new_buf[b] = mf->data[b];
+            }
+            ramfs_free_buf(mf->data, mf->capacity);
+        }
+        mf->data = new_buf;
+        mf->capacity = new_cap;
+    }
+
     /* Zero-fill any unwritten gap when writing past EOF */
-    if (offset > mf->size) {
+    if (offset > mf->size && mf->data) {
         for (size_t i = mf->size; i < offset; i++) {
             mf->data[i] = 0;
         }
@@ -203,6 +253,7 @@ const char *vfs_strerror(int err) {
         case VFS_ERR_BUSY:           return "Resource or file table busy";
         case VFS_ERR_EXISTS:         return "File already exists";
         case VFS_ERR_NOSPC:          return "No space left on device or storage quota exceeded";
+        case VFS_ERR_DENIED:         return "Permission denied";
         default:                     return "Unknown VFS error";
     }
 }
@@ -214,6 +265,8 @@ int vfs_init(void) {
         g_mutable_files[i].in_use = false;
         g_mutable_files[i].name[0] = '\0';
         g_mutable_files[i].size = 0;
+        g_mutable_files[i].capacity = 0;
+        g_mutable_files[i].data = NULL;
         g_mutable_files[i].node.name[0] = '\0';
         g_mutable_files[i].node.type = VFS_NODE_NONE;
         g_mutable_files[i].node.size = 0;
@@ -319,11 +372,83 @@ int vfs_lookup(const char *path, vfs_node_t **out_node) {
     return VFS_ERR_UNSUPPORTED;
 }
 
+int vfs_check_permissions(vfs_node_t *node, u32 flags, uid_t caller_uid, gid_t caller_gid) {
+    if (!node) return VFS_ERR_INVAL;
+
+    /* Root / superuser (UID 0) bypasses DAC checks */
+    if (caller_uid == USER_ROOT_UID) {
+        return VFS_OK;
+    }
+
+    u16 mode = node->mode;
+    if (mode == 0) {
+        mode = (node->type == VFS_NODE_DIR) ? VFS_DEFAULT_DIR_MODE : VFS_DEFAULT_FILE_MODE;
+    }
+
+    bool want_read = (flags & (VFS_O_RDONLY | VFS_O_RDWR)) != 0;
+    bool want_write = (flags & (VFS_O_WRONLY | VFS_O_RDWR | VFS_O_CREAT | VFS_O_TRUNC | VFS_O_APPEND)) != 0;
+
+    /* 1. Owner check */
+    if (caller_uid == node->uid) {
+        if (want_read && !(mode & VFS_S_IRUSR)) return VFS_ERR_DENIED;
+        if (want_write && !(mode & VFS_S_IWUSR)) return VFS_ERR_DENIED;
+        return VFS_OK;
+    }
+
+    /* 2. Group check */
+    if (caller_gid == node->gid) {
+        if (want_read && !(mode & VFS_S_IRGRP)) return VFS_ERR_DENIED;
+        if (want_write && !(mode & VFS_S_IWGRP)) return VFS_ERR_DENIED;
+        return VFS_OK;
+    }
+
+    /* 3. Other check */
+    if (want_read && !(mode & VFS_S_IROTH)) return VFS_ERR_DENIED;
+    if (want_write && !(mode & VFS_S_IWOTH)) return VFS_ERR_DENIED;
+
+    return VFS_OK;
+}
+
+int vfs_chmod(const char *path, u16 mode) {
+    if (!path) return VFS_ERR_INVAL;
+    vfs_node_t *node = NULL;
+    int err = vfs_lookup(path, &node);
+    if (err != VFS_OK || !node) return (err != VFS_OK) ? err : VFS_ERR_NOT_FOUND;
+
+    uid_t caller_uid = session_get_active_uid();
+    if (caller_uid != USER_ROOT_UID && caller_uid != node->uid) {
+        return VFS_ERR_DENIED;
+    }
+
+    node->mode = mode;
+    return VFS_OK;
+}
+
+int vfs_chown(const char *path, uid_t uid, gid_t gid) {
+    if (!path) return VFS_ERR_INVAL;
+    vfs_node_t *node = NULL;
+    int err = vfs_lookup(path, &node);
+    if (err != VFS_OK || !node) return (err != VFS_OK) ? err : VFS_ERR_NOT_FOUND;
+
+    uid_t caller_uid = session_get_active_uid();
+    if (caller_uid != USER_ROOT_UID) {
+        return VFS_ERR_DENIED;
+    }
+
+    node->uid = uid;
+    node->gid = gid;
+    return VFS_OK;
+}
+
 vfs_fd_t vfs_open(const char *path, u32 flags) {
     if (!path) return VFS_ERR_INVAL;
 
     int syn_err = validate_path_syntax(path);
     if (syn_err != VFS_OK) return syn_err;
+
+    uid_t caller_uid = session_get_active_uid();
+    const user_account_t *caller_acc = user_get_by_uid(caller_uid);
+    gid_t caller_gid = caller_acc ? caller_acc->gid : 0;
 
     vfs_node_t *node = NULL;
     int err = vfs_lookup(path, &node);
@@ -355,17 +480,22 @@ vfs_fd_t vfs_open(const char *path, u32 flags) {
                     mf->in_use = true;
                     str_copy(mf->name, path, sizeof(mf->name));
                     mf->size = 0;
-                    for (size_t b = 0; b < VFS_MAX_FILE_SIZE; b++) {
-                        mf->data[b] = 0;
-                    }
+                    mf->capacity = 0;
+                    mf->data = NULL;
 
                     /* If not truncating, copy existing contents */
                     if (!(flags & VFS_O_TRUNC) && node->ops && node->ops->read) {
                         size_t to_copy = (node->size < VFS_MAX_FILE_SIZE) ? node->size : VFS_MAX_FILE_SIZE;
-                        ssize_t rd = node->ops->read(node, mf->data, to_copy, 0);
-                        if (rd > 0) {
-                            mf->size = (size_t)rd;
-                            g_total_mutable_allocated += mf->size;
+                        if (to_copy > 0) {
+                            mf->data = (u8 *)ramfs_alloc_buf(to_copy);
+                            if (mf->data) {
+                                mf->capacity = to_copy;
+                                ssize_t rd = node->ops->read(node, mf->data, to_copy, 0);
+                                if (rd > 0) {
+                                    mf->size = (size_t)rd;
+                                    g_total_mutable_allocated += mf->size;
+                                }
+                            }
                         }
                     }
 
@@ -375,12 +505,21 @@ vfs_fd_t vfs_open(const char *path, u32 flags) {
                     mf->node.ops = &g_ramfs_ops;
                     mf->node.fs_data = mf;
                     mf->node.parent = g_root_node;
+                    mf->node.uid = caller_uid;
+                    mf->node.gid = caller_gid;
+                    mf->node.mode = 0644;
 
                     node = &mf->node;
                 } else {
                     return VFS_ERR_READ_ONLY;
                 }
             }
+        }
+
+        /* Check permissions on existing node */
+        int perm_err = vfs_check_permissions(node, flags, caller_uid, caller_gid);
+        if (perm_err != VFS_OK) {
+            return perm_err;
         }
 
         /* Handle O_TRUNC on writable node */
@@ -409,6 +548,11 @@ vfs_fd_t vfs_open(const char *path, u32 flags) {
                 int cr_err = astrafs_create(path + 6, flags, &node);
                 if (cr_err == VFS_OK) {
                     created_astrafs = true;
+                    if (node) {
+                        node->uid = caller_uid;
+                        node->gid = caller_gid;
+                        node->mode = VFS_DEFAULT_FILE_MODE;
+                    }
                 } else {
                     return cr_err;
                 }
@@ -431,13 +575,15 @@ vfs_fd_t vfs_open(const char *path, u32 flags) {
             mf->in_use = true;
             str_copy(mf->name, path, sizeof(mf->name));
             mf->size = 0;
-            for (size_t b = 0; b < VFS_MAX_FILE_SIZE; b++) {
-                mf->data[b] = 0;
-            }
+            mf->capacity = 0;
+            mf->data = NULL;
 
             str_copy(mf->node.name, path, sizeof(mf->node.name));
             mf->node.type = VFS_NODE_FILE;
             mf->node.size = 0;
+            mf->node.uid = caller_uid;
+            mf->node.gid = caller_gid;
+            mf->node.mode = VFS_DEFAULT_FILE_MODE;
             mf->node.ops = &g_ramfs_ops;
             mf->node.fs_data = mf;
             mf->node.parent = g_root_node;
@@ -697,7 +843,14 @@ int vfs_rename(const char *old_path, const char *new_path) {
         if (g_total_mutable_allocated >= g_mutable_files[new_slot].size) {
             g_total_mutable_allocated -= g_mutable_files[new_slot].size;
         }
+        if (g_mutable_files[new_slot].data) {
+            ramfs_free_buf(g_mutable_files[new_slot].data, g_mutable_files[new_slot].capacity);
+            g_mutable_files[new_slot].data = NULL;
+        }
+        g_mutable_files[new_slot].capacity = 0;
         g_mutable_files[new_slot].in_use = false;
+        g_mutable_files[new_slot].size = 0;
+        g_mutable_files[new_slot].name[0] = '\0';
         /* Update any open descriptor referencing new_slot to point to old_slot */
         for (int i = 0; i < VFS_MAX_FDS; i++) {
             if (g_file_table[i].in_use && g_file_table[i].node == &g_mutable_files[new_slot].node) {
@@ -734,6 +887,11 @@ int vfs_unlink(const char *path) {
         if (g_total_mutable_allocated >= g_mutable_files[slot].size) {
             g_total_mutable_allocated -= g_mutable_files[slot].size;
         }
+        if (g_mutable_files[slot].data) {
+            ramfs_free_buf(g_mutable_files[slot].data, g_mutable_files[slot].capacity);
+            g_mutable_files[slot].data = NULL;
+        }
+        g_mutable_files[slot].capacity = 0;
         g_mutable_files[slot].in_use = false;
         g_mutable_files[slot].size = 0;
         g_mutable_files[slot].name[0] = '\0';
@@ -781,13 +939,15 @@ int vfs_mkdir(const char *path) {
     mf->in_use = true;
     str_copy(mf->name, path, sizeof(mf->name));
     mf->size = 0;
-    for (size_t b = 0; b < VFS_MAX_FILE_SIZE; b++) {
-        mf->data[b] = 0;
-    }
+    mf->capacity = 0;
+    mf->data = NULL;
 
     str_copy(mf->node.name, path, sizeof(mf->node.name));
     mf->node.type = VFS_NODE_DIR;
     mf->node.size = 0;
+    mf->node.uid = session_get_active_uid();
+    mf->node.gid = 0;
+    mf->node.mode = VFS_DEFAULT_DIR_MODE;
     mf->node.ops = &g_ramfs_ops;
     mf->node.fs_data = mf;
     mf->node.parent = g_root_node;
@@ -833,6 +993,11 @@ int vfs_rmdir(const char *path) {
     g_mutable_files[slot].in_use = false;
     g_mutable_files[slot].name[0] = '\0';
     g_mutable_files[slot].size = 0;
+    g_mutable_files[slot].capacity = 0;
+    if (g_mutable_files[slot].data) {
+        ramfs_free_buf(g_mutable_files[slot].data, g_mutable_files[slot].capacity);
+        g_mutable_files[slot].data = NULL;
+    }
     return VFS_OK;
 }
 
@@ -851,6 +1016,9 @@ int vfs_stat(const char *path, vfs_stat_t *st) {
     str_copy(st->name, node->name, sizeof(st->name));
     st->type = node->type;
     st->size = node->size;
+    st->uid = node->uid;
+    st->gid = node->gid;
+    st->mode = node->mode ? node->mode : ((node->type == VFS_NODE_DIR) ? VFS_DEFAULT_DIR_MODE : VFS_DEFAULT_FILE_MODE);
     return VFS_OK;
 }
 
@@ -869,6 +1037,9 @@ int vfs_fstat(vfs_fd_t fd, vfs_stat_t *st) {
     str_copy(st->name, node->name, sizeof(st->name));
     st->type = node->type;
     st->size = node->size;
+    st->uid = node->uid;
+    st->gid = node->gid;
+    st->mode = node->mode ? node->mode : ((node->type == VFS_NODE_DIR) ? VFS_DEFAULT_DIR_MODE : VFS_DEFAULT_FILE_MODE);
     return VFS_OK;
 }
 

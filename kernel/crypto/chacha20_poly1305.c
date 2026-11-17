@@ -175,6 +175,9 @@ void poly1305_mac(const u8 key[32],
 
 /* --- ChaCha20-Poly1305 AEAD (RFC 8439 Section 2.8) --- */
 
+/* Shared AEAD MAC staging buffer up to max TLS 1.3 record size (16,384 + 256) */
+static u8 g_aead_mac_buf[16640];
+
 void chacha20_poly1305_encrypt(const u8 key[CHACHA20_KEY_SIZE],
                                const u8 nonce[CHACHA20_NONCE_SIZE],
                                const void *aad, size_t aad_len,
@@ -196,12 +199,9 @@ void chacha20_poly1305_encrypt(const u8 key[CHACHA20_KEY_SIZE],
     size_t ct_pad  = (16 - (text_len % 16)) % 16;
     size_t mac_data_len = aad_len + aad_pad + text_len + ct_pad + 16;
 
-    /* Allocate static or bounded buffer for MAC data */
-    static u8 mac_buf[2048];
-    u8 *buf = mac_buf;
-    if (mac_data_len > sizeof(mac_buf)) {
-        /* Cap for kernel bounds */
-        mac_data_len = sizeof(mac_buf);
+    u8 *buf = g_aead_mac_buf;
+    if (mac_data_len > sizeof(g_aead_mac_buf)) {
+        mac_data_len = sizeof(g_aead_mac_buf);
     }
     kmemset(buf, 0, mac_data_len);
 
@@ -237,9 +237,8 @@ bool chacha20_poly1305_decrypt(const u8 key[CHACHA20_KEY_SIZE],
     size_t ct_pad  = (16 - (text_len % 16)) % 16;
     size_t mac_data_len = aad_len + aad_pad + text_len + ct_pad + 16;
 
-    static u8 mac_buf[2048];
-    u8 *buf = mac_buf;
-    if (mac_data_len > sizeof(mac_buf)) {
+    u8 *buf = g_aead_mac_buf;
+    if (mac_data_len > sizeof(g_aead_mac_buf)) {
         return false;
     }
     kmemset(buf, 0, mac_data_len);

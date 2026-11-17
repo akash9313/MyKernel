@@ -269,6 +269,9 @@ static int initramfs_op_stat(vfs_node_t *node, vfs_stat_t *st) {
     kstrncpy(st->name, node->name, sizeof(st->name));
     st->type = node->type;
     st->size = node->size;
+    st->uid = node->uid;
+    st->gid = node->gid;
+    st->mode = node->mode;
     return VFS_OK;
 }
 
@@ -399,6 +402,9 @@ int initramfs_mount(const void *archive_data, size_t archive_size, vfs_node_t **
     g_initramfs.root_node.ops = &g_initramfs_ops;
     g_initramfs.root_node.fs_data = (void *)(uintptr_t)0;
     g_initramfs.root_node.parent = NULL;
+    g_initramfs.root_node.uid = 0;
+    g_initramfs.root_node.gid = 0;
+    g_initramfs.root_node.mode = 0755;
 
     /* Initialize vfs_node_t for each entry */
     for (u32 i = 0; i < hdr->entry_count; i++) {
@@ -409,6 +415,9 @@ int initramfs_mount(const void *archive_data, size_t archive_size, vfs_node_t **
         n->ops = &g_initramfs_ops;
         n->fs_data = (void *)(uintptr_t)i;
         n->parent = &g_initramfs.root_node;
+        n->uid = 0;
+        n->gid = 0;
+        n->mode = (n->type == VFS_NODE_DIR) ? 0755 : 0644;
     }
 
     *out_root = &g_initramfs.root_node;

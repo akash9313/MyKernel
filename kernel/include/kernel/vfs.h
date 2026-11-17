@@ -27,7 +27,21 @@ typedef enum {
     VFS_ERR_BUSY           = -12,
     VFS_ERR_EXISTS         = -13,
     VFS_ERR_NOSPC          = -14,
+    VFS_ERR_DENIED         = -15,
 } vfs_err_t;
+
+/* POSIX Permission Mode Bits */
+#define VFS_S_IRUSR 0x0100
+#define VFS_S_IWUSR 0x0080
+#define VFS_S_IXUSR 0x0040
+#define VFS_S_IRGRP 0x0020
+#define VFS_S_IWGRP 0x0010
+#define VFS_S_IXGRP 0x0008
+#define VFS_S_IROTH 0x0004
+#define VFS_S_IWOTH 0x0002
+#define VFS_S_IXOTH 0x0001
+#define VFS_DEFAULT_FILE_MODE 0x01A4 /* 0644 (rw-r--r--) */
+#define VFS_DEFAULT_DIR_MODE  0x01ED /* 0755 (rwxr-xr-x) */
 
 /* Open Flags */
 #define VFS_O_RDONLY 0x0001
@@ -40,9 +54,9 @@ typedef enum {
 #define VFS_MAX_NAME_LEN            64
 #define VFS_MAX_PATH_LEN            128
 #define VFS_MAX_FDS                 32
-#define VFS_MAX_MUTABLE_FILES       8
+#define VFS_MAX_MUTABLE_FILES       32
 #define VFS_MAX_FILE_SIZE           16384
-#define VFS_TOTAL_MUTABLE_CAPACITY  131072
+#define VFS_TOTAL_MUTABLE_CAPACITY  524288
 
 typedef int vfs_fd_t;
 
@@ -50,6 +64,9 @@ typedef struct {
     char            name[VFS_MAX_NAME_LEN];
     vfs_node_type_t type;
     size_t          size;
+    uid_t           uid;
+    gid_t           gid;
+    u16             mode;
 } vfs_stat_t;
 
 typedef struct {
@@ -77,6 +94,9 @@ struct vfs_node {
     char            name[VFS_MAX_NAME_LEN];
     vfs_node_type_t type;
     size_t          size;
+    uid_t           uid;
+    gid_t           gid;
+    u16             mode;
     const vfs_ops_t *ops;
     void           *fs_data;
     vfs_node_t     *parent;
@@ -88,6 +108,9 @@ int vfs_subsystem_init(void);
 int vfs_mount_root(vfs_node_t *root_node);
 vfs_node_t *vfs_get_root(void);
 int vfs_lookup(const char *path, vfs_node_t **out_node);
+int vfs_check_permissions(vfs_node_t *node, u32 flags, uid_t caller_uid, gid_t caller_gid);
+int vfs_chmod(const char *path, u16 mode);
+int vfs_chown(const char *path, uid_t uid, gid_t gid);
 vfs_fd_t vfs_open(const char *path, u32 flags);
 ssize_t vfs_read(vfs_fd_t fd, void *buf, size_t count);
 ssize_t vfs_pread(vfs_fd_t fd, void *buf, size_t count, size_t offset);

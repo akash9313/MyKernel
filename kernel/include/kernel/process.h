@@ -33,6 +33,8 @@ typedef enum process_state {
 typedef struct process {
     pid_t pid;
     pid_t parent_pid;
+    uid_t uid;
+    u32   sid;
     volatile process_state_t state;
     char name[32];
 

@@ -111,9 +111,9 @@ static int tls_read_record(tls_session_t *s, u8 *out_type, void *out_buf, size_t
 
         u8 outer_type = hdr[0];
         size_t length = ((size_t)hdr[3] << 8) | hdr[4];
-        if (length > 8192) return -1;
+        if (length > 16640) return -1;
 
-        static u8 enc_buf[8192];
+        static u8 enc_buf[16640];
         size_t received = 0;
         while (received < length) {
             int r = tcp_recv(s->tcp_socket, &enc_buf[received], length - received, 3000);
@@ -136,7 +136,7 @@ static int tls_read_record(tls_session_t *s, u8 *out_type, void *out_buf, size_t
             compute_record_nonce(iv, *seq, nonce);
             (*seq)++;
 
-            static u8 plaintext[8192];
+            static u8 plaintext[16640];
             if (!chacha20_poly1305_decrypt(key, nonce, hdr, 5,
                                           enc_buf, ct_len, tag, plaintext)) {
                 kprintf("[TLS ERROR] Record decryption / MAC verification failed!\n");
@@ -411,7 +411,7 @@ tls_error_t tls_connect(tls_session_t *s, const char *hostname, u16 port) {
     s->state = TLS_STATE_HANDSHAKE_KEYS_ESTABLISHED;
 
     /* 7. Receive Encrypted Handshake Records: EncryptedExtensions, Certificate, CertificateVerify, Finished */
-    static u8 hs_buf[8192];
+    static u8 hs_buf[16640];
     while (s->state != TLS_STATE_CONNECTED) {
         u8 itype = 0;
         int dlen = tls_read_record(s, &itype, hs_buf, sizeof(hs_buf),

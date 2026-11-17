@@ -47,6 +47,7 @@ int shell_unsetenv(shell_context_t *ctx, const char *key);
 const char *shell_getcwd(shell_context_t *ctx);
 int shell_chdir(shell_context_t *ctx, const char *path);
 int shell_execute(shell_context_t *ctx, const char *cmd_line);
+int shell_complete(shell_context_t *ctx, const char *prefix, bool is_cmd, char *out_match, size_t max_len);
 bool shell_self_test(void);
 
 #endif /* ASTRA_KERNEL_SHELL_H */

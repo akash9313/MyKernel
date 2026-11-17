@@ -33,12 +33,11 @@ bool input_push_event(const input_event_t *ev) {
 
     u64 flags = irq_save();
 
-    /* If this is a mouse move event, update cached coordinates */
-    if (ev->type == INPUT_EVENT_MOUSE_MOVE) {
+    /* If this is a mouse event, update cached coordinates */
+    if (ev->type == INPUT_EVENT_MOUSE_MOVE || ev->type == INPUT_EVENT_MOUSE_DOWN ||
+        ev->type == INPUT_EVENT_MOUSE_UP || ev->type == INPUT_EVENT_MOUSE_WHEEL) {
         g_input.mouse_x = ev->mouse.x;
         g_input.mouse_y = ev->mouse.y;
-        g_input.mouse_buttons = ev->mouse.buttons;
-    } else if (ev->type == INPUT_EVENT_MOUSE_DOWN || ev->type == INPUT_EVENT_MOUSE_UP) {
         g_input.mouse_buttons = ev->mouse.buttons;
     }
 

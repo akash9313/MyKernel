@@ -142,3 +142,162 @@ void kprintf(const char *fmt, ...) {
     kvprintf(fmt, args);
     va_end(args);
 }
+
+typedef struct {
+    char *buf;
+    size_t size;
+    size_t pos;
+} sn_ctx_t;
+
+static void sn_putc(sn_ctx_t *ctx, char c) {
+    if (ctx->pos + 1 < ctx->size) {
+        ctx->buf[ctx->pos++] = c;
+    }
+}
+
+static void sn_puts(sn_ctx_t *ctx, const char *s) {
+    if (!s) s = "(null)";
+    while (*s && ctx->pos + 1 < ctx->size) {
+        ctx->buf[ctx->pos++] = *s++;
+    }
+}
+
+int kvsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
+    if (!buf || size == 0) return 0;
+    sn_ctx_t ctx = { .buf = buf, .size = size, .pos = 0 };
+
+    for (size_t i = 0; fmt[i] != '\0'; i++) {
+        if (fmt[i] != '%') {
+            sn_putc(&ctx, fmt[i]);
+            continue;
+        }
+
+        i++;
+        if (fmt[i] == '\0') break;
+
+        char pad_char = ' ';
+        int width = 0;
+        bool left_align = false;
+        if (fmt[i] == '-') {
+            left_align = true;
+            i++;
+        }
+        if (fmt[i] == '0') {
+            pad_char = '0';
+            i++;
+        }
+
+        while (fmt[i] >= '0' && fmt[i] <= '9') {
+            width = width * 10 + (fmt[i] - '0');
+            i++;
+        }
+
+        bool is_long = false;
+        if (fmt[i] == 'l') {
+            is_long = true;
+            i++;
+            if (fmt[i] == 'l') i++;
+        }
+
+        switch (fmt[i]) {
+            case 'c': {
+                char c = (char)va_arg(args, int);
+                sn_putc(&ctx, c);
+                break;
+            }
+            case 's': {
+                const char *s = va_arg(args, const char *);
+                if (!s) s = "(null)";
+                size_t slen = 0;
+                while (s[slen]) slen++;
+                if (!left_align && width > (int)slen) {
+                    for (int p = 0; p < width - (int)slen; p++) sn_putc(&ctx, pad_char);
+                }
+                sn_puts(&ctx, s);
+                if (left_align && width > (int)slen) {
+                    for (int p = 0; p < width - (int)slen; p++) sn_putc(&ctx, ' ');
+                }
+                break;
+            }
+            case 'd':
+            case 'i': {
+                s64 v = is_long ? va_arg(args, s64) : (s64)va_arg(args, int);
+                char num_buf[32];
+                int np = 0;
+                bool neg = false;
+                if (v < 0) { neg = true; v = -v; }
+                if (v == 0) num_buf[np++] = '0';
+                else {
+                    while (v > 0) { num_buf[np++] = '0' + (v % 10); v /= 10; }
+                }
+                if (neg) num_buf[np++] = '-';
+                int total_len = np;
+                if (!left_align && width > total_len) {
+                    for (int p = 0; p < width - total_len; p++) sn_putc(&ctx, pad_char);
+                }
+                for (int p = np - 1; p >= 0; p--) sn_putc(&ctx, num_buf[p]);
+                if (left_align && width > total_len) {
+                    for (int p = 0; p < width - total_len; p++) sn_putc(&ctx, ' ');
+                }
+                break;
+            }
+            case 'u': {
+                u64 v = is_long ? va_arg(args, u64) : (u64)va_arg(args, unsigned int);
+                char num_buf[32];
+                int np = 0;
+                if (v == 0) num_buf[np++] = '0';
+                else {
+                    while (v > 0) { num_buf[np++] = '0' + (v % 10); v /= 10; }
+                }
+                int total_len = np;
+                if (!left_align && width > total_len) {
+                    for (int p = 0; p < width - total_len; p++) sn_putc(&ctx, pad_char);
+                }
+                for (int p = np - 1; p >= 0; p--) sn_putc(&ctx, num_buf[p]);
+                if (left_align && width > total_len) {
+                    for (int p = 0; p < width - total_len; p++) sn_putc(&ctx, ' ');
+                }
+                break;
+            }
+            case 'x': {
+                u64 v = is_long ? va_arg(args, u64) : (u64)va_arg(args, unsigned int);
+                const char *hex = "0123456789abcdef";
+                char num_buf[32];
+                int np = 0;
+                if (v == 0) num_buf[np++] = '0';
+                else {
+                    while (v > 0) { num_buf[np++] = hex[v % 16]; v /= 16; }
+                }
+                int total_len = np;
+                if (!left_align && width > total_len) {
+                    for (int p = 0; p < width - total_len; p++) sn_putc(&ctx, pad_char);
+                }
+                for (int p = np - 1; p >= 0; p--) sn_putc(&ctx, num_buf[p]);
+                if (left_align && width > total_len) {
+                    for (int p = 0; p < width - total_len; p++) sn_putc(&ctx, ' ');
+                }
+                break;
+            }
+            case '%': {
+                sn_putc(&ctx, '%');
+                break;
+            }
+            default: {
+                sn_putc(&ctx, '%');
+                sn_putc(&ctx, fmt[i]);
+                break;
+            }
+        }
+    }
+
+    ctx.buf[ctx.pos] = '\0';
+    return (int)ctx.pos;
+}
+
+int ksnprintf(char *buf, size_t size, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int ret = kvsnprintf(buf, size, fmt, args);
+    va_end(args);
+    return ret;
+}

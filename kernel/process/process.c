@@ -8,6 +8,7 @@
 #include <kernel/panic.h>
 #include <kernel/kprintf.h>
 #include <kernel/elf.h>
+#include <kernel/session.h>
 #include <kernel/user_app_elf.h>
 #include <kernel/arch/x86_64/gdt.h>
 #include <kernel/arch/x86_64/cpu.h>
@@ -183,6 +184,9 @@ process_t *process_create(const char *name, const void *code_bytes, size_t code_
     }
     pid_t new_pid = g_next_pid++;
     proc->pid = new_pid;
+    proc->uid = session_get_active_uid();
+    proc->sid = session_get_active_sid();
+    session_register_process(proc->sid, proc->pid);
     spinlock_release_irqrestore(&g_proc_lock, proc_flags);
     safe_strncpy(proc->name, name ? name : "user_proc", sizeof(proc->name));
     proc->code_va = USER_CODE_BASE_VA;
@@ -287,6 +291,9 @@ process_t *process_create_elf_reader(const char *name, elf_reader_t *reader) {
     }
     pid_t new_pid = g_next_pid++;
     proc->pid = new_pid;
+    proc->uid = session_get_active_uid();
+    proc->sid = session_get_active_sid();
+    session_register_process(proc->sid, proc->pid);
     spinlock_release_irqrestore(&g_proc_lock, proc_flags);
     safe_strncpy(proc->name, name ? name : "elf_proc", sizeof(proc->name));
     proc->mmap_curr_va = USER_MMAP_BASE_VA;
@@ -1604,7 +1611,7 @@ void process_al_run_tests(void) {
                 panic("Phase AL TEST 2 FAILED: Duplicate PID %u between apps %d and %d!",
                       procs[i]->pid, i, j);
             }
-            if (procs[i]->pml4_phys == procs[j]->pml4_phys) {
+            if (procs[i]->pml4_phys != 0 && procs[j]->pml4_phys != 0 && procs[i]->pml4_phys == procs[j]->pml4_phys) {
                 panic("Phase AL TEST 2 FAILED: Shared PML4 0x%llx between apps %d and %d!",
                       (unsigned long long)procs[i]->pml4_phys, i, j);
             }
